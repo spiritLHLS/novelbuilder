@@ -2,9 +2,22 @@
   <div class="chapters">
     <div class="page-header">
       <h1>章节管理</h1>
-      <el-button type="primary" @click="showGenerate" :disabled="!canGenerate">
-        <el-icon><EditPen /></el-icon>生成新章节
-      </el-button>
+      <div class="header-actions">
+        <el-button type="primary" @click="showGenerate" :disabled="!canGenerate">
+          <el-icon><EditPen /></el-icon>生成新章节
+        </el-button>
+        <el-dropdown @command="handleExport" style="margin-left: 8px">
+          <el-button>
+            导出<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="txt">导出 TXT</el-dropdown-item>
+              <el-dropdown-item command="markdown">导出 Markdown</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
     </div>
 
     <el-alert v-if="!canGenerate" type="warning" :closable="false" show-icon style="margin-bottom: 16px;">
@@ -101,7 +114,8 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { chapterApi } from '@/api'
+import { ArrowDown } from '@element-plus/icons-vue'
+import { chapterApi, exportApi } from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -162,6 +176,24 @@ async function fetchChapters() {
 
 function viewChapter(ch: any) {
   router.push({ name: 'chapter-detail', params: { projectId, chapterId: ch.id } })
+}
+
+async function handleExport(format: 'txt' | 'markdown') {
+  try {
+    const res = format === 'txt'
+      ? await exportApi.txt(projectId)
+      : await exportApi.markdown(projectId)
+    const ext = format === 'txt' ? 'txt' : 'md'
+    const url = URL.createObjectURL(new Blob([res.data]))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `novel_${projectId}.${ext}`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '导出失败')
+  }
 }
 
 function showGenerate() {

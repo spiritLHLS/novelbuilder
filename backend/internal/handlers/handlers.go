@@ -32,6 +32,7 @@ type Handler struct {
 	references     *services.ReferenceService
 	workflow       *workflow.Engine
 	agentReview    *services.AgentReviewService
+	export         *services.ExportService
 	logger         *zap.Logger
 }
 
@@ -48,6 +49,7 @@ func NewHandler(
 	references *services.ReferenceService,
 	wf *workflow.Engine,
 	agentReview *services.AgentReviewService,
+	export *services.ExportService,
 	logger *zap.Logger,
 ) *Handler {
 	return &Handler{
@@ -63,6 +65,7 @@ func NewHandler(
 		references:     references,
 		workflow:       wf,
 		agentReview:    agentReview,
+		export:         export,
 		logger:         logger,
 	}
 }
@@ -133,6 +136,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/projects/:id/agent-reviews", h.ListAgentReviews)
 	api.GET("/projects/:id/agent-reviews/stream", h.StreamAgentReview)
 	api.GET("/agent-reviews/:id", h.GetAgentReview)
+
+	// Export
+	api.GET("/projects/:id/export/txt", h.ExportTXT)
+	api.GET("/projects/:id/export/markdown", h.ExportMarkdown)
+
+	// Workflow diff
+	api.GET("/workflows/:id/diff", h.GetWorkflowDiff)
 
 	api.GET("/health", h.Health)
 }
@@ -930,6 +940,57 @@ func (h *Handler) ListAgentReviews(c *gin.Context) {
 
 func (h *Handler) Health(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok", "service": "novelbuilder"})
+}
+
+// ---- Export Handlers ----
+
+func (h *Handler) ExportTXT(c *gin.Context) {
+	projectID := c.Param("id")
+	data, err := h.export.ExportTXT(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"novel_%s.txt\"", projectID))
+	c.Data(200, "text/plain; charset=utf-8", data)
+}
+
+func (h *Handler) ExportMarkdown(c *gin.Context) {
+	projectID := c.Param("id")
+	data, err := h.export.ExportMarkdown(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"novel_%s.md\"", projectID))
+	c.Data(200, "text/markdown; charset=utf-8", data)
+}
+
+// ---- Workflow Diff Handler ----
+
+// GetWorkflowDiff returns two workflow snapshots for comparison.
+// Query params: fromStep (step_key) and toStep (step_key).
+func (h *Handler) GetWorkflowDiff(c *gin.Context) {
+	runID := c.Param("id")
+	fromStep := c.Query("fromStep")
+	toStep := c.Query("toStep")
+	if fromStep == "" || toStep == "" {
+		c.JSON(400, gin.H{"error": "fromStep and toStep query params are required"})
+		return
+	}
+
+	from, err := h.workflow.GetSnapshot(c.Request.Context(), runID, fromStep)
+	if err != nil {
+		c.JSON(404, gin.H{"error": fmt.Sprintf("snapshot not found for step '%s'", fromStep)})
+		return
+	}
+	to, err := h.workflow.GetSnapshot(c.Request.Context(), runID, toStep)
+	if err != nil {
+		c.JSON(404, gin.H{"error": fmt.Sprintf("snapshot not found for step '%s'", toStep)})
+		return
+	}
+
+	c.JSON(200, gin.H{"data": gin.H{"from": from, "to": to}})
 }
 
 func containsStr(s, sub string) bool {

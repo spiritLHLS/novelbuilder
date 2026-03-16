@@ -7,6 +7,7 @@
           <el-icon><VideoPlay /></el-icon>启动工作流
         </el-button>
         <el-button v-if="currentRun" type="warning" @click="showRollback">回滚</el-button>
+        <el-button v-if="currentRun" @click="goDiff">快照对比</el-button>
       </div>
     </div>
 
@@ -178,11 +179,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { workflowApi } from '@/api'
 
 const route = useRoute()
+const router = useRouter()
 const projectId = route.params.projectId as string
 
 const currentRun = ref<any>(null)
@@ -278,6 +280,11 @@ function showRollback() {
   rollbackTargetStep.value = ''
   rollbackReason.value = ''
   showRollbackDialog.value = true
+}
+
+function goDiff() {
+  if (!currentRun.value?.id) return
+  router.push({ name: 'workflow-diff', params: { runId: currentRun.value.id } })
 }
 
 async function executeRollback() {

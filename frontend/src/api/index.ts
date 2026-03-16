@@ -136,6 +136,16 @@ export const workflowApi = {
   getHistory: (projectId: string) => api.get(`/projects/${projectId}/workflow/history`),
   rollback: (projectId: string, data: any) =>
     api.post(`/projects/${projectId}/workflow/rollback`, data),
+  getDiff: (runId: string, fromStep: string, toStep: string) =>
+    api.get(`/workflows/${runId}/diff`, { params: { fromStep, toStep } }),
+}
+
+// Export
+export const exportApi = {
+  txt: (projectId: string) =>
+    api.get(`/projects/${projectId}/export/txt`, { responseType: 'blob' }),
+  markdown: (projectId: string) =>
+    api.get(`/projects/${projectId}/export/markdown`, { responseType: 'blob' }),
 }
 
 // References

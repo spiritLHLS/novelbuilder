@@ -1,9 +1,12 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -351,15 +354,36 @@ func (s *BlueprintService) Reject(ctx context.Context, id, comment string) error
 // ============================================================
 
 type ChapterService struct {
-	db     *pgxpool.Pool
-	rdb    *redis.Client
-	ai     *gateway.AIGateway
-	wf     *workflow.Engine
-	logger *zap.Logger
+	db          *pgxpool.Pool
+	rdb         *redis.Client
+	ai          *gateway.AIGateway
+	wf          *workflow.Engine
+	rag         *RAGService
+	originality *OriginalityService
+	sidecarURL  string
+	logger      *zap.Logger
 }
 
-func NewChapterService(db *pgxpool.Pool, rdb *redis.Client, ai *gateway.AIGateway, wf *workflow.Engine, logger *zap.Logger) *ChapterService {
-	return &ChapterService{db: db, rdb: rdb, ai: ai, wf: wf, logger: logger}
+func NewChapterService(
+	db *pgxpool.Pool,
+	rdb *redis.Client,
+	ai *gateway.AIGateway,
+	wf *workflow.Engine,
+	rag *RAGService,
+	originality *OriginalityService,
+	sidecarURL string,
+	logger *zap.Logger,
+) *ChapterService {
+	return &ChapterService{
+		db:          db,
+		rdb:         rdb,
+		ai:          ai,
+		wf:          wf,
+		rag:         rag,
+		originality: originality,
+		sidecarURL:  sidecarURL,
+		logger:      logger,
+	}
 }
 
 func (s *ChapterService) List(ctx context.Context, projectID string) ([]models.Chapter, error) {
@@ -444,6 +468,14 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 	}
 
 	chapterContent := resp.Content
+
+	// ── Humanizer pipeline (8-step) ───────────────────────────────────────────
+	if humanized, hErr := s.humanizeContent(ctx, chapterContent, 0.7); hErr == nil {
+		chapterContent = humanized
+	} else {
+		s.logger.Warn("humanizer skipped", zap.Error(hErr))
+	}
+
 	wordCount := utf8.RuneCountInString(chapterContent)
 
 	// Generate summary
@@ -481,6 +513,16 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 	// Store content in Redis for recent context
 	s.rdb.Set(ctx, fmt.Sprintf("chapter_content:%s:%d", projectID, chapterNum), chapterContent, 24*time.Hour)
 
+	// ── Async originality audit ───────────────────────────────────────────────
+	if s.originality != nil {
+		go func() {
+			auditCtx := context.Background()
+			if _, err := s.originality.AuditChapter(auditCtx, ch.ID, projectID, chapterContent); err != nil {
+				s.logger.Warn("originality audit failed", zap.Error(err))
+			}
+		}()
+	}
+
 	s.logger.Info("chapter generated",
 		zap.String("project_id", projectID),
 		zap.Int("chapter_num", chapterNum),
@@ -516,6 +558,14 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 
 	// Save the completed chapter
 	content := fullContent.String()
+
+	// ── Humanizer pipeline ────────────────────────────────────────────────────
+	if humanized, hErr := s.humanizeContent(ctx, content, 0.7); hErr == nil {
+		content = humanized
+	} else {
+		s.logger.Warn("humanizer skipped (stream)", zap.Error(hErr))
+	}
+
 	wordCount := utf8.RuneCountInString(content)
 	summary := s.generateSummary(ctx, content)
 	title := s.generateTitle(ctx, content, chapterNum)
@@ -535,6 +585,16 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 
 	s.rdb.Set(ctx, fmt.Sprintf("chapter_summary:%s:%d", projectID, chapterNum), summary, 0)
 	s.rdb.Set(ctx, fmt.Sprintf("chapter_content:%s:%d", projectID, chapterNum), content, 24*time.Hour)
+
+	// ── Async originality audit ───────────────────────────────────────────────
+	if s.originality != nil {
+		go func() {
+			auditCtx := context.Background()
+			if _, err := s.originality.AuditChapter(auditCtx, chID, projectID, content); err != nil {
+				s.logger.Warn("originality audit failed (stream)", zap.Error(err))
+			}
+		}()
+	}
 
 	handler(gateway.StreamChunk{Done: true})
 	return nil
@@ -701,9 +761,101 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		}
 	}
 
+	// ===== TAIL (continued): RAG sensory / style samples =====
+	if s.rag != nil {
+		// Query for style samples that match the current chapter outline context
+		queryContext := fmt.Sprintf("第%d章 %s %s", chapterNum, req.TargetPace, req.NarrativeOrder)
+		samples, err := s.rag.SearchSensory(ctx, projectID, queryContext, "style_samples", 3)
+		if err == nil && len(samples) > 0 {
+			sb.WriteString("\n=== 风格参考样本（来自参考书目）===\n")
+			for i, sample := range samples {
+				sb.WriteString(fmt.Sprintf("【样本%d】%s\n", i+1, sample))
+			}
+			sb.WriteString("\n请模仿以上样本的感官描写风格和句式节奏，但不要照抄内容。\n")
+		}
+		// Sensory samples for immersive injection
+		sensorySamples, err := s.rag.SearchSensory(ctx, projectID, queryContext, "sensory_samples", 2)
+		if err == nil && len(sensorySamples) > 0 {
+			sb.WriteString("\n=== 感官描写片段参考 ===\n")
+			for _, s := range sensorySamples {
+				sb.WriteString("- ")
+				sb.WriteString(s)
+				sb.WriteString("\n")
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	// ===== Narrative generation params summary =====
+	var narrativeSection strings.Builder
+	if req.NarrativeOrder != "" {
+		narrativeSection.WriteString(fmt.Sprintf("叙事顺序：%s  ", req.NarrativeOrder))
+	}
+	if req.POVCharacter != "" {
+		narrativeSection.WriteString(fmt.Sprintf("主视角角色：%s  ", req.POVCharacter))
+		if req.AllowPOVDrift {
+			narrativeSection.WriteString("（允许视角漂移）  ")
+		}
+	}
+	if req.TargetPace != "" {
+		narrativeSection.WriteString(fmt.Sprintf("目标节奏：%s  ", req.TargetPace))
+	}
+	if req.EndHookType != "" {
+		narrativeSection.WriteString(fmt.Sprintf("结尾钩子：%s（强度 %d）  ", req.EndHookType, req.EndHookStrength))
+	}
+	if req.TensionLevel > 0 {
+		narrativeSection.WriteString(fmt.Sprintf("张力值：%.1f  ", req.TensionLevel))
+	}
+	if narrativeSection.Len() > 0 {
+		sb.WriteString("=== 生成参数 ===\n")
+		sb.WriteString(narrativeSection.String())
+		sb.WriteString("\n\n")
+	}
+
 	sb.WriteString("\n你是一位经验丰富的网络小说作者，请严格遵守世界观设定和宪法规则，保持角色性格一致性。")
 
 	return sb.String()
+}
+
+// humanizeContent calls the Python sidecar /humanize endpoint to run the
+// 8-step humanization pipeline on the generated text.
+// intensity: 0.0–1.0 (0 = no change, 1 = maximum humanization).
+func (s *ChapterService) humanizeContent(ctx context.Context, text string, intensity float64) (string, error) {
+	if s.sidecarURL == "" {
+		return text, nil // no sidecar configured
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"text":      text,
+		"intensity": intensity,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sidecarURL+"/humanize", bytes.NewReader(body))
+	if err != nil {
+		return text, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return text, fmt.Errorf("humanizer unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return text, fmt.Errorf("humanizer returned %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var result struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return text, fmt.Errorf("decode humanizer response: %w", err)
+	}
+	if result.Text == "" {
+		return text, nil
+	}
+	return result.Text, nil
 }
 
 func (s *ChapterService) generateSummary(ctx context.Context, content string) string {

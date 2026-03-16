@@ -290,3 +290,26 @@ func (e *Engine) CompleteRun(ctx context.Context, runID, status string) error {
 		status, runID)
 	return err
 }
+
+// SnapshotPayload is returned by GetSnapshot.
+type SnapshotPayload struct {
+	StepKey        string          `json:"step_key"`
+	Params         json.RawMessage `json:"params"`
+	ContextPayload json.RawMessage `json:"context_payload"`
+	OutputPayload  json.RawMessage `json:"output_payload"`
+	QualityPayload json.RawMessage `json:"quality_payload"`
+}
+
+// GetSnapshot retrieves the most-recent snapshot for a given run + step key.
+func (e *Engine) GetSnapshot(ctx context.Context, runID, stepKey string) (*SnapshotPayload, error) {
+	var s SnapshotPayload
+	err := e.db.QueryRow(ctx,
+		`SELECT step_key, params, context_payload, output_payload, quality_payload
+		 FROM workflow_snapshots WHERE run_id = $1 AND step_key = $2
+		 ORDER BY created_at DESC LIMIT 1`,
+		runID, stepKey).Scan(&s.StepKey, &s.Params, &s.ContextPayload, &s.OutputPayload, &s.QualityPayload)
+	if err != nil {
+		return nil, fmt.Errorf("get snapshot: %w", err)
+	}
+	return &s, nil
+}

@@ -59,7 +59,9 @@ func main() {
 	// Initialize Services
 	projectService := services.NewProjectService(db, logger)
 	blueprintService := services.NewBlueprintService(db, aiGateway, wfEngine, logger)
-	chapterService := services.NewChapterService(db, rdb, aiGateway, wfEngine, logger)
+	ragService := services.NewRAGService(db, cfg.PythonSidecar.URL, logger)
+	originalityService := services.NewOriginalityService(db, cfg.PythonSidecar.URL, logger)
+	chapterService := services.NewChapterService(db, rdb, aiGateway, wfEngine, ragService, originalityService, cfg.PythonSidecar.URL, logger)
 	worldBibleService := services.NewWorldBibleService(db, aiGateway, logger)
 	characterService := services.NewCharacterService(db, aiGateway, logger)
 	outlineService := services.NewOutlineService(db, aiGateway, logger)
@@ -68,6 +70,7 @@ func main() {
 	qualityService := services.NewQualityService(db, aiGateway, logger)
 	referenceService := services.NewReferenceService(db, cfg.PythonSidecar.URL, logger)
 	agentReviewService := services.NewAgentReviewService(db, aiGateway, logger)
+	exportService := services.NewExportService(db, logger)
 
 	// Initialize Handler
 	h := handlers.NewHandler(
@@ -83,6 +86,7 @@ func main() {
 		referenceService,
 		wfEngine,
 		agentReviewService,
+		exportService,
 		logger,
 	)
 

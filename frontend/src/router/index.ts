@@ -72,6 +72,11 @@ const router = createRouter({
       name: 'agent-review',
       component: () => import('@/views/AgentReview.vue'),
     },
+    {
+      path: '/workflows/:runId/diff',
+      name: 'workflow-diff',
+      component: () => import('@/views/Diff.vue'),
+    },
   ],
 })
 
