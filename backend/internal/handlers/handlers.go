@@ -31,6 +31,7 @@ type Handler struct {
 	quality        *services.QualityService
 	references     *services.ReferenceService
 	workflow       *workflow.Engine
+	agentReview    *services.AgentReviewService
 	logger         *zap.Logger
 }
 
@@ -46,6 +47,7 @@ func NewHandler(
 	quality *services.QualityService,
 	references *services.ReferenceService,
 	wf *workflow.Engine,
+	agentReview *services.AgentReviewService,
 	logger *zap.Logger,
 ) *Handler {
 	return &Handler{
@@ -60,6 +62,7 @@ func NewHandler(
 		quality:        quality,
 		references:     references,
 		workflow:       wf,
+		agentReview:    agentReview,
 		logger:         logger,
 	}
 }
@@ -125,6 +128,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/references/:id", h.GetReference)
 	api.PUT("/references/:id/migration-config", h.UpdateMigrationConfig)
 	api.POST("/references/:id/analyze", h.AnalyzeReference)
+
+	api.POST("/projects/:id/agent-reviews", h.StartAgentReview)
+	api.GET("/projects/:id/agent-reviews", h.ListAgentReviews)
+	api.GET("/projects/:id/agent-reviews/stream", h.StreamAgentReview)
+	api.GET("/agent-reviews/:id", h.GetAgentReview)
 
 	api.GET("/health", h.Health)
 }
@@ -840,6 +848,84 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{"status": "completed"})
+}
+
+// ---- Agent Review Handlers ----
+
+func (h *Handler) StartAgentReview(c *gin.Context) {
+	projectID := c.Param("id")
+	var req models.AgentReviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Rounds <= 0 {
+		req.Rounds = 3
+	}
+
+	session, err := h.agentReview.StreamReview(c.Request.Context(), projectID, req, func(msg models.AgentMessage) {})
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, session)
+}
+
+func (h *Handler) StreamAgentReview(c *gin.Context) {
+	projectID := c.Param("id")
+	scope := c.Query("scope")
+	if scope == "" {
+		scope = "full"
+	}
+	targetID := c.Query("target_id")
+	roundsStr := c.DefaultQuery("rounds", "3")
+	rounds := 3
+	if n, err := strconv.Atoi(roundsStr); err == nil && n > 0 {
+		rounds = n
+	}
+
+	req := models.AgentReviewRequest{Scope: scope, TargetID: targetID, Rounds: rounds}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	_, err := h.agentReview.StreamReview(c.Request.Context(), projectID, req, func(msg models.AgentMessage) {
+		data, e := json.Marshal(msg)
+		if e != nil {
+			return
+		}
+		fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
+		c.Writer.Flush()
+	})
+	if err != nil {
+		fmt.Fprintf(c.Writer, "data: {\"error\":\"%s\"}\n\n", err.Error())
+		c.Writer.Flush()
+		return
+	}
+	fmt.Fprintf(c.Writer, "data: {\"done\":true}\n\n")
+	c.Writer.Flush()
+}
+
+func (h *Handler) GetAgentReview(c *gin.Context) {
+	sessionID := c.Param("id")
+	session, err := h.agentReview.GetSession(c.Request.Context(), sessionID)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "session not found"})
+		return
+	}
+	c.JSON(200, session)
+}
+
+func (h *Handler) ListAgentReviews(c *gin.Context) {
+	projectID := c.Param("id")
+	sessions, err := h.agentReview.ListSessions(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, sessions)
 }
 
 func (h *Handler) Health(c *gin.Context) {

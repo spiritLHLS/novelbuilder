@@ -62,6 +62,10 @@
                 <el-icon><DataAnalysis /></el-icon>
                 <span>质量检测</span>
               </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/agent-review`">
+                <el-icon><ChatDotRound /></el-icon>
+                <span>多智能体评审</span>
+              </el-menu-item>
             </el-menu-item-group>
           </template>
         </el-menu>

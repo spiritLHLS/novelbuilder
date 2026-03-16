@@ -67,6 +67,7 @@ func main() {
 	volumeService := services.NewVolumeService(db, logger)
 	qualityService := services.NewQualityService(db, aiGateway, logger)
 	referenceService := services.NewReferenceService(db, cfg.PythonSidecar.URL, logger)
+	agentReviewService := services.NewAgentReviewService(db, aiGateway, logger)
 
 	// Initialize Handler
 	h := handlers.NewHandler(
@@ -81,6 +82,7 @@ func main() {
 		qualityService,
 		referenceService,
 		wfEngine,
+		agentReviewService,
 		logger,
 	)
 

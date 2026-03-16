@@ -83,6 +83,10 @@ export const chapterApi = {
   get: (projectId: string, id: string) => api.get(`/projects/${projectId}/chapters/${id}`),
   generate: (projectId: string, data: any) =>
     api.post(`/projects/${projectId}/chapters/generate`, data),
+  continueGenerate: (projectId: string) =>
+    api.post(`/projects/${projectId}/chapters/continue`),
+  qualityCheck: (chapterId: string) =>
+    api.post(`/chapters/${chapterId}/quality-check`),
   streamGenerate: async (
     projectId: string,
     data: any,
@@ -145,6 +149,47 @@ export const referenceApi = {
   updateMigrationConfig: (id: string, config: any) =>
     api.put(`/references/${id}/migration-config`, config),
   analyze: (id: string) => api.post(`/references/${id}/analyze`),
+}
+
+// Agent Review
+export const agentReviewApi = {
+  start: (projectId: string, data: any) => api.post(`/projects/${projectId}/agent-reviews`, data),
+  list: (projectId: string) => api.get(`/projects/${projectId}/agent-reviews`),
+  get: (id: string) => api.get(`/agent-reviews/${id}`),
+  stream: (
+    projectId: string,
+    params: { scope: string; target_id?: string; rounds?: number },
+    onMessage: (msg: any) => void,
+    onDone: () => void,
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams({
+      scope: params.scope,
+      ...(params.target_id ? { target_id: params.target_id } : {}),
+      rounds: String(params.rounds ?? 3),
+    })
+    const url = `/api/projects/${projectId}/agent-reviews/stream?${query}`
+    const es = new EventSource(url)
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data)
+        if (data.done || data.error) {
+          es.close()
+          onDone()
+        } else {
+          onMessage(data)
+        }
+      } catch {}
+    }
+    es.onerror = () => {
+      es.close()
+      onDone()
+    }
+    if (signal) {
+      signal.addEventListener('abort', () => { es.close(); onDone() })
+    }
+    return es
+  },
 }
 
 export default api

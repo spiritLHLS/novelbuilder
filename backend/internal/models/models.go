@@ -311,3 +311,61 @@ type AtmosphereLayer struct {
 	ConflictStyle         string   `json:"conflict_style"`
 	SignatureVocabDomains []string `json:"signature_vocab_domains"`
 }
+
+// ============================================================
+// Multi-Agent Review Types
+// ============================================================
+
+// AgentRole identifies which specialist agent is speaking.
+type AgentRole string
+
+const (
+	AgentOutlineCritic     AgentRole = "outline_critic"     // 大纲批评家
+	AgentTimelineInspector AgentRole = "timeline_inspector" // 时间线审核员
+	AgentPlotCoherence     AgentRole = "plot_coherence"     // 剧情连贯性专家
+	AgentCharacterAnalyst  AgentRole = "character_analyst"  // 角色设计分析师
+	AgentDevilsAdvocate    AgentRole = "devils_advocate"    // 魔鬼代言人（反驳者）
+	AgentModerator         AgentRole = "moderator"          // 主持人（汇总共识）
+)
+
+// AgentMessage is a single turn in the multi-agent debate.
+type AgentMessage struct {
+	Round     int       `json:"round"`
+	Agent     AgentRole `json:"agent"`
+	AgentName string    `json:"agent_name"`
+	Content   string    `json:"content"`
+	Tags      []string  `json:"tags"` // e.g. ["issue","suggestion","consensus"]
+}
+
+// AgentReviewIssue is a distilled issue from the debate.
+type AgentReviewIssue struct {
+	Category   string `json:"category"` // outline|timeline|plot|character
+	Severity   string `json:"severity"` // critical|major|minor
+	Agent      string `json:"agent"`
+	Title      string `json:"title"`
+	Detail     string `json:"detail"`
+	Suggestion string `json:"suggestion"`
+	Consensus  bool   `json:"consensus"` // agreed by ≥3 agents
+}
+
+// AgentReviewSession stores a complete review run.
+type AgentReviewSession struct {
+	ID          string             `json:"id" db:"id"`
+	ProjectID   string             `json:"project_id" db:"project_id"`
+	ReviewScope string             `json:"review_scope" db:"review_scope"` // blueprint|chapter|full
+	TargetID    string             `json:"target_id" db:"target_id"`       // blueprint_id or chapter_id
+	Status      string             `json:"status" db:"status"`             // running|completed|failed
+	Rounds      int                `json:"rounds" db:"rounds"`
+	Messages    []AgentMessage     `json:"messages" db:"-"`
+	Issues      []AgentReviewIssue `json:"issues" db:"-"`
+	Consensus   string             `json:"consensus" db:"consensus"` // final summary
+	CreatedAt   time.Time          `json:"created_at" db:"created_at"`
+	CompletedAt *time.Time         `json:"completed_at" db:"completed_at"`
+}
+
+// AgentReviewRequest is the HTTP request body.
+type AgentReviewRequest struct {
+	Scope    string `json:"scope" binding:"required"` // blueprint|chapter|full
+	TargetID string `json:"target_id"`
+	Rounds   int    `json:"rounds"` // default 3
+}

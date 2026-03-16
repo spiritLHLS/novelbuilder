@@ -58,7 +58,7 @@
 
           <div class="score-grid">
             <div class="score-item" v-for="(score, role) in qualityReport.scores" :key="role">
-              <div class="score-label">{{ roleLabel(role as string) }}</div>
+              <div class="score-label">{{ roleLabel(role as unknown as string) }}</div>
               <el-progress :percentage="(score as number) * 10" :color="scoreColor(score as number)"
                 :stroke-width="8" />
             </div>

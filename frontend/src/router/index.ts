@@ -67,6 +67,11 @@ const router = createRouter({
       name: 'quality',
       component: () => import('@/views/Quality.vue'),
     },
+    {
+      path: '/projects/:projectId/agent-review',
+      name: 'agent-review',
+      component: () => import('@/views/AgentReview.vue'),
+    },
   ],
 })
 
