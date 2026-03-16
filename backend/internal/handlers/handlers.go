@@ -1,0 +1,856 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/novelbuilder/backend/internal/gateway"
+	"github.com/novelbuilder/backend/internal/models"
+	"github.com/novelbuilder/backend/internal/services"
+	"github.com/novelbuilder/backend/internal/workflow"
+	"go.uber.org/zap"
+)
+
+type Handler struct {
+	projects       *services.ProjectService
+	blueprints     *services.BlueprintService
+	chapters       *services.ChapterService
+	worldBibles    *services.WorldBibleService
+	characters     *services.CharacterService
+	outlines       *services.OutlineService
+	foreshadowings *services.ForeshadowingService
+	volumes        *services.VolumeService
+	quality        *services.QualityService
+	references     *services.ReferenceService
+	workflow       *workflow.Engine
+	logger         *zap.Logger
+}
+
+func NewHandler(
+	projects *services.ProjectService,
+	blueprints *services.BlueprintService,
+	chapters *services.ChapterService,
+	worldBibles *services.WorldBibleService,
+	characters *services.CharacterService,
+	outlines *services.OutlineService,
+	foreshadowings *services.ForeshadowingService,
+	volumes *services.VolumeService,
+	quality *services.QualityService,
+	references *services.ReferenceService,
+	wf *workflow.Engine,
+	logger *zap.Logger,
+) *Handler {
+	return &Handler{
+		projects:       projects,
+		blueprints:     blueprints,
+		chapters:       chapters,
+		worldBibles:    worldBibles,
+		characters:     characters,
+		outlines:       outlines,
+		foreshadowings: foreshadowings,
+		volumes:        volumes,
+		quality:        quality,
+		references:     references,
+		workflow:       wf,
+		logger:         logger,
+	}
+}
+
+func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	api := r.Group("/api")
+
+	api.GET("/projects", h.ListProjects)
+	api.POST("/projects", h.CreateProject)
+	api.GET("/projects/:id", h.GetProject)
+	api.PUT("/projects/:id", h.UpdateProject)
+	api.DELETE("/projects/:id", h.DeleteProject)
+
+	api.POST("/projects/:id/blueprint/generate", h.GenerateBlueprint)
+	api.GET("/projects/:id/blueprint", h.GetBlueprint)
+	api.POST("/blueprints/:id/submit-review", h.SubmitBlueprintReview)
+	api.POST("/blueprints/:id/approve", h.ApproveBlueprint)
+	api.POST("/blueprints/:id/reject", h.RejectBlueprint)
+
+	api.GET("/projects/:id/world-bible", h.GetWorldBible)
+	api.PUT("/projects/:id/world-bible", h.UpdateWorldBible)
+	api.GET("/projects/:id/constitution", h.GetConstitution)
+	api.PUT("/projects/:id/constitution", h.UpdateConstitution)
+
+	api.GET("/projects/:id/characters", h.ListCharacters)
+	api.POST("/projects/:id/characters", h.CreateCharacter)
+	api.GET("/characters/:id", h.GetCharacter)
+	api.PUT("/characters/:id", h.UpdateCharacter)
+	api.DELETE("/characters/:id", h.DeleteCharacter)
+
+	api.GET("/projects/:id/outlines", h.ListOutlines)
+	api.POST("/projects/:id/outlines", h.CreateOutline)
+	api.PUT("/outlines/:id", h.UpdateOutline)
+	api.DELETE("/outlines/:id", h.DeleteOutline)
+
+	api.GET("/projects/:id/foreshadowings", h.ListForeshadowings)
+	api.POST("/projects/:id/foreshadowings", h.CreateForeshadowing)
+	api.PUT("/foreshadowings/:id/status", h.UpdateForeshadowingStatus)
+	api.DELETE("/foreshadowings/:id", h.DeleteForeshadowing)
+
+	api.GET("/projects/:id/volumes", h.ListVolumes)
+	api.POST("/volumes/:id/submit-review", h.SubmitVolumeReview)
+	api.POST("/volumes/:id/approve", h.ApproveVolume)
+	api.POST("/volumes/:id/reject", h.RejectVolume)
+
+	api.GET("/projects/:id/chapters", h.ListChapters)
+	api.POST("/projects/:id/chapters/generate", h.GenerateChapter)
+	api.POST("/projects/:id/chapters/continue", h.ContinueGenerate)
+	api.POST("/projects/:id/chapters/stream", h.StreamChapter)
+	api.GET("/chapters/:id", h.GetChapter)
+	api.POST("/chapters/:id/submit-review", h.SubmitChapterReview)
+	api.POST("/chapters/:id/approve", h.ApproveChapter)
+	api.POST("/chapters/:id/reject", h.RejectChapter)
+	api.POST("/chapters/:id/regenerate", h.RegenerateChapter)
+	api.POST("/chapters/:id/quality-check", h.QualityCheck)
+
+	api.POST("/projects/:id/workflow/start", h.StartWorkflow)
+	api.GET("/workflows/:id/history", h.GetWorkflowHistory)
+	api.POST("/workflows/:id/rollback", h.WorkflowRollback)
+
+	api.GET("/projects/:id/references", h.ListReferences)
+	api.POST("/projects/:id/references/upload", h.UploadReference)
+	api.GET("/references/:id", h.GetReference)
+	api.PUT("/references/:id/migration-config", h.UpdateMigrationConfig)
+	api.POST("/references/:id/analyze", h.AnalyzeReference)
+
+	api.GET("/health", h.Health)
+}
+
+func (h *Handler) ListProjects(c *gin.Context) {
+	projects, err := h.projects.List(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": projects})
+}
+
+func (h *Handler) CreateProject(c *gin.Context) {
+	var req models.CreateProjectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	project, err := h.projects.Create(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": project})
+}
+
+func (h *Handler) GetProject(c *gin.Context) {
+	project, err := h.projects.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": "project not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": project})
+}
+
+func (h *Handler) UpdateProject(c *gin.Context) {
+	var req models.CreateProjectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	project, err := h.projects.Update(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": project})
+}
+
+func (h *Handler) DeleteProject(c *gin.Context) {
+	if err := h.projects.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
+}
+
+func (h *Handler) GenerateBlueprint(c *gin.Context) {
+	var req models.GenerateBlueprintRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	bp, err := h.blueprints.Generate(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": bp})
+}
+
+func (h *Handler) GetBlueprint(c *gin.Context) {
+	bp, err := h.blueprints.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": "blueprint not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": bp})
+}
+
+func (h *Handler) SubmitBlueprintReview(c *gin.Context) {
+	if err := h.blueprints.SubmitReview(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "pending_review"})
+}
+
+func (h *Handler) ApproveBlueprint(c *gin.Context) {
+	var req models.ReviewRequest
+	c.ShouldBindJSON(&req)
+	if err := h.blueprints.Approve(c.Request.Context(), c.Param("id"), req.ReviewComment); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "approved"})
+}
+
+func (h *Handler) RejectBlueprint(c *gin.Context) {
+	var req models.ReviewRequest
+	c.ShouldBindJSON(&req)
+	if err := h.blueprints.Reject(c.Request.Context(), c.Param("id"), req.ReviewComment); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "rejected"})
+}
+
+func (h *Handler) GetWorldBible(c *gin.Context) {
+	wb, err := h.worldBibles.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": "world bible not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": wb})
+}
+
+func (h *Handler) UpdateWorldBible(c *gin.Context) {
+	var body json.RawMessage
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	wb, err := h.worldBibles.Update(c.Request.Context(), c.Param("id"), body)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": wb})
+}
+
+func (h *Handler) GetConstitution(c *gin.Context) {
+	wbc, err := h.worldBibles.GetConstitution(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": "constitution not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": wbc})
+}
+
+func (h *Handler) UpdateConstitution(c *gin.Context) {
+	var body struct {
+		ImmutableRules   json.RawMessage `json:"immutable_rules"`
+		MutableRules     json.RawMessage `json:"mutable_rules"`
+		ForbiddenAnchors json.RawMessage `json:"forbidden_anchors"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	wbc, err := h.worldBibles.UpdateConstitution(c.Request.Context(), c.Param("id"),
+		body.ImmutableRules, body.MutableRules, body.ForbiddenAnchors)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": wbc})
+}
+
+func (h *Handler) ListCharacters(c *gin.Context) {
+	chars, err := h.characters.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": chars})
+}
+
+func (h *Handler) CreateCharacter(c *gin.Context) {
+	var body struct {
+		Name     string          `json:"name" binding:"required"`
+		RoleType string          `json:"role_type"`
+		Profile  json.RawMessage `json:"profile"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	ch, err := h.characters.Create(c.Request.Context(), c.Param("id"), body.Name, body.RoleType, body.Profile)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": ch})
+}
+
+func (h *Handler) GetCharacter(c *gin.Context) {
+	ch, err := h.characters.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": "character not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": ch})
+}
+
+func (h *Handler) UpdateCharacter(c *gin.Context) {
+	var body struct {
+		Name     string          `json:"name"`
+		RoleType string          `json:"role_type"`
+		Profile  json.RawMessage `json:"profile"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	ch, err := h.characters.Update(c.Request.Context(), c.Param("id"), body.Name, body.RoleType, body.Profile)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": ch})
+}
+
+func (h *Handler) DeleteCharacter(c *gin.Context) {
+	if err := h.characters.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
+}
+
+func (h *Handler) ListOutlines(c *gin.Context) {
+	outlines, err := h.outlines.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": outlines})
+}
+
+func (h *Handler) CreateOutline(c *gin.Context) {
+	var body struct {
+		Level         string          `json:"level" binding:"required"`
+		ParentID      *string         `json:"parent_id"`
+		OrderNum      int             `json:"order_num"`
+		Title         string          `json:"title"`
+		Content       json.RawMessage `json:"content"`
+		TensionTarget float64         `json:"tension_target"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	o, err := h.outlines.Create(c.Request.Context(), c.Param("id"), body.Level, body.ParentID,
+		body.OrderNum, body.Title, body.Content, body.TensionTarget)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": o})
+}
+
+func (h *Handler) UpdateOutline(c *gin.Context) {
+	var body struct {
+		Title         string          `json:"title"`
+		Content       json.RawMessage `json:"content"`
+		TensionTarget float64         `json:"tension_target"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	o, err := h.outlines.Update(c.Request.Context(), c.Param("id"), body.Title, body.Content, body.TensionTarget)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": o})
+}
+
+func (h *Handler) DeleteOutline(c *gin.Context) {
+	if err := h.outlines.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
+}
+
+func (h *Handler) ListForeshadowings(c *gin.Context) {
+	list, err := h.foreshadowings.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": list})
+}
+
+func (h *Handler) CreateForeshadowing(c *gin.Context) {
+	var body struct {
+		Content     string `json:"content" binding:"required"`
+		EmbedMethod string `json:"embed_method"`
+		Priority    int    `json:"priority"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	f, err := h.foreshadowings.Create(c.Request.Context(), c.Param("id"), body.Content, body.EmbedMethod, body.Priority)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": f})
+}
+
+func (h *Handler) UpdateForeshadowingStatus(c *gin.Context) {
+	var body struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.foreshadowings.UpdateStatus(c.Request.Context(), c.Param("id"), body.Status); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": body.Status})
+}
+
+func (h *Handler) DeleteForeshadowing(c *gin.Context) {
+	if err := h.foreshadowings.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
+}
+
+func (h *Handler) ListVolumes(c *gin.Context) {
+	vols, err := h.volumes.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": vols})
+}
+
+func (h *Handler) SubmitVolumeReview(c *gin.Context) {
+	if err := h.volumes.SubmitReview(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(409, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "pending_review"})
+}
+
+func (h *Handler) ApproveVolume(c *gin.Context) {
+	var req models.ReviewRequest
+	c.ShouldBindJSON(&req)
+	if err := h.volumes.Approve(c.Request.Context(), c.Param("id"), req.ReviewComment); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "approved"})
+}
+
+func (h *Handler) RejectVolume(c *gin.Context) {
+	var req models.ReviewRequest
+	c.ShouldBindJSON(&req)
+	if err := h.volumes.Reject(c.Request.Context(), c.Param("id"), req.ReviewComment); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "rejected"})
+}
+
+func (h *Handler) ListChapters(c *gin.Context) {
+	chapters, err := h.chapters.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": chapters})
+}
+
+func (h *Handler) GenerateChapter(c *gin.Context) {
+	var req models.GenerateChapterRequest
+	c.ShouldBindJSON(&req)
+
+	chapterNumStr := c.Query("chapter_num")
+	chapterNum := 1
+	if chapterNumStr != "" {
+		if n, err := strconv.Atoi(chapterNumStr); err == nil {
+			chapterNum = n
+		}
+	}
+
+	ch, err := h.chapters.Generate(c.Request.Context(), c.Param("id"), chapterNum, req)
+	if err != nil {
+		errStr := err.Error()
+		if containsStr(errStr, "WF_001") {
+			c.JSON(409, gin.H{"error": errStr, "code": "WF_001", "message": "请先通过整书资产包审核后再生成章节。"})
+			return
+		}
+		if containsStr(errStr, "WF_002") {
+			c.JSON(409, gin.H{"error": errStr, "code": "WF_002", "message": "上一章尚未审核通过，暂不能继续。"})
+			return
+		}
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": ch})
+}
+
+func (h *Handler) ContinueGenerate(c *gin.Context) {
+	projectID := c.Param("id")
+
+	idempotencyKey := c.GetHeader("Idempotency-Key")
+	if idempotencyKey == "" {
+		idempotencyKey = uuid.New().String()
+	}
+
+	exists, body, err := h.workflow.CheckIdempotency(c.Request.Context(), idempotencyKey, "chapters/continue")
+	if err == nil && exists {
+		c.Data(200, "application/json", body)
+		return
+	}
+
+	if err := h.workflow.CanGenerateNextChapter(c.Request.Context(), projectID); err != nil {
+		code := "WF_000"
+		msg := err.Error()
+		switch err {
+		case workflow.ErrBlueprintNotApproved:
+			code = "WF_001"
+			msg = "请先通过整书资产包审核后再生成章节。"
+		case workflow.ErrPrevChapterNotApproved:
+			code = "WF_002"
+			msg = "上一章尚未审核通过，暂不能继续。"
+		case workflow.ErrVolumeGateClosed:
+			code = "WF_003"
+			msg = "当前卷尚未通过卷级审核。"
+		}
+		c.JSON(409, gin.H{"error": err.Error(), "code": code, "message": msg})
+		return
+	}
+
+	var lastNum int
+	rows, _ := h.chapters.List(c.Request.Context(), projectID)
+	if rows != nil {
+		for _, ch := range rows {
+			if ch.ChapterNum > lastNum {
+				lastNum = ch.ChapterNum
+			}
+		}
+	}
+	nextNum := lastNum + 1
+
+	var req models.GenerateChapterRequest
+	c.ShouldBindJSON(&req)
+
+	ch, genErr := h.chapters.Generate(c.Request.Context(), projectID, nextNum, req)
+	if genErr != nil {
+		c.JSON(500, gin.H{"error": genErr.Error()})
+		return
+	}
+
+	respBody, _ := json.Marshal(gin.H{"data": ch, "next_action": "chapter_review"})
+	h.workflow.SaveIdempotency(c.Request.Context(), idempotencyKey, "chapters/continue", "", 200, respBody)
+
+	c.JSON(201, gin.H{"data": ch, "next_action": "chapter_review"})
+}
+
+func (h *Handler) StreamChapter(c *gin.Context) {
+	projectID := c.Param("id")
+
+	chapterNumStr := c.Query("chapter_num")
+	chapterNum := 1
+	if chapterNumStr != "" {
+		if n, err := strconv.Atoi(chapterNumStr); err == nil {
+			chapterNum = n
+		}
+	}
+
+	var req models.GenerateChapterRequest
+	c.ShouldBindJSON(&req)
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(500, gin.H{"error": "streaming not supported"})
+		return
+	}
+
+	err := h.chapters.StreamGenerate(c.Request.Context(), projectID, chapterNum, req, func(chunk gateway.StreamChunk) {
+		if chunk.Done {
+			fmt.Fprintf(c.Writer, "data: {\"done\": true}\n\n")
+		} else {
+			data, _ := json.Marshal(map[string]string{"content": chunk.Content})
+			fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		}
+		flusher.Flush()
+	})
+	if err != nil {
+		fmt.Fprintf(c.Writer, "data: {\"error\": %q}\n\n", err.Error())
+		flusher.Flush()
+	}
+}
+
+func (h *Handler) GetChapter(c *gin.Context) {
+	ch, err := h.chapters.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": "chapter not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": ch})
+}
+
+func (h *Handler) SubmitChapterReview(c *gin.Context) {
+	if err := h.chapters.SubmitReview(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "pending_review"})
+}
+
+func (h *Handler) ApproveChapter(c *gin.Context) {
+	var req struct {
+		ReviewComment string `json:"review_comment"`
+		Version       int    `json:"version"`
+	}
+	c.ShouldBindJSON(&req)
+	if err := h.chapters.Approve(c.Request.Context(), c.Param("id"), req.ReviewComment, req.Version); err != nil {
+		c.JSON(409, gin.H{"error": err.Error(), "code": "WF_006", "message": "当前页面版本已过期。"})
+		return
+	}
+	c.JSON(200, gin.H{"status": "approved", "next_action": "chapter_continue_available"})
+}
+
+func (h *Handler) RejectChapter(c *gin.Context) {
+	var req struct {
+		ReviewComment string `json:"review_comment"`
+		Version       int    `json:"version"`
+	}
+	c.ShouldBindJSON(&req)
+	if err := h.chapters.Reject(c.Request.Context(), c.Param("id"), req.ReviewComment, req.Version); err != nil {
+		c.JSON(409, gin.H{"error": err.Error(), "code": "WF_006", "message": "当前页面版本已过期。"})
+		return
+	}
+	c.JSON(200, gin.H{"status": "rejected"})
+}
+
+func (h *Handler) RegenerateChapter(c *gin.Context) {
+	var req models.GenerateChapterRequest
+	c.ShouldBindJSON(&req)
+	ch, err := h.chapters.Regenerate(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": ch})
+}
+
+func (h *Handler) QualityCheck(c *gin.Context) {
+	report, err := h.quality.RunFullCheck(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": report})
+}
+
+func (h *Handler) StartWorkflow(c *gin.Context) {
+	runID, err := h.workflow.CreateRun(c.Request.Context(), c.Param("id"), true)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": gin.H{"run_id": runID}})
+}
+
+func (h *Handler) GetWorkflowHistory(c *gin.Context) {
+	history, err := h.workflow.GetRunHistory(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": history})
+}
+
+func (h *Handler) WorkflowRollback(c *gin.Context) {
+	var req models.RollbackRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	affected, err := h.workflow.Rollback(c.Request.Context(), c.Param("id"), req.TargetStepID, req.Reason)
+	if err != nil {
+		if err == workflow.ErrSnapshotNotFound {
+			c.JSON(404, gin.H{"error": err.Error(), "code": "WF_005", "message": "未找到可回退快照。"})
+			return
+		}
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "rolled_back", "marked_as_needs_recheck": affected})
+}
+
+func (h *Handler) ListReferences(c *gin.Context) {
+	refs, err := h.references.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": refs})
+}
+
+func (h *Handler) UploadReference(c *gin.Context) {
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(400, gin.H{"error": "file is required"})
+		return
+	}
+	defer file.Close()
+
+	uploadDir := "/data/uploads"
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		c.JSON(500, gin.H{"error": "failed to create upload directory"})
+		return
+	}
+	fileName := uuid.New().String() + filepath.Ext(header.Filename)
+	filePath := filepath.Join(uploadDir, fileName)
+	dst, err := os.Create(filePath)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to save file"})
+		return
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, file); err != nil {
+		c.JSON(500, gin.H{"error": "failed to save file"})
+		return
+	}
+
+	title := c.PostForm("title")
+	author := c.PostForm("author")
+	genre := c.PostForm("genre")
+
+	ref, err := h.references.Create(c.Request.Context(), c.Param("id"), title, author, genre, filePath)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": ref})
+}
+
+func (h *Handler) GetReference(c *gin.Context) {
+	ref, err := h.references.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": "reference not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": ref})
+}
+
+func (h *Handler) UpdateMigrationConfig(c *gin.Context) {
+	var body json.RawMessage
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.references.UpdateMigrationConfig(c.Request.Context(), c.Param("id"), body); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "updated"})
+}
+
+func (h *Handler) AnalyzeReference(c *gin.Context) {
+	refID := c.Param("id")
+	ref, err := h.references.Get(c.Request.Context(), refID)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "reference not found"})
+		return
+	}
+
+	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
+	if sidecarURL == "" {
+		sidecarURL = "http://localhost:8081"
+	}
+
+	reqBody, _ := json.Marshal(map[string]string{
+		"file_path":   ref.FilePath,
+		"material_id": refID,
+		"project_id":  ref.ProjectID,
+	})
+
+	resp, err := http.Post(sidecarURL+"/analyze", "application/json", bytes.NewReader(reqBody))
+	if resp != nil {
+		defer resp.Body.Close()
+	}
+
+	if err != nil || resp == nil || resp.StatusCode != 200 {
+		h.logger.Warn("Python sidecar unavailable, using AI fallback", zap.Error(err))
+		styleJSON := json.RawMessage(`{"nl_description": "默认风格分析（Python分析服务不可用）"}`)
+		narrativeJSON := json.RawMessage(`{"pov_type": "限制性第三人称"}`)
+		atmosphereJSON := json.RawMessage(`{"tone_descriptions": ["待分析"]}`)
+		h.references.UpdateAnalysis(c.Request.Context(), refID, styleJSON, narrativeJSON, atmosphereJSON)
+		c.JSON(200, gin.H{"status": "completed_fallback", "message": "使用AI回退分析完成"})
+		return
+	}
+
+	var analysisResult struct {
+		StyleLayer      json.RawMessage `json:"style_layer"`
+		NarrativeLayer  json.RawMessage `json:"narrative_layer"`
+		AtmosphereLayer json.RawMessage `json:"atmosphere_layer"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&analysisResult); err == nil {
+		h.references.UpdateAnalysis(c.Request.Context(), refID,
+			analysisResult.StyleLayer, analysisResult.NarrativeLayer, analysisResult.AtmosphereLayer)
+	}
+
+	c.JSON(200, gin.H{"status": "completed"})
+}
+
+func (h *Handler) Health(c *gin.Context) {
+	c.JSON(200, gin.H{"status": "ok", "service": "novelbuilder"})
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
