@@ -369,6 +369,9 @@ func (s *BlueprintService) Get(ctx context.Context, projectID string) (*models.B
 		projectID).Scan(&bp.ID, &bp.ProjectID, &bp.WorldBibleRef, &bp.MasterOutline, &bp.RelationGraph,
 		&bp.GlobalTimeline, &bp.Status, &bp.Version, &bp.ReviewComment, &bp.CreatedAt, &bp.UpdatedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return &bp, nil

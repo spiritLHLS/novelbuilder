@@ -132,7 +132,13 @@ func (s *CharacterService) Get(ctx context.Context, id string) (*models.Characte
 		 FROM characters WHERE id = $1`, id).Scan(
 		&c.ID, &c.ProjectID, &c.Name, &c.RoleType, &c.Profile,
 		&c.CurrentState, &c.VoiceCollection, &c.CreatedAt, &c.UpdatedAt)
-	return &c, err
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &c, nil
 }
 
 func (s *CharacterService) Create(ctx context.Context, projectID string, name, roleType string, profile json.RawMessage) (*models.Character, error) {
@@ -759,7 +765,7 @@ func (s *ReferenceService) List(ctx context.Context, projectID string) ([]models
 		}
 		refs = append(refs, ref)
 	}
-	return refs, nil
+	return refs, rows.Err()
 }
 
 func (s *ReferenceService) UpdateMigrationConfig(ctx context.Context, id string, config json.RawMessage) error {

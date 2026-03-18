@@ -6,6 +6,7 @@ export interface Project {
   id: string
   title: string
   genre: string
+  description: string
   target_words: number
   style_description: string
   status: string

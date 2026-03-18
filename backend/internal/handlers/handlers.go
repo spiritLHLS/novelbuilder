@@ -332,6 +332,10 @@ func (h *Handler) GenerateBlueprint(c *gin.Context) {
 func (h *Handler) GetBlueprint(c *gin.Context) {
 	bp, err := h.blueprints.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if bp == nil {
 		c.JSON(404, gin.H{"error": "blueprint not found"})
 		return
 	}
@@ -455,6 +459,10 @@ func (h *Handler) CreateCharacter(c *gin.Context) {
 func (h *Handler) GetCharacter(c *gin.Context) {
 	ch, err := h.characters.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if ch == nil {
 		c.JSON(404, gin.H{"error": "character not found"})
 		return
 	}
