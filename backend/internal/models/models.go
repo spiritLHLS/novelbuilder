@@ -585,26 +585,26 @@ type CreateTaskRequest struct {
 // ============================================================
 
 type StoryResource struct {
-	ID          string          `json:"id"`
-	ProjectID   string          `json:"project_id"`
-	Name        string          `json:"name"`
-	Category    string          `json:"category"` // item|currency|skill|weapon|misc
-	Quantity    float64         `json:"quantity"`
-	Unit        string          `json:"unit"`
-	Description string          `json:"description"`
-	Holder      string          `json:"holder"` // character name or "party"
+	ID          string           `json:"id"`
+	ProjectID   string           `json:"project_id"`
+	Name        string           `json:"name"`
+	Category    string           `json:"category"` // item|currency|skill|weapon|misc
+	Quantity    float64          `json:"quantity"`
+	Unit        string           `json:"unit"`
+	Description string           `json:"description"`
+	Holder      string           `json:"holder"` // character name or "party"
 	Changes     []ResourceChange `json:"changes,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
 }
 
 type ResourceChange struct {
-	ID         string     `json:"id"`
-	ResourceID string     `json:"resource_id"`
-	ChapterID  *string    `json:"chapter_id"`
-	Delta      float64    `json:"delta"`
-	Reason     string     `json:"reason"`
-	CreatedAt  time.Time  `json:"created_at"`
+	ID         string    `json:"id"`
+	ResourceID string    `json:"resource_id"`
+	ChapterID  *string   `json:"chapter_id"`
+	Delta      float64   `json:"delta"`
+	Reason     string    `json:"reason"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type CreateStoryResourceRequest struct {
@@ -627,17 +627,17 @@ type RecordResourceChangeRequest struct {
 // ============================================================
 
 type VocabFatigueStat struct {
-	Word              string  `json:"word"`
-	TotalCount        int     `json:"total_count"`
-	ChaptersAppeared  int     `json:"chapters_appeared"`
+	Word                string  `json:"word"`
+	TotalCount          int     `json:"total_count"`
+	ChaptersAppeared    int     `json:"chapters_appeared"`
 	FrequencyPerChapter float64 `json:"frequency_per_chapter"`
 }
 
 type VocabFatigueReport struct {
-	ProjectID  string             `json:"project_id"`
-	TopWords   []VocabFatigueStat `json:"top_words"`
-	TotalChapters int             `json:"total_chapters"`
-	AnalyzedAt time.Time          `json:"analyzed_at"`
+	ProjectID     string             `json:"project_id"`
+	TopWords      []VocabFatigueStat `json:"top_words"`
+	TotalChapters int                `json:"total_chapters"`
+	AnalyzedAt    time.Time          `json:"analyzed_at"`
 }
 
 // ============================================================
@@ -660,4 +660,3 @@ type CreateWebhookRequest struct {
 	Secret string          `json:"secret"`
 	Events json.RawMessage `json:"events"`
 }
-

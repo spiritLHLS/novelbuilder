@@ -10,6 +10,7 @@ import (
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
+
 type PromptPresetService struct {
 	db     *pgxpool.Pool
 	logger *zap.Logger

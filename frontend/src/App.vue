@@ -48,6 +48,14 @@
                 <el-icon><Connection /></el-icon>
                 <span>伏笔管理</span>
               </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/glossary`">
+                <el-icon><Collection /></el-icon>
+                <span>术语表</span>
+              </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/resources`">
+                <el-icon><Coin /></el-icon>
+                <span>资源账本</span>
+              </el-menu-item>
             </el-menu-item-group>
             <el-menu-item-group title="生成管线">
               <el-menu-item :index="`/projects/${currentProjectId}/blueprint`">
@@ -74,12 +82,20 @@
                 <el-icon><Connection /></el-icon>
                 <span>变更传播</span>
               </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/tasks`">
+                <el-icon><Timer /></el-icon>
+                <span>任务队列</span>
+              </el-menu-item>
             </el-menu-item-group>
           </template>
           <el-menu-item-group title="系统">
             <el-menu-item index="/settings/llm">
               <el-icon><Setting /></el-icon>
               <span>AI 模型配置</span>
+            </el-menu-item>
+            <el-menu-item index="/settings/prompt-presets">
+              <el-icon><DocumentCopy /></el-icon>
+              <span>提示词预设</span>
             </el-menu-item>
           </el-menu-item-group>
         </el-menu>
