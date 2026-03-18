@@ -2,10 +2,12 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
@@ -50,6 +52,9 @@ func (s *ResourceLedgerService) Get(ctx context.Context, id string) (*models.Sto
 		 FROM story_resources WHERE id = $1`, id).Scan(
 		&r.ID, &r.ProjectID, &r.Name, &r.Category,
 		&r.Quantity, &r.Unit, &r.Description, &r.Holder, &r.CreatedAt, &r.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get story_resource: %w", err)
 	}

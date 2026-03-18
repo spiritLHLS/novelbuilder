@@ -74,6 +74,9 @@ func (s *LLMProfileService) Get(ctx context.Context, id string) (*models.LLMProf
 		&p.ModelName, &p.MaxTokens, &p.Temperature, &p.IsDefault,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("get llm_profile: %w", err)
 	}
 	p.HasAPIKey = rawKey != ""

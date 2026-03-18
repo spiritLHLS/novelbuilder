@@ -348,6 +348,9 @@ func (e *Engine) GetSnapshot(ctx context.Context, runID, stepKey string) (*Snaps
 		 FROM workflow_snapshots WHERE run_id = $1 AND step_key = $2
 		 ORDER BY created_at DESC LIMIT 1`,
 		runID, stepKey).Scan(&s.StepKey, &s.Params, &s.ContextPayload, &s.OutputPayload, &s.QualityPayload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get snapshot: %w", err)
 	}

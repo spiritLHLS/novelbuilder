@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -250,6 +251,9 @@ func (s *AgentReviewService) GetSession(ctx context.Context, sessionID string) (
 		&sess.ID, &sess.ProjectID, &sess.ReviewScope, &sess.TargetID,
 		&sess.Status, &sess.Rounds, &sess.Consensus, &sess.CreatedAt, &sess.CompletedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, err
 	}
 

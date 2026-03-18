@@ -3,12 +3,14 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
@@ -233,6 +235,9 @@ func (s *TaskQueueService) Get(ctx context.Context, id string) (*models.TaskQueu
 		&t.ID, &t.ProjectID, &t.TaskType, &t.Payload, &t.Status, &t.Priority,
 		&t.Attempts, &t.MaxAttempts, &t.ErrorMessage, &t.ScheduledAt,
 		&t.StartedAt, &t.CompletedAt, &t.CreatedAt, &t.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get task: %w", err)
 	}

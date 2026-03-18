@@ -739,7 +739,13 @@ func (s *ReferenceService) Get(ctx context.Context, id string) (*models.Referenc
 		&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
 		&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
 		&ref.SampleTexts)
-	return &ref, err
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &ref, nil
 }
 
 func (s *ReferenceService) List(ctx context.Context, projectID string) ([]models.ReferenceMaterial, error) {

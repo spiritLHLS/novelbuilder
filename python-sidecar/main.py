@@ -62,6 +62,20 @@ def get_qdrant():
 # ── In-memory agent session store ─────────────────────────────────────────────
 # For production use Redis; this suffices for single-container deployment.
 _agent_sessions: dict[str, dict] = {}
+_SESSION_TTL_SECONDS = 3600  # 1 hour
+
+
+def _cleanup_expired_sessions() -> None:
+    """Remove completed/failed sessions older than TTL to prevent memory leak."""
+    import time
+    now = time.time()
+    to_delete = [
+        sid for sid, s in list(_agent_sessions.items())
+        if s.get("status") in ("done", "error")
+        and now - s.get("_created_at", now) > _SESSION_TTL_SECONDS
+    ]
+    for sid in to_delete:
+        _agent_sessions.pop(sid, None)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -235,12 +249,15 @@ async def agent_run(req: AgentRunRequest, background_tasks: BackgroundTasks):
     Start a LangGraph agent session asynchronously.
     Returns immediately with session_id; client polls /agent/status/{sid}.
     """
+    import time
+    _cleanup_expired_sessions()
     session_id = str(uuid.uuid4())
     _agent_sessions[session_id] = {
         "status": "running",
         "progress": [],
         "result": None,
         "error": None,
+        "_created_at": time.time(),
     }
 
     async def _run():

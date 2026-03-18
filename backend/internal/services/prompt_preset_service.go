@@ -2,10 +2,12 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
@@ -66,6 +68,9 @@ func (s *PromptPresetService) Get(ctx context.Context, id string) (*models.Promp
 		&p.ID, &p.ProjectID, &p.Name, &p.Description, &p.Category,
 		&p.Content, &p.Variables, &p.IsGlobal, &p.SortOrder,
 		&p.CreatedAt, &p.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get prompt_preset: %w", err)
 	}

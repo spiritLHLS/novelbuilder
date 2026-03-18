@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -938,6 +939,10 @@ func (h *Handler) UploadReference(c *gin.Context) {
 func (h *Handler) GetReference(c *gin.Context) {
 	ref, err := h.references.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if ref == nil {
 		c.JSON(404, gin.H{"error": "reference not found"})
 		return
 	}
@@ -961,6 +966,10 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 	refID := c.Param("id")
 	ref, err := h.references.Get(c.Request.Context(), refID)
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if ref == nil {
 		c.JSON(404, gin.H{"error": "reference not found"})
 		return
 	}
@@ -982,7 +991,7 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := analyzeHTTPClient.Do(httpReq)
 	if resp != nil {
 		defer resp.Body.Close()
 	}
@@ -1111,7 +1120,8 @@ func (h *Handler) StreamAgentReview(c *gin.Context) {
 		c.Writer.Flush()
 	})
 	if err != nil {
-		fmt.Fprintf(c.Writer, "data: {\"error\":\"%s\"}\n\n", err.Error())
+		errData, _ := json.Marshal(map[string]string{"error": err.Error()})
+		fmt.Fprintf(c.Writer, "data: %s\n\n", errData)
 		c.Writer.Flush()
 		return
 	}
@@ -1123,6 +1133,10 @@ func (h *Handler) GetAgentReview(c *gin.Context) {
 	sessionID := c.Param("id")
 	session, err := h.agentReview.GetSession(c.Request.Context(), sessionID)
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if session == nil {
 		c.JSON(404, gin.H{"error": "session not found"})
 		return
 	}
@@ -1295,11 +1309,19 @@ func (h *Handler) GetWorkflowDiff(c *gin.Context) {
 
 	from, err := h.workflow.GetSnapshot(c.Request.Context(), runID, fromStep)
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if from == nil {
 		c.JSON(404, gin.H{"error": fmt.Sprintf("snapshot not found for step '%s'", fromStep)})
 		return
 	}
 	to, err := h.workflow.GetSnapshot(c.Request.Context(), runID, toStep)
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if to == nil {
 		c.JSON(404, gin.H{"error": fmt.Sprintf("snapshot not found for step '%s'", toStep)})
 		return
 	}
@@ -1315,6 +1337,10 @@ func containsStr(s, sub string) bool {
 	}
 	return false
 }
+
+// analyzeHTTPClient is used exclusively by AnalyzeReference to call the Python sidecar.
+// A 120-second timeout accommodates large PDF/EPUB analysis while preventing hangs.
+var analyzeHTTPClient = &http.Client{Timeout: 120 * time.Second}
 
 // ---- LLM Profile Handlers ----
 
@@ -1347,6 +1373,10 @@ func (h *Handler) CreateLLMProfile(c *gin.Context) {
 func (h *Handler) GetLLMProfile(c *gin.Context) {
 	profile, err := h.llmProfiles.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if profile == nil {
 		c.JSON(404, gin.H{"error": "profile not found"})
 		return
 	}
@@ -1430,7 +1460,11 @@ func (h *Handler) CreatePromptPreset(c *gin.Context) {
 func (h *Handler) GetPromptPreset(c *gin.Context) {
 	preset, err := h.promptPresets.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if preset == nil {
+		c.JSON(404, gin.H{"error": "prompt preset not found"})
 		return
 	}
 	c.JSON(200, gin.H{"data": preset})
@@ -1523,7 +1557,11 @@ func (h *Handler) EnqueueTask(c *gin.Context) {
 func (h *Handler) GetTask(c *gin.Context) {
 	task, err := h.taskQueue.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if task == nil {
+		c.JSON(404, gin.H{"error": "task not found"})
 		return
 	}
 	c.JSON(200, gin.H{"data": task})
@@ -1575,7 +1613,11 @@ func (h *Handler) CreateResource(c *gin.Context) {
 func (h *Handler) GetResource(c *gin.Context) {
 	resource, err := h.resourceLedger.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if resource == nil {
+		c.JSON(404, gin.H{"error": "resource not found"})
 		return
 	}
 	c.JSON(200, gin.H{"data": resource})
