@@ -97,6 +97,10 @@
               <el-icon><DocumentCopy /></el-icon>
               <span>提示词预设</span>
             </el-menu-item>
+            <el-menu-item index="/settings/system">
+              <el-icon><Tools /></el-icon>
+              <span>系统设置</span>
+            </el-menu-item>
           </el-menu-item-group>
         </el-menu>
       </el-aside>

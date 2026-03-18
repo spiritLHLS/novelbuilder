@@ -2,144 +2,102 @@ package config
 
 import (
 	"os"
-	"strings"
-
-	"github.com/spf13/viper"
-	"go.uber.org/zap"
+	"strconv"
 )
 
+// Config holds only the infrastructure parameters that must be known before
+// the database is available. All application-level settings (AI model config,
+// quality thresholds, encryption key, etc.) are stored in the system_settings
+// table and managed through the frontend UI.
 type Config struct {
-	Server        ServerConfig        `mapstructure:"server"`
-	Database      DatabaseConfig      `mapstructure:"database"`
-	Redis         RedisConfig         `mapstructure:"redis"`
-	PythonSidecar PythonSidecarConfig `mapstructure:"python_sidecar"`
-	AIGateway     AIGatewayConfig     `mapstructure:"ai_gateway"`
-	Quality       QualityConfig       `mapstructure:"quality"`
-	Workflow      WorkflowConfig      `mapstructure:"workflow"`
-	Security      SecurityConfig      `mapstructure:"security"`
-	TaskQueue     TaskQueueConfig     `mapstructure:"task_queue"`
+	Server        ServerConfig
+	Database      DatabaseConfig
+	Redis         RedisConfig
+	PythonSidecar PythonSidecarConfig
+	TaskQueue     TaskQueueConfig
 }
 
 type ServerConfig struct {
-	Host string `mapstructure:"host"`
-	Port int    `mapstructure:"port"`
-	Mode string `mapstructure:"mode"`
+	Host string
+	Port int
+	Mode string
 }
 
 type DatabaseConfig struct {
-	Host         string `mapstructure:"host"`
-	Port         int    `mapstructure:"port"`
-	User         string `mapstructure:"user"`
-	Password     string `mapstructure:"password"`
-	DBName       string `mapstructure:"dbname"`
-	SSLMode      string `mapstructure:"sslmode"`
-	MaxOpenConns int    `mapstructure:"max_open_conns"`
-	MaxIdleConns int    `mapstructure:"max_idle_conns"`
+	Host         string
+	Port         int
+	User         string
+	Password     string
+	DBName       string
+	SSLMode      string
+	MaxOpenConns int
+	MaxIdleConns int
 }
 
 type RedisConfig struct {
-	Addr     string `mapstructure:"addr"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
+	Addr     string
+	Password string
+	DB       int
 }
 
 type PythonSidecarConfig struct {
-	URL     string `mapstructure:"url"`
-	Timeout int    `mapstructure:"timeout"`
-}
-
-type AIGatewayConfig struct {
-	DefaultModel string                   `mapstructure:"default_model"`
-	Models       map[string]AIModelConfig `mapstructure:"models"`
-	TaskRouting  map[string]string        `mapstructure:"task_routing"`
-}
-
-type AIModelConfig struct {
-	Provider  string `mapstructure:"provider"`
-	APIKey    string `mapstructure:"api_key"`
-	Model     string `mapstructure:"model"`
-	BaseURL   string `mapstructure:"base_url"`
-	MaxTokens int    `mapstructure:"max_tokens"`
-}
-
-type QualityConfig struct {
-	AIScoreThreshold     float64 `mapstructure:"ai_score_threshold"`
-	OriginalityThreshold float64 `mapstructure:"originality_threshold"`
-	MinRewardDensity     float64 `mapstructure:"min_reward_density"`
-	BurstinessTargetCV   float64 `mapstructure:"burstiness_target_cv"`
-}
-
-type WorkflowConfig struct {
-	StrictReview bool `mapstructure:"strict_review"`
-}
-
-type SecurityConfig struct {
-	EncryptionKey string `mapstructure:"encryption_key"`
+	URL     string
+	Timeout int
 }
 
 type TaskQueueConfig struct {
-	Workers    int `mapstructure:"workers"`
-	MaxRetries int `mapstructure:"max_retries"`
+	Workers    int
+	MaxRetries int
 }
 
-func Load(logger *zap.Logger) (*Config, error) {
-	configPath := os.Getenv("CONFIG_PATH")
-	if configPath == "" {
-		configPath = "../configs"
+func envStr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
+	return def
+}
 
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath(configPath)
-	viper.AddConfigPath("./configs")
-	viper.AddConfigPath(".")
-
-	if err := viper.ReadInConfig(); err != nil {
-		logger.Warn("Config file not found, using defaults", zap.Error(err))
-	}
-
-	var cfg Config
-	if err := viper.Unmarshal(&cfg); err != nil {
-		return nil, err
-	}
-
-	// Resolve encryption key from environment
-	if k := cfg.Security.EncryptionKey; strings.HasPrefix(k, "${") && strings.HasSuffix(k, "}") {
-		envVar := strings.TrimSuffix(strings.TrimPrefix(k, "${"), "}")
-		cfg.Security.EncryptionKey = os.Getenv(envVar)
-	}
-	if cfg.Security.EncryptionKey == "" {
-		cfg.Security.EncryptionKey = os.Getenv("ENCRYPTION_KEY")
-	}
-
-	// Resolve environment variables in API keys
-	for name, model := range cfg.AIGateway.Models {
-		if strings.HasPrefix(model.APIKey, "${") && strings.HasSuffix(model.APIKey, "}") {
-			envVar := strings.TrimSuffix(strings.TrimPrefix(model.APIKey, "${"), "}")
-			model.APIKey = os.Getenv(envVar)
-			cfg.AIGateway.Models[name] = model
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
 		}
 	}
+	return def
+}
 
-	// Apply defaults
-	if cfg.Server.Port == 0 {
-		cfg.Server.Port = 8080
+// Load reads configuration exclusively from environment variables with
+// safe defaults that match the bundled single-container setup.
+// No config files are read; run `docker run -e DB_HOST=... novelbuilder` to override.
+func Load() *Config {
+	return &Config{
+		Server: ServerConfig{
+			Host: envStr("SERVER_HOST", "0.0.0.0"),
+			Port: envInt("SERVER_PORT", 8080),
+			Mode: envStr("SERVER_MODE", "release"),
+		},
+		Database: DatabaseConfig{
+			Host:         envStr("DB_HOST", "127.0.0.1"),
+			Port:         envInt("DB_PORT", 5432),
+			User:         envStr("DB_USER", "novelbuilder"),
+			Password:     envStr("DB_PASSWORD", "novelbuilder"),
+			DBName:       envStr("DB_NAME", "novelbuilder"),
+			SSLMode:      envStr("DB_SSLMODE", "disable"),
+			MaxOpenConns: envInt("DB_MAX_OPEN_CONNS", 25),
+			MaxIdleConns: envInt("DB_MAX_IDLE_CONNS", 5),
+		},
+		Redis: RedisConfig{
+			Addr:     envStr("REDIS_ADDR", "127.0.0.1:6379"),
+			Password: envStr("REDIS_PASSWORD", ""),
+			DB:       envInt("REDIS_DB", 0),
+		},
+		PythonSidecar: PythonSidecarConfig{
+			URL:     envStr("SIDECAR_URL", "http://127.0.0.1:8081"),
+			Timeout: envInt("SIDECAR_TIMEOUT", 600),
+		},
+		TaskQueue: TaskQueueConfig{
+			Workers:    envInt("TASK_WORKERS", 4),
+			MaxRetries: envInt("TASK_MAX_RETRIES", 3),
+		},
 	}
-	if cfg.Database.Port == 0 {
-		cfg.Database.Port = 5432
-	}
-	if cfg.Database.MaxOpenConns == 0 {
-		cfg.Database.MaxOpenConns = 25
-	}
-	if cfg.Quality.BurstinessTargetCV == 0 {
-		cfg.Quality.BurstinessTargetCV = 0.8
-	}
-	if cfg.TaskQueue.Workers == 0 {
-		cfg.TaskQueue.Workers = 4
-	}
-	if cfg.TaskQueue.MaxRetries == 0 {
-		cfg.TaskQueue.MaxRetries = 3
-	}
-
-	return &cfg, nil
 }

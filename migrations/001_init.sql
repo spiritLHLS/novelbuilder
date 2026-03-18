@@ -591,6 +591,20 @@ CREATE TABLE story_resources (
 
 CREATE INDEX idx_story_resources_project ON story_resources(project_id);
 
+-- ============================================================
+-- System Settings (replaces all config-file / env-var driven config)
+-- ============================================================
+
+CREATE TABLE system_settings (
+    key        VARCHAR(100) PRIMARY KEY,
+    value      TEXT         NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================
+-- Story Resource Ledger
+-- ============================================================
+
 CREATE TABLE story_resource_changes (
     id          UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
     resource_id UUID          NOT NULL REFERENCES story_resources(id) ON DELETE CASCADE,

@@ -388,3 +388,15 @@ export const vectorApi = {
     score_threshold?: number
   }) => api.post(`/projects/${projectId}/vector/search`, data),
 }
+
+// ── System Settings ──────────────────────────────────────────────────────────
+// Manages app-level key-value settings stored in the system_settings table.
+// encryption_key is write-protected (auto-generated on first boot).
+export const systemSettingsApi = {
+  /** Get all non-sensitive settings as { key: value } map. */
+  getAll: () => api.get('/settings'),
+  /** Upsert a single setting. */
+  set: (key: string, value: string) => api.put(`/settings/${key}`, { value }),
+  /** Delete a setting (resets it to its application default). */
+  delete: (key: string) => api.delete(`/settings/${key}`),
+}

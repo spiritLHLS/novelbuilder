@@ -152,13 +152,19 @@ novelbuilder/
 docker build -t novelbuilder .
 docker run -d \
   -p 8080:8080 \
-  -e DEEPSEEK_API_KEY=sk-xxx \
-  -e ENCRYPTION_KEY=your32bytekey0000000000000000000 \
-  -v novelbuilder-data:/var/lib/novelbuilder \
+  -v novelbuilder-data:/var/lib/postgresql/data \
   novelbuilder
 ```
 
-打开 http://localhost:8080
+打开 http://localhost:8080，进入 **设置 → AI 模型配置** 添加 LLM Profile（填写 API Key），
+再进入 **设置 → 系统设置** 调整质量阈值等参数。无需任何环境变量。
+
+> **加密密钥** 由系统在首次启动时自动生成并存入数据库，无需手动指定 `ENCRYPTION_KEY`。
+> **AI API Key** 通过前端 Settings → AI 模型配置 页面配置，加密存储在数据库中。
+>
+> 如需覆盖基础设施参数（自建 PG/Redis 等），可传入以下可选环境变量：
+> `DB_HOST` `DB_PORT` `DB_USER` `DB_PASSWORD` `DB_NAME`
+> `REDIS_ADDR` `SIDECAR_URL` `SERVER_PORT`
 
 ## API 端点（新增）
 

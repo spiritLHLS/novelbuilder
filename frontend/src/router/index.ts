@@ -98,6 +98,11 @@ const router = createRouter({
       component: () => import('@/views/LLMSettings.vue'),
     },
     {
+      path: '/settings/system',
+      name: 'system-settings',
+      component: () => import('@/views/SystemSettings.vue'),
+    },
+    {
       path: '/projects/:projectId/glossary',
       name: 'glossary',
       component: () => import('@/views/Glossary.vue'),

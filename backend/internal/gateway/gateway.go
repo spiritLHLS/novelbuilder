@@ -7,7 +7,6 @@ import (
 	"io"
 
 	anthropic "github.com/liushuangls/go-anthropic/v2"
-	"github.com/novelbuilder/backend/internal/config"
 	"github.com/novelbuilder/backend/internal/models"
 	openai "github.com/sashabaranov/go-openai"
 	"go.uber.org/zap"
@@ -19,9 +18,10 @@ type ProfileResolver interface {
 	GetDefault(ctx context.Context) (*models.LLMProfileFull, error)
 }
 
+// AIGateway routes all AI calls through the DB-configured default LLM profile.
+// There is no config-file fallback; all model configuration lives in the database
+// and is managed through the frontend Settings → AI 模型配置 page.
 type AIGateway struct {
-	cfg      config.AIGatewayConfig
-	clients  map[string]interface{}
 	profiles ProfileResolver
 	logger   *zap.Logger
 }
@@ -62,33 +62,11 @@ type resolvedModel struct {
 	ProfileName string
 }
 
-func NewAIGateway(cfg config.AIGatewayConfig, profiles ProfileResolver, logger *zap.Logger) *AIGateway {
-	gw := &AIGateway{
-		cfg:      cfg,
-		clients:  make(map[string]interface{}),
+func NewAIGateway(profiles ProfileResolver, logger *zap.Logger) *AIGateway {
+	return &AIGateway{
 		profiles: profiles,
 		logger:   logger,
 	}
-	// Pre-build clients for config-file-defined models (fallback)
-	for name, modelCfg := range cfg.Models {
-		switch modelCfg.Provider {
-		case "openai":
-			clientCfg := openai.DefaultConfig(modelCfg.APIKey)
-			if modelCfg.BaseURL != "" {
-				clientCfg.BaseURL = modelCfg.BaseURL
-			}
-			gw.clients[name] = openai.NewClientWithConfig(clientCfg)
-		case "anthropic":
-			gw.clients[name] = anthropic.NewClient(modelCfg.APIKey)
-		default: // deepseek, openai_compatible, etc.
-			clientCfg := openai.DefaultConfig(modelCfg.APIKey)
-			if modelCfg.BaseURL != "" {
-				clientCfg.BaseURL = modelCfg.BaseURL
-			}
-			gw.clients[name] = openai.NewClientWithConfig(clientCfg)
-		}
-	}
-	return gw
 }
 
 // buildClientForProfile creates an API client for the given profile on-demand.
@@ -105,79 +83,34 @@ func buildClientForProfile(p *models.LLMProfileFull) interface{} {
 	}
 }
 
-// resolveModel returns the model parameters to use for a request.
-// Priority: DB default profile > config task_routing > config default_model.
+// resolveModel returns the model parameters from the DB default profile.
+// Returns a clear error if no default profile has been configured yet.
 func (gw *AIGateway) resolveModel(ctx context.Context, req ChatRequest) (resolvedModel, interface{}, error) {
-	// 1. Try DB-configured default profile (highest priority)
-	if gw.profiles != nil {
-		profile, err := gw.profiles.GetDefault(ctx)
-		if err == nil && profile != nil {
-			resolved := resolvedModel{
-				Provider:    profile.Provider,
-				APIKey:      profile.APIKey,
-				ModelID:     profile.ModelName,
-				BaseURL:     profile.BaseURL,
-				MaxTokens:   profile.MaxTokens,
-				Temperature: profile.Temperature,
-				ProfileName: profile.Name,
-			}
-			if req.MaxTokens > 0 {
-				resolved.MaxTokens = req.MaxTokens
-			}
-			if req.Temperature > 0 {
-				resolved.Temperature = req.Temperature
-			}
-			return resolved, buildClientForProfile(profile), nil
-		}
+	profile, err := gw.profiles.GetDefault(ctx)
+	if err != nil {
+		return resolvedModel{}, nil, fmt.Errorf("fetch default LLM profile: %w", err)
 	}
-
-	// 2. Fall back to config-file model (by name routing or default)
-	modelName := req.ModelName
-	if modelName == "" {
-		task := req.Task
-		if task == "" {
-			task = req.TaskType
-		}
-		if routed, ok := gw.cfg.TaskRouting[task]; ok {
-			modelName = routed
-		} else {
-			modelName = gw.cfg.DefaultModel
-		}
-	}
-
-	if modelName == "" {
-		return resolvedModel{}, nil, fmt.Errorf("no AI model configured: add a profile in Settings or set default_model in config")
-	}
-
-	modelCfg, ok := gw.cfg.Models[modelName]
-	if !ok {
-		return resolvedModel{}, nil, fmt.Errorf("model %q not found in config", modelName)
-	}
-
-	client, ok := gw.clients[modelName]
-	if !ok {
-		return resolvedModel{}, nil, fmt.Errorf("no client for model %q", modelName)
-	}
-
-	maxTokens := req.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = modelCfg.MaxTokens
-	}
-	temp := req.Temperature
-	if temp == 0 {
-		temp = 0.7
+	if profile == nil {
+		return resolvedModel{}, nil, fmt.Errorf(
+			"no default AI model configured — please add a profile in Settings → AI 模型配置 and mark it as default")
 	}
 
 	resolved := resolvedModel{
-		Provider:    modelCfg.Provider,
-		APIKey:      modelCfg.APIKey,
-		ModelID:     modelCfg.Model,
-		BaseURL:     modelCfg.BaseURL,
-		MaxTokens:   maxTokens,
-		Temperature: temp,
-		ProfileName: modelName,
+		Provider:    profile.Provider,
+		APIKey:      profile.APIKey,
+		ModelID:     profile.ModelName,
+		BaseURL:     profile.BaseURL,
+		MaxTokens:   profile.MaxTokens,
+		Temperature: profile.Temperature,
+		ProfileName: profile.Name,
 	}
-	return resolved, client, nil
+	if req.MaxTokens > 0 {
+		resolved.MaxTokens = req.MaxTokens
+	}
+	if req.Temperature > 0 {
+		resolved.Temperature = req.Temperature
+	}
+	return resolved, buildClientForProfile(profile), nil
 }
 
 func (gw *AIGateway) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {

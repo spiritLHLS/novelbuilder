@@ -26,11 +26,8 @@ func main() {
 	logger, _ := zap.NewProduction()
 	defer logger.Sync()
 
-	// Load config
-	cfg, err := config.Load(logger)
-	if err != nil {
-		logger.Fatal("failed to load config", zap.Error(err))
-	}
+	// Load infrastructure config (env-vars only, no config files)
+	cfg := config.Load()
 
 	// Set Gin mode
 	if cfg.Server.Mode == "release" {
@@ -51,9 +48,18 @@ func main() {
 	}
 	defer rdb.Close()
 
-	// Initialize AI Gateway (DB profiles take priority over config-file models)
-	llmProfileService := services.NewLLMProfileService(db, cfg.Security.EncryptionKey, logger)
-	aiGateway := gateway.NewAIGateway(cfg.AIGateway, llmProfileService, logger)
+	// Bootstrap system settings: auto-generate encryption key on first run.
+	// No ENCRYPTION_KEY env var is needed; the key is stored in system_settings.
+	sysSettings := services.NewSystemSettingsService(db, logger)
+	encryptionKey, err := sysSettings.BootstrapEncryptionKey(context.Background())
+	if err != nil {
+		logger.Fatal("failed to bootstrap encryption key", zap.Error(err))
+	}
+
+	// All AI model config is stored in the database (llm_profiles table).
+	// The frontend Settings → AI 模型配置 page manages these profiles.
+	llmProfileService := services.NewLLMProfileService(db, encryptionKey, logger)
+	aiGateway := gateway.NewAIGateway(llmProfileService, logger)
 
 	// Initialize Workflow Engine
 	wfEngine := workflow.NewEngine(db, logger)
@@ -111,6 +117,7 @@ func main() {
 		resourceLedgerService,
 		webhookService,
 		sidecarService,
+		sysSettings,
 		logger,
 	)
 

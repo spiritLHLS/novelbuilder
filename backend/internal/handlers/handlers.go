@@ -42,6 +42,7 @@ type Handler struct {
 	resourceLedger *services.ResourceLedgerService
 	webhooks       *services.WebhookService
 	sidecar        *services.SidecarService
+	systemSettings *services.SystemSettingsService
 	logger         *zap.Logger
 }
 
@@ -68,6 +69,7 @@ func NewHandler(
 	resourceLedger *services.ResourceLedgerService,
 	webhooks *services.WebhookService,
 	sidecar *services.SidecarService,
+	systemSettings *services.SystemSettingsService,
 	logger *zap.Logger,
 ) *Handler {
 	return &Handler{
@@ -93,6 +95,7 @@ func NewHandler(
 		resourceLedger: resourceLedger,
 		webhooks:       webhooks,
 		sidecar:        sidecar,
+		systemSettings: systemSettings,
 		logger:         logger,
 	}
 }
@@ -182,6 +185,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PUT("/llm-profiles/:id", h.UpdateLLMProfile)
 	api.DELETE("/llm-profiles/:id", h.DeleteLLMProfile)
 	api.POST("/llm-profiles/:id/set-default", h.SetDefaultLLMProfile)
+
+	// System Settings (replaces config files and env vars for app-level config)
+	api.GET("/settings", h.GetSystemSettings)
+	api.PUT("/settings/:key", h.SetSystemSetting)
+	api.DELETE("/settings/:key", h.DeleteSystemSetting)
 
 	api.GET("/health", h.Health)
 
@@ -1098,6 +1106,42 @@ func (h *Handler) ListAgentReviews(c *gin.Context) {
 
 func (h *Handler) Health(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok", "service": "novelbuilder"})
+}
+
+// ---- System Settings Handlers ----
+
+func (h *Handler) GetSystemSettings(c *gin.Context) {
+	settings, err := h.systemSettings.GetAll(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": settings})
+}
+
+func (h *Handler) SetSystemSetting(c *gin.Context) {
+	key := c.Param("key")
+	var body struct {
+		Value string `json:"value" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.systemSettings.Set(c.Request.Context(), key, body.Value); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"key": key, "value": body.Value})
+}
+
+func (h *Handler) DeleteSystemSetting(c *gin.Context) {
+	key := c.Param("key")
+	if err := h.systemSettings.Delete(c.Request.Context(), key); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
 }
 
 // ---- Change Propagation Handlers ----
