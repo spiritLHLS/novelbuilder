@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -282,6 +283,10 @@ func (h *Handler) CreateProject(c *gin.Context) {
 func (h *Handler) GetProject(c *gin.Context) {
 	project, err := h.projects.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if project == nil {
 		c.JSON(404, gin.H{"error": "project not found"})
 		return
 	}
@@ -767,6 +772,10 @@ func (h *Handler) StreamChapter(c *gin.Context) {
 func (h *Handler) GetChapter(c *gin.Context) {
 	ch, err := h.chapters.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if ch == nil {
 		c.JSON(404, gin.H{"error": "chapter not found"})
 		return
 	}
@@ -991,10 +1000,11 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 		h.references.UpdateAnalysis(c.Request.Context(), refID,
 			analysisResult.StyleLayer, analysisResult.NarrativeLayer, analysisResult.AtmosphereLayer)
 
-		// Ingest text samples into the vector store (async to avoid blocking the HTTP response)
+		// Ingest text samples into the vector store (async to avoid blocking the HTTP response).
+		// Use context.Background() — the request context is cancelled once the handler returns.
 		go func() {
 			if ingestErr := h.references.IngestSamples(
-				c.Request.Context(), ref.ProjectID, refID,
+				context.Background(), ref.ProjectID, refID,
 				analysisResult.StyleSamples, analysisResult.SensorySamples,
 			); ingestErr != nil {
 				h.logger.Warn("RAG ingest failed", zap.String("ref_id", refID), zap.Error(ingestErr))

@@ -490,10 +490,11 @@ func (s *QualityService) reviewAsLogicReviewer(ctx context.Context, content, pro
 		projectID).Scan(&worldContent)
 
 	// Get character profiles
-	rows, _ := s.db.Query(ctx,
-		`SELECT name, profile::text FROM characters WHERE project_id = $1`, projectID)
 	var charInfo []string
-	if rows != nil {
+	if rows, err := s.db.Query(ctx,
+		`SELECT name, profile::text FROM characters WHERE project_id = $1`, projectID); err != nil {
+		s.logger.Warn("logic reviewer: failed to load characters", zap.Error(err))
+	} else {
 		for rows.Next() {
 			var name, profile string
 			if rows.Scan(&name, &profile) == nil {

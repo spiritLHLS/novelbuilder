@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -81,6 +82,9 @@ func (s *ProjectService) Get(ctx context.Context, id string) (*models.Project, e
 		`SELECT id, title, genre, description, style_description, target_words, status, created_at, updated_at
 		 FROM projects WHERE id = $1`, id).Scan(
 		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get project: %w", err)
 	}
@@ -427,6 +431,7 @@ type ChapterService struct {
 	glossary    *GlossaryService
 	webhook     *WebhookService
 	sidecarURL  string
+	httpClient  *http.Client
 	logger      *zap.Logger
 }
 
@@ -454,6 +459,7 @@ func NewChapterService(
 		glossary:    glossary,
 		webhook:     webhook,
 		sidecarURL:  sidecarURL,
+		httpClient:  &http.Client{Timeout: 30 * time.Second},
 		logger:      logger,
 	}
 }
@@ -493,6 +499,9 @@ func (s *ChapterService) Get(ctx context.Context, id string) (*models.Chapter, e
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -666,11 +675,14 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 
 	chID := uuid.New().String()
 	genParams, _ := json.Marshal(req)
-	s.db.Exec(ctx,
+	if _, saveErr := s.db.Exec(ctx,
 		`INSERT INTO chapters (id, project_id, volume_id, chapter_num, title, content, word_count, summary,
 		 gen_params, status, version, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', 1, NOW(), NOW())`,
-		chID, projectID, volumeID, chapterNum, title, content, wordCount, summary, genParams)
+		chID, projectID, volumeID, chapterNum, title, content, wordCount, summary, genParams); saveErr != nil {
+		s.logger.Error("failed to persist streamed chapter", zap.Error(saveErr))
+		return saveErr
+	}
 
 	s.rdb.Set(ctx, fmt.Sprintf("chapter_summary:%s:%d", projectID, chapterNum), summary, 7*24*time.Hour)
 	s.rdb.Set(ctx, fmt.Sprintf("chapter_content:%s:%d", projectID, chapterNum), content, 24*time.Hour)
@@ -796,9 +808,10 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 
 	// Character states
 	sb.WriteString("=== 角色状态 ===\n")
-	charRows, _ := s.db.Query(ctx,
-		`SELECT name, role_type, profile, current_state FROM characters WHERE project_id = $1`, projectID)
-	if charRows != nil {
+	if charRows, charErr := s.db.Query(ctx,
+		`SELECT name, role_type, profile, current_state FROM characters WHERE project_id = $1`, projectID); charErr != nil {
+		s.logger.Warn("failed to load characters for prompt", zap.Error(charErr))
+	} else {
 		for charRows.Next() {
 			var name, roleType string
 			var profile, state json.RawMessage
@@ -808,7 +821,7 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 				sb.WriteString(fmt.Sprintf("  当前状态：%s\n", string(state)))
 			}
 		}
-		charRows.Close() // close immediately to return connection to pool
+		charRows.Close()
 	}
 	sb.WriteString("\n")
 
@@ -830,17 +843,18 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 
 	// Foreshadowing status
 	sb.WriteString("=== 伏笔状态 ===\n")
-	fsRows, _ := s.db.Query(ctx,
+	if fsRows, fsErr := s.db.Query(ctx,
 		`SELECT content, embed_method, status, priority FROM foreshadowings WHERE project_id = $1 ORDER BY priority DESC`,
-		projectID)
-	if fsRows != nil {
+		projectID); fsErr != nil {
+		s.logger.Warn("failed to load foreshadowings for prompt", zap.Error(fsErr))
+	} else {
 		for fsRows.Next() {
 			var content, embedMethod, status string
 			var priority int
 			fsRows.Scan(&content, &embedMethod, &status, &priority)
 			sb.WriteString(fmt.Sprintf("- [%s] P%d %s（方式：%s）\n", status, priority, content, embedMethod))
 		}
-		fsRows.Close() // close immediately to return connection to pool
+		fsRows.Close()
 	}
 	sb.WriteString("\n")
 
@@ -955,7 +969,7 @@ func (s *ChapterService) humanizeContent(ctx context.Context, text string, inten
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return text, fmt.Errorf("humanizer unreachable: %w", err)
 	}

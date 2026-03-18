@@ -122,6 +122,9 @@ func (s *ExportService) loadApprovedChapters(ctx context.Context, projectID stri
 		}
 		chapters = append(chapters, ch)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("load chapters rows: %w", err)
+	}
 	if len(chapters) == 0 {
 		s.logger.Warn("no approved chapters found for export", zap.String("project_id", projectID))
 	}
