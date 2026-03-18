@@ -73,6 +73,11 @@ const router = createRouter({
       component: () => import('@/views/AgentReview.vue'),
     },
     {
+      path: '/projects/:projectId/propagation',
+      name: 'propagation',
+      component: () => import('@/views/EditPropagation.vue'),
+    },
+    {
       path: '/projects/:projectId/rag',
       name: 'rag',
       component: () => import('@/views/RAG.vue'),
@@ -86,6 +91,26 @@ const router = createRouter({
       path: '/settings/llm',
       name: 'llm-settings',
       component: () => import('@/views/LLMSettings.vue'),
+    },
+    {
+      path: '/projects/:projectId/glossary',
+      name: 'glossary',
+      component: () => import('@/views/Glossary.vue'),
+    },
+    {
+      path: '/projects/:projectId/resources',
+      name: 'resource-ledger',
+      component: () => import('@/views/ResourceLedger.vue'),
+    },
+    {
+      path: '/projects/:projectId/tasks',
+      name: 'task-queue',
+      component: () => import('@/views/TaskQueue.vue'),
+    },
+    {
+      path: '/settings/prompt-presets',
+      name: 'prompt-presets',
+      component: () => import('@/views/PromptPresets.vue'),
     },
   ],
 })

@@ -70,6 +70,10 @@
                 <el-icon><ChatDotRound /></el-icon>
                 <span>多智能体评审</span>
               </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/propagation`">
+                <el-icon><Connection /></el-icon>
+                <span>变更传播</span>
+              </el-menu-item>
             </el-menu-item-group>
           </template>
           <el-menu-item-group title="系统">

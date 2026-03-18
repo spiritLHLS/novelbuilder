@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/crypto"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -15,12 +16,13 @@ import (
 // All AI services resolve their model configuration through this service at runtime,
 // meaning a single profile with is_default=true is used for everything unless overridden.
 type LLMProfileService struct {
-	db     *pgxpool.Pool
-	logger *zap.Logger
+	db            *pgxpool.Pool
+	encryptionKey string
+	logger        *zap.Logger
 }
 
-func NewLLMProfileService(db *pgxpool.Pool, logger *zap.Logger) *LLMProfileService {
-	return &LLMProfileService{db: db, logger: logger}
+func NewLLMProfileService(db *pgxpool.Pool, encryptionKey string, logger *zap.Logger) *LLMProfileService {
+	return &LLMProfileService{db: db, encryptionKey: encryptionKey, logger: logger}
 }
 
 func maskAPIKey(key string) string {
@@ -77,18 +79,21 @@ func (s *LLMProfileService) Get(ctx context.Context, id string) (*models.LLMProf
 // GetFull returns the profile including the raw API key (for internal use by gateway only).
 func (s *LLMProfileService) GetFull(ctx context.Context, id string) (*models.LLMProfileFull, error) {
 	var p models.LLMProfileFull
+	var storedKey string
 	err := s.db.QueryRow(ctx,
 		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature,
 		        is_default, created_at, updated_at
 		 FROM llm_profiles WHERE id = $1`, id).Scan(
-		&p.ID, &p.Name, &p.Provider, &p.BaseURL, &p.APIKey,
+		&p.ID, &p.Name, &p.Provider, &p.BaseURL, &storedKey,
 		&p.ModelName, &p.MaxTokens, &p.Temperature, &p.IsDefault,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get llm_profile full: %w", err)
 	}
-	p.HasAPIKey = p.APIKey != ""
-	p.MaskedAPIKey = maskAPIKey(p.APIKey)
+	rawKey, _ := crypto.Decrypt(storedKey, s.encryptionKey)
+	p.APIKey = rawKey
+	p.HasAPIKey = storedKey != ""
+	p.MaskedAPIKey = maskAPIKey(rawKey)
 	return &p, nil
 }
 
@@ -96,18 +101,21 @@ func (s *LLMProfileService) GetFull(ctx context.Context, id string) (*models.LLM
 // Returns nil, nil when no default profile is configured.
 func (s *LLMProfileService) GetDefault(ctx context.Context) (*models.LLMProfileFull, error) {
 	var p models.LLMProfileFull
+	var storedKey string
 	err := s.db.QueryRow(ctx,
 		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature,
 		        is_default, created_at, updated_at
 		 FROM llm_profiles WHERE is_default = TRUE LIMIT 1`).Scan(
-		&p.ID, &p.Name, &p.Provider, &p.BaseURL, &p.APIKey,
+		&p.ID, &p.Name, &p.Provider, &p.BaseURL, &storedKey,
 		&p.ModelName, &p.MaxTokens, &p.Temperature, &p.IsDefault,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, nil // no default configured
 	}
-	p.HasAPIKey = p.APIKey != ""
-	p.MaskedAPIKey = maskAPIKey(p.APIKey)
+	rawKey, _ := crypto.Decrypt(storedKey, s.encryptionKey)
+	p.APIKey = rawKey
+	p.HasAPIKey = storedKey != ""
+	p.MaskedAPIKey = maskAPIKey(rawKey)
 	return &p, nil
 }
 
@@ -135,10 +143,15 @@ func (s *LLMProfileService) Create(ctx context.Context, req models.CreateLLMProf
 		}
 	}
 
+	encryptedKey, err := crypto.Encrypt(req.APIKey, s.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt api key: %w", err)
+	}
+
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO llm_profiles (id, name, provider, base_url, api_key, model_name, max_tokens, temperature, is_default, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
-		id, req.Name, req.Provider, req.BaseURL, req.APIKey, req.ModelName,
+		id, req.Name, req.Provider, req.BaseURL, encryptedKey, req.ModelName,
 		req.MaxTokens, req.Temperature, req.IsDefault, now); err != nil {
 		return nil, fmt.Errorf("insert llm_profile: %w", err)
 	}
@@ -191,8 +204,15 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 	if req.BaseURL != "" {
 		existing.BaseURL = req.BaseURL
 	}
+	// maskedKey tracks the plain-text key for safe display in the returned struct.
+	maskedKey := ""
 	if req.APIKey != "" {
-		existing.APIKey = req.APIKey
+		maskedKey = req.APIKey
+		encKey, err := crypto.Encrypt(req.APIKey, s.encryptionKey)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt api key: %w", err)
+		}
+		existing.APIKey = encKey
 	}
 	if req.ModelName != "" {
 		existing.ModelName = req.ModelName
@@ -235,7 +255,7 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 		Temperature:  existing.Temperature,
 		IsDefault:    existing.IsDefault,
 		HasAPIKey:    existing.APIKey != "",
-		MaskedAPIKey: maskAPIKey(existing.APIKey),
+		MaskedAPIKey: maskAPIKey(maskedKey),
 		CreatedAt:    existing.CreatedAt,
 		UpdatedAt:    now,
 	}, nil

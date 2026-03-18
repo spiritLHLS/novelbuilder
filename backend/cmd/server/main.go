@@ -15,6 +15,7 @@ import (
 	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/handlers"
+	"github.com/novelbuilder/backend/internal/middleware"
 	"github.com/novelbuilder/backend/internal/services"
 	"github.com/novelbuilder/backend/internal/workflow"
 	"go.uber.org/zap"
@@ -51,7 +52,7 @@ func main() {
 	defer rdb.Close()
 
 	// Initialize AI Gateway (DB profiles take priority over config-file models)
-	llmProfileService := services.NewLLMProfileService(db, logger)
+	llmProfileService := services.NewLLMProfileService(db, cfg.Security.EncryptionKey, logger)
 	aiGateway := gateway.NewAIGateway(cfg.AIGateway, llmProfileService, logger)
 
 	// Initialize Workflow Engine
@@ -62,7 +63,10 @@ func main() {
 	blueprintService := services.NewBlueprintService(db, aiGateway, wfEngine, logger)
 	ragService := services.NewRAGService(db, cfg.PythonSidecar.URL, logger)
 	originalityService := services.NewOriginalityService(db, cfg.PythonSidecar.URL, logger)
-	chapterService := services.NewChapterService(db, rdb, aiGateway, wfEngine, ragService, originalityService, cfg.PythonSidecar.URL, logger)
+	propagationService := services.NewEditPropagationService(db, aiGateway, logger)
+	glossaryService := services.NewGlossaryService(db, logger)
+	webhookService := services.NewWebhookService(db, logger)
+	chapterService := services.NewChapterService(db, rdb, aiGateway, wfEngine, ragService, originalityService, propagationService, glossaryService, webhookService, cfg.PythonSidecar.URL, logger)
 	worldBibleService := services.NewWorldBibleService(db, aiGateway, logger)
 	characterService := services.NewCharacterService(db, aiGateway, logger)
 	outlineService := services.NewOutlineService(db, aiGateway, logger)
@@ -72,6 +76,13 @@ func main() {
 	referenceService := services.NewReferenceService(db, cfg.PythonSidecar.URL, ragService, logger)
 	agentReviewService := services.NewAgentReviewService(db, aiGateway, logger)
 	exportService := services.NewExportService(db, logger)
+	promptPresetService := services.NewPromptPresetService(db, logger)
+	taskQueueService := services.NewTaskQueueService(db, cfg.TaskQueue.Workers, cfg.TaskQueue.MaxRetries, logger)
+	resourceLedgerService := services.NewResourceLedgerService(db, logger)
+
+	// Start background task worker pool
+	taskQueueService.Start()
+	defer taskQueueService.Stop()
 
 	// Initialize Handler
 	h := handlers.NewHandler(
@@ -90,6 +101,12 @@ func main() {
 		agentReviewService,
 		exportService,
 		llmProfileService,
+		propagationService,
+		promptPresetService,
+		glossaryService,
+		taskQueueService,
+		resourceLedgerService,
+		webhookService,
 		logger,
 	)
 
@@ -100,11 +117,14 @@ func main() {
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Idempotency-Key"},
-		ExposeHeaders:    []string{"Content-Length"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Idempotency-Key", "X-Request-Id"},
+		ExposeHeaders:    []string{"Content-Length", "X-Request-Id"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
+
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger(logger))
 
 	// SSE middleware for streaming endpoints
 	r.Use(func(c *gin.Context) {

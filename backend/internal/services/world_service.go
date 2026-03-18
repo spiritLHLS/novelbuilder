@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/gateway"
@@ -556,6 +560,101 @@ func (s *QualityService) reviewAsAntiAIExpert(ctx context.Context, content strin
 	}
 
 	return result.Issues, result.AIScore
+}
+
+// VocabFatigueReport analyzes word frequency across all chapters for vocabulary fatigue detection.
+// Inspired by InkOS vocab fatigue detection.
+func (s *QualityService) VocabFatigueReport(ctx context.Context, projectID string, topN int) (*models.VocabFatigueReport, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT content, chapter_num FROM chapters WHERE project_id = $1 AND status != 'rejected'
+		 ORDER BY chapter_num`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("vocab fatigue: %w", err)
+	}
+	defer rows.Close()
+
+	wordChapters := make(map[string]map[int]bool)
+	wordTotal := make(map[string]int)
+	totalChapters := 0
+	chapterRe := regexp.MustCompile(`[\p{Han}]+|[a-zA-Z]+`)
+
+	for rows.Next() {
+		var content string
+		var chapterNum int
+		if err := rows.Scan(&content, &chapterNum); err != nil {
+			continue
+		}
+		totalChapters++
+		words := chapterRe.FindAllString(content, -1)
+		seen := make(map[string]bool)
+		for _, w := range words {
+			// normalize: lowercase, skip non-English single chars and short words
+			if len([]rune(w)) < 2 && !isChinese(w) {
+				continue
+			}
+			w = strings.ToLower(w)
+			wordTotal[w]++
+			if !seen[w] {
+				seen[w] = true
+				if wordChapters[w] == nil {
+					wordChapters[w] = make(map[int]bool)
+				}
+				wordChapters[w][chapterNum] = true
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	type stat struct {
+		word  string
+		total int
+		chaps int
+	}
+	var stats []stat
+	for w, total := range wordTotal {
+		if total < 3 {
+			continue // ignore rare words
+		}
+		stats = append(stats, stat{w, total, len(wordChapters[w])})
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].total > stats[j].total
+	})
+	if len(stats) > topN {
+		stats = stats[:topN]
+	}
+
+	result := make([]models.VocabFatigueStat, 0, len(stats))
+	for _, s := range stats {
+		freq := 0.0
+		if totalChapters > 0 {
+			freq = float64(s.total) / float64(totalChapters)
+		}
+		result = append(result, models.VocabFatigueStat{
+			Word:                s.word,
+			TotalCount:          s.total,
+			ChaptersAppeared:    s.chaps,
+			FrequencyPerChapter: freq,
+		})
+	}
+
+	return &models.VocabFatigueReport{
+		ProjectID:     projectID,
+		TopWords:      result,
+		TotalChapters: totalChapters,
+		AnalyzedAt:    time.Now(),
+	}, nil
+}
+
+func isChinese(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseIssues(content string) []models.QualityIssue {

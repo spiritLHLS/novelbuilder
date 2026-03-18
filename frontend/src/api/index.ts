@@ -225,3 +225,76 @@ export const ragApi = {
   getStatus: (projectId: string) => api.get(`/projects/${projectId}/rag/status`),
   rebuild: (projectId: string) => api.post(`/projects/${projectId}/rag/rebuild`),
 }
+
+export const propagationApi = {
+  /** Create a change event and run AI impact analysis; returns a PatchPlan. */
+  createChangeEvent: (projectId: string, data: {
+    entity_type: string
+    entity_id: string
+    change_summary: string
+    old_snapshot?: unknown
+    new_snapshot?: unknown
+  }) => api.post(`/projects/${projectId}/change-events`, data),
+
+  listChangeEvents: (projectId: string) =>
+    api.get(`/projects/${projectId}/change-events`),
+
+  getPatchPlan: (planId: string) => api.get(`/patch-plans/${planId}`),
+
+  updateItemStatus: (itemId: string, status: 'approved' | 'skipped' | 'pending') =>
+    api.put(`/patch-items/${itemId}/status`, { status }),
+
+  executeItem: (itemId: string) => api.post(`/patch-items/${itemId}/execute`),
+}
+
+// Prompt Presets
+export const promptPresetApi = {
+  listGlobal: () => api.get('/prompt-presets'),
+  listForProject: (projectId: string) => api.get(`/projects/${projectId}/prompt-presets`),
+  get: (id: string) => api.get(`/prompt-presets/${id}`),
+  create: (data: any, projectId?: string) =>
+    api.post(`/prompt-presets${projectId ? `?project_id=${projectId}` : ''}`, data),
+  update: (id: string, data: any) => api.put(`/prompt-presets/${id}`, data),
+  delete: (id: string) => api.delete(`/prompt-presets/${id}`),
+}
+
+// Glossary 术语表
+export const glossaryApi = {
+  list: (projectId: string) => api.get(`/projects/${projectId}/glossary`),
+  create: (projectId: string, data: any) => api.post(`/projects/${projectId}/glossary`, data),
+  delete: (id: string) => api.delete(`/glossary/${id}`),
+}
+
+// Task Queue
+export const taskApi = {
+  list: (projectId: string) => api.get(`/projects/${projectId}/tasks`),
+  get: (id: string) => api.get(`/tasks/${id}`),
+  enqueue: (data: any) => api.post('/tasks', data),
+  cancel: (id: string) => api.post(`/tasks/${id}/cancel`),
+  retry: (id: string) => api.post(`/tasks/${id}/retry`),
+}
+
+// Resource Ledger (InkOS particle_ledger)
+export const resourceApi = {
+  list: (projectId: string) => api.get(`/projects/${projectId}/resources`),
+  get: (id: string) => api.get(`/resources/${id}`),
+  create: (projectId: string, data: any) => api.post(`/projects/${projectId}/resources`, data),
+  update: (id: string, data: any) => api.put(`/resources/${id}`, data),
+  delete: (id: string) => api.delete(`/resources/${id}`),
+  recordChange: (resourceId: string, data: any) => api.post(`/resources/${resourceId}/changes`, data),
+  listChanges: (resourceId: string) => api.get(`/resources/${resourceId}/changes`),
+}
+
+// Vocab Fatigue Stats
+export const vocabApi = {
+  getStats: (projectId: string, topN = 50) =>
+    api.get(`/projects/${projectId}/quality/vocab-stats?top=${topN}`),
+}
+
+// Webhook Notifications
+export const webhookApi = {
+  list: (projectId: string) => api.get(`/projects/${projectId}/webhooks`),
+  create: (projectId: string, data: any) => api.post(`/projects/${projectId}/webhooks`, data),
+  update: (id: string, data: any) => api.put(`/webhooks/${id}`, data),
+  delete: (id: string) => api.delete(`/webhooks/${id}`),
+}

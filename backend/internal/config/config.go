@@ -16,6 +16,8 @@ type Config struct {
 	AIGateway     AIGatewayConfig     `mapstructure:"ai_gateway"`
 	Quality       QualityConfig       `mapstructure:"quality"`
 	Workflow      WorkflowConfig      `mapstructure:"workflow"`
+	Security      SecurityConfig      `mapstructure:"security"`
+	TaskQueue     TaskQueueConfig     `mapstructure:"task_queue"`
 }
 
 type ServerConfig struct {
@@ -71,6 +73,15 @@ type WorkflowConfig struct {
 	StrictReview bool `mapstructure:"strict_review"`
 }
 
+type SecurityConfig struct {
+	EncryptionKey string `mapstructure:"encryption_key"`
+}
+
+type TaskQueueConfig struct {
+	Workers    int `mapstructure:"workers"`
+	MaxRetries int `mapstructure:"max_retries"`
+}
+
 func Load(logger *zap.Logger) (*Config, error) {
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
@@ -90,6 +101,15 @@ func Load(logger *zap.Logger) (*Config, error) {
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, err
+	}
+
+	// Resolve encryption key from environment
+	if k := cfg.Security.EncryptionKey; strings.HasPrefix(k, "${") && strings.HasSuffix(k, "}") {
+		envVar := strings.TrimSuffix(strings.TrimPrefix(k, "${"), "}")
+		cfg.Security.EncryptionKey = os.Getenv(envVar)
+	}
+	if cfg.Security.EncryptionKey == "" {
+		cfg.Security.EncryptionKey = os.Getenv("ENCRYPTION_KEY")
 	}
 
 	// Resolve environment variables in API keys
@@ -113,6 +133,12 @@ func Load(logger *zap.Logger) (*Config, error) {
 	}
 	if cfg.Quality.BurstinessTargetCV == 0 {
 		cfg.Quality.BurstinessTargetCV = 0.8
+	}
+	if cfg.TaskQueue.Workers == 0 {
+		cfg.TaskQueue.Workers = 4
+	}
+	if cfg.TaskQueue.MaxRetries == 0 {
+		cfg.TaskQueue.MaxRetries = 3
 	}
 
 	return &cfg, nil

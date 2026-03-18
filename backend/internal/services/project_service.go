@@ -392,6 +392,9 @@ type ChapterService struct {
 	wf          *workflow.Engine
 	rag         *RAGService
 	originality *OriginalityService
+	propagation *EditPropagationService
+	glossary    *GlossaryService
+	webhook     *WebhookService
 	sidecarURL  string
 	logger      *zap.Logger
 }
@@ -403,6 +406,9 @@ func NewChapterService(
 	wf *workflow.Engine,
 	rag *RAGService,
 	originality *OriginalityService,
+	propagation *EditPropagationService,
+	glossary *GlossaryService,
+	webhook *WebhookService,
 	sidecarURL string,
 	logger *zap.Logger,
 ) *ChapterService {
@@ -413,6 +419,9 @@ func NewChapterService(
 		wf:          wf,
 		rag:         rag,
 		originality: originality,
+		propagation: propagation,
+		glossary:    glossary,
+		webhook:     webhook,
 		sidecarURL:  sidecarURL,
 		logger:      logger,
 	}
@@ -555,6 +564,20 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		}()
 	}
 
+	// ── Async dependency recording (for change propagation) ───────────────────
+	if s.propagation != nil {
+		go s.propagation.RecordChapterDependencies(context.Background(), projectID, ch.ID)
+	}
+
+	// ── Async webhook notification ────────────────────────────────────────────
+	if s.webhook != nil {
+		go s.webhook.Fire(context.Background(), projectID, "chapter_generated", map[string]any{
+			"chapter_id":  ch.ID,
+			"chapter_num": ch.ChapterNum,
+			"word_count":  ch.WordCount,
+		})
+	}
+
 	s.logger.Info("chapter generated",
 		zap.String("project_id", projectID),
 		zap.Int("chapter_num", chapterNum),
@@ -626,6 +649,20 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 				s.logger.Warn("originality audit failed (stream)", zap.Error(err))
 			}
 		}()
+	}
+
+	// ── Async dependency recording (for change propagation) ───────────────────
+	if s.propagation != nil {
+		go s.propagation.RecordChapterDependencies(context.Background(), projectID, chID)
+	}
+
+	// ── Async webhook notification ────────────────────────────────────────────
+	if s.webhook != nil {
+		go s.webhook.Fire(context.Background(), projectID, "chapter_generated", map[string]any{
+			"chapter_id":  chID,
+			"chapter_num": chapterNum,
+			"word_count":  wordCount,
+		})
 	}
 
 	handler(gateway.StreamChunk{Done: true})
@@ -851,6 +888,14 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		sb.WriteString("=== 生成参数 ===\n")
 		sb.WriteString(narrativeSection.String())
 		sb.WriteString("\n\n")
+	}
+
+	// ===== Glossary injection (InkOS-inspired) =====
+	if s.glossary != nil {
+		glossaryBlock := s.glossary.BuildPromptBlock(ctx, projectID)
+		if glossaryBlock != "" {
+			sb.WriteString(glossaryBlock)
+		}
 	}
 
 	sb.WriteString("\n你是一位经验丰富的网络小说作者，请严格遵守世界观设定和宪法规则，保持角色性格一致性。")

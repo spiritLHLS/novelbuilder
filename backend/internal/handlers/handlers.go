@@ -35,6 +35,12 @@ type Handler struct {
 	agentReview    *services.AgentReviewService
 	export         *services.ExportService
 	llmProfiles    *services.LLMProfileService
+	propagation    *services.EditPropagationService
+	promptPresets  *services.PromptPresetService
+	glossary       *services.GlossaryService
+	taskQueue      *services.TaskQueueService
+	resourceLedger *services.ResourceLedgerService
+	webhooks       *services.WebhookService
 	logger         *zap.Logger
 }
 
@@ -54,6 +60,12 @@ func NewHandler(
 	agentReview *services.AgentReviewService,
 	export *services.ExportService,
 	llmProfiles *services.LLMProfileService,
+	propagation *services.EditPropagationService,
+	promptPresets *services.PromptPresetService,
+	glossary *services.GlossaryService,
+	taskQueue *services.TaskQueueService,
+	resourceLedger *services.ResourceLedgerService,
+	webhooks *services.WebhookService,
 	logger *zap.Logger,
 ) *Handler {
 	return &Handler{
@@ -72,6 +84,12 @@ func NewHandler(
 		agentReview:    agentReview,
 		export:         export,
 		llmProfiles:    llmProfiles,
+		propagation:    propagation,
+		promptPresets:  promptPresets,
+		glossary:       glossary,
+		taskQueue:      taskQueue,
+		resourceLedger: resourceLedger,
+		webhooks:       webhooks,
 		logger:         logger,
 	}
 }
@@ -163,6 +181,51 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/llm-profiles/:id/set-default", h.SetDefaultLLMProfile)
 
 	api.GET("/health", h.Health)
+
+	// Change propagation
+	api.POST("/projects/:id/change-events", h.CreateChangeEvent)
+	api.GET("/projects/:id/change-events", h.ListChangeEvents)
+	api.GET("/patch-plans/:id", h.GetPatchPlan)
+	api.PUT("/patch-items/:id/status", h.UpdatePatchItemStatus)
+	api.POST("/patch-items/:id/execute", h.ExecutePatchItem)
+
+	// Prompt Presets
+	api.GET("/prompt-presets", h.ListGlobalPromptPresets)
+	api.GET("/projects/:id/prompt-presets", h.ListProjectPromptPresets)
+	api.POST("/prompt-presets", h.CreatePromptPreset)
+	api.GET("/prompt-presets/:id", h.GetPromptPreset)
+	api.PUT("/prompt-presets/:id", h.UpdatePromptPreset)
+	api.DELETE("/prompt-presets/:id", h.DeletePromptPreset)
+
+	// Glossary 术语表
+	api.GET("/projects/:id/glossary", h.ListGlossary)
+	api.POST("/projects/:id/glossary", h.CreateGlossaryTerm)
+	api.DELETE("/glossary/:id", h.DeleteGlossaryTerm)
+
+	// Task Queue
+	api.GET("/projects/:id/tasks", h.ListTasks)
+	api.POST("/tasks", h.EnqueueTask)
+	api.GET("/tasks/:id", h.GetTask)
+	api.POST("/tasks/:id/cancel", h.CancelTask)
+	api.POST("/tasks/:id/retry", h.RetryTask)
+
+	// Resource Ledger (InkOS: particle_ledger)
+	api.GET("/projects/:id/resources", h.ListResources)
+	api.POST("/projects/:id/resources", h.CreateResource)
+	api.GET("/resources/:id", h.GetResource)
+	api.PUT("/resources/:id", h.UpdateResource)
+	api.DELETE("/resources/:id", h.DeleteResource)
+	api.POST("/resources/:id/changes", h.RecordResourceChange)
+	api.GET("/resources/:id/changes", h.ListResourceChanges)
+
+	// Vocab Fatigue (InkOS-inspired quality signal)
+	api.GET("/projects/:id/quality/vocab-stats", h.GetVocabStats)
+
+	// Webhook Notifications
+	api.GET("/projects/:id/webhooks", h.ListWebhooks)
+	api.POST("/projects/:id/webhooks", h.CreateWebhook)
+	api.PUT("/webhooks/:id", h.UpdateWebhook)
+	api.DELETE("/webhooks/:id", h.DeleteWebhook)
 }
 
 func (h *Handler) ListProjects(c *gin.Context) {
@@ -1018,6 +1081,83 @@ func (h *Handler) Health(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok", "service": "novelbuilder"})
 }
 
+// ---- Change Propagation Handlers ----
+
+func (h *Handler) CreateChangeEvent(c *gin.Context) {
+	projectID := c.Param("id")
+	var req models.CreateChangeEventRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	plan, err := h.propagation.CreateChangeEventWithAnalysis(c.Request.Context(), projectID, req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": plan})
+}
+
+func (h *Handler) ListChangeEvents(c *gin.Context) {
+	projectID := c.Param("id")
+	events, err := h.propagation.ListChangeEvents(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": events})
+}
+
+func (h *Handler) GetPatchPlan(c *gin.Context) {
+	planID := c.Param("id")
+	if _, err := uuid.Parse(planID); err != nil {
+		c.JSON(400, gin.H{"error": "invalid plan id"})
+		return
+	}
+	plan, err := h.propagation.GetPlan(c.Request.Context(), planID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": plan})
+}
+
+func (h *Handler) UpdatePatchItemStatus(c *gin.Context) {
+	itemID := c.Param("id")
+	if _, err := uuid.Parse(itemID); err != nil {
+		c.JSON(400, gin.H{"error": "invalid item id"})
+		return
+	}
+	var req models.UpdatePatchItemStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	allowed := map[string]bool{"approved": true, "skipped": true, "pending": true}
+	if !allowed[req.Status] {
+		c.JSON(400, gin.H{"error": "status must be approved, skipped, or pending"})
+		return
+	}
+	if err := h.propagation.UpdatePatchItemStatus(c.Request.Context(), itemID, req.Status); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func (h *Handler) ExecutePatchItem(c *gin.Context) {
+	itemID := c.Param("id")
+	if _, err := uuid.Parse(itemID); err != nil {
+		c.JSON(400, gin.H{"error": "invalid item id"})
+		return
+	}
+	if err := h.propagation.ExecutePatchItem(c.Request.Context(), itemID); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
 // ---- Export Handlers ----
 
 func (h *Handler) ExportTXT(c *gin.Context) {
@@ -1145,4 +1285,317 @@ func (h *Handler) SetDefaultLLMProfile(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"data": profile})
+}
+
+// ============================================================
+// Prompt Presets
+// ============================================================
+
+func (h *Handler) ListGlobalPromptPresets(c *gin.Context) {
+	presets, err := h.promptPresets.List(c.Request.Context(), nil)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": presets})
+}
+
+func (h *Handler) ListProjectPromptPresets(c *gin.Context) {
+	pid := c.Param("id")
+	presets, err := h.promptPresets.List(c.Request.Context(), &pid)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": presets})
+}
+
+func (h *Handler) CreatePromptPreset(c *gin.Context) {
+	var req models.CreatePromptPresetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	// A non-empty project_id can be passed as a query param when creating under a project
+	var projectID *string
+	if pid := c.Query("project_id"); pid != "" {
+		projectID = &pid
+	}
+	preset, err := h.promptPresets.Create(c.Request.Context(), projectID, req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": preset})
+}
+
+func (h *Handler) GetPromptPreset(c *gin.Context) {
+	preset, err := h.promptPresets.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": preset})
+}
+
+func (h *Handler) UpdatePromptPreset(c *gin.Context) {
+	var req models.UpdatePromptPresetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	preset, err := h.promptPresets.Update(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": preset})
+}
+
+func (h *Handler) DeletePromptPreset(c *gin.Context) {
+	if err := h.promptPresets.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
+}
+
+// ============================================================
+// Glossary
+// ============================================================
+
+func (h *Handler) ListGlossary(c *gin.Context) {
+	terms, err := h.glossary.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": terms})
+}
+
+func (h *Handler) CreateGlossaryTerm(c *gin.Context) {
+	var req models.CreateGlossaryTermRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	term, err := h.glossary.Create(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": term})
+}
+
+func (h *Handler) DeleteGlossaryTerm(c *gin.Context) {
+	if err := h.glossary.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
+}
+
+// ============================================================
+// Task Queue
+// ============================================================
+
+func (h *Handler) ListTasks(c *gin.Context) {
+	tasks, err := h.taskQueue.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": tasks})
+}
+
+func (h *Handler) EnqueueTask(c *gin.Context) {
+	var req models.CreateTaskRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": task})
+}
+
+func (h *Handler) GetTask(c *gin.Context) {
+	task, err := h.taskQueue.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": task})
+}
+
+func (h *Handler) CancelTask(c *gin.Context) {
+	if err := h.taskQueue.Cancel(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"message": "task cancelled"})
+}
+
+func (h *Handler) RetryTask(c *gin.Context) {
+	if err := h.taskQueue.Retry(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"message": "task queued for retry"})
+}
+
+// ============================================================
+// Resource Ledger (InkOS particle_ledger concept)
+// ============================================================
+
+func (h *Handler) ListResources(c *gin.Context) {
+	resources, err := h.resourceLedger.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": resources})
+}
+
+func (h *Handler) CreateResource(c *gin.Context) {
+	var req models.CreateStoryResourceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	resource, err := h.resourceLedger.Create(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": resource})
+}
+
+func (h *Handler) GetResource(c *gin.Context) {
+	resource, err := h.resourceLedger.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": resource})
+}
+
+func (h *Handler) UpdateResource(c *gin.Context) {
+	var body struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	resource, err := h.resourceLedger.Update(c.Request.Context(), c.Param("id"), body.Name, body.Description)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": resource})
+}
+
+func (h *Handler) DeleteResource(c *gin.Context) {
+	if err := h.resourceLedger.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
+}
+
+func (h *Handler) RecordResourceChange(c *gin.Context) {
+	var req models.RecordResourceChangeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	change, err := h.resourceLedger.RecordChange(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": change})
+}
+
+func (h *Handler) ListResourceChanges(c *gin.Context) {
+	changes, err := h.resourceLedger.ListChanges(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": changes})
+}
+
+// ============================================================
+// Vocab Fatigue (InkOS-inspired quality signal)
+// ============================================================
+
+func (h *Handler) GetVocabStats(c *gin.Context) {
+	projectID := c.Param("id")
+	topN := 50
+	if s := c.Query("top"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			topN = n
+		}
+	}
+	report, err := h.quality.VocabFatigueReport(c.Request.Context(), projectID, topN)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": report})
+}
+
+// ============================================================
+// Webhook Notifications
+// ============================================================
+
+func (h *Handler) ListWebhooks(c *gin.Context) {
+	hooks, err := h.webhooks.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": hooks})
+}
+
+func (h *Handler) CreateWebhook(c *gin.Context) {
+	var req models.CreateWebhookRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	hook, err := h.webhooks.Create(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": hook})
+}
+
+func (h *Handler) UpdateWebhook(c *gin.Context) {
+	var req models.CreateWebhookRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	hook, err := h.webhooks.Update(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": hook})
+}
+
+func (h *Handler) DeleteWebhook(c *gin.Context) {
+	if err := h.webhooks.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
 }
