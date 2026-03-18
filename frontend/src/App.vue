@@ -28,6 +28,10 @@
                 <el-icon><Reading /></el-icon>
                 <span>参考书管理</span>
               </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/rag`">
+                <el-icon><Management /></el-icon>
+                <span>知识库管理</span>
+              </el-menu-item>
               <el-menu-item :index="`/projects/${currentProjectId}/world`">
                 <el-icon><Place /></el-icon>
                 <span>世界观设定</span>

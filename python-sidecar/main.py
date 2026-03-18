@@ -81,10 +81,108 @@ class StyleFingerprint(BaseModel):
     text: str
 
 
+class EmbedRequest(BaseModel):
+    text: str
+
+
+# ===== Sensory keyword list (used for sample extraction) =====
+_SENSORY_WORDS = [
+    "看到", "望见", "瞥见", "注视", "凝望", "金色", "银色", "血红", "漆黑",
+    "光芒", "阴影", "闪烁", "朦胧", "苍白", "翠绿",
+    "听到", "听见", "声音", "响声", "回声", "轰鸣", "低语", "呢喃", "咆哮",
+    "寂静", "沉默", "风声", "雨声", "心跳声",
+    "闻到", "嗅到", "气味", "芳香", "恶臭", "清香", "花香", "血腥",
+    "触摸", "抚摸", "感觉", "冰冷", "温热", "滚烫", "粗糙", "光滑",
+    "柔软", "刺痛", "颤抖", "瑟瑟",
+    "尝到", "品尝", "味道", "甜", "苦", "酸", "辣",
+]
+
+
+def _extract_style_samples(sentences: list, max_samples: int = 20) -> list:
+    """Return evenly-distributed representative sentences (15–120 chars)."""
+    candidates = [s for s in sentences if 15 <= len(s) <= 120]
+    if len(candidates) <= max_samples:
+        return candidates
+    step = max(len(candidates) // max_samples, 1)
+    return candidates[::step][:max_samples]
+
+
+def _extract_sensory_samples(sentences: list, max_samples: int = 15) -> list:
+    """Return sentences with the richest sensory language."""
+    scored = []
+    for sent in sentences:
+        if len(sent) < 10:
+            continue
+        score = sum(1 for w in _SENSORY_WORDS if w in sent)
+        if score > 0:
+            scored.append((score, sent))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [s for _, s in scored[:max_samples]]
+
+
 # ===== Health =====
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "python-sidecar"}
+
+
+# ===== 向量嵌入 =====
+@app.post("/embed")
+async def embed_text(req: EmbedRequest):
+    """
+    Generate a 1024-dim embedding vector using an OpenAI-compatible embeddings API.
+    Configure via env vars:
+      EMBEDDING_BASE_URL  (default: OPENAI_BASE_URL or https://api.openai.com/v1)
+      EMBEDDING_API_KEY   (default: OPENAI_API_KEY)
+      EMBEDDING_MODEL     (default: text-embedding-3-small)
+    """
+    base_url = (
+        os.getenv("EMBEDDING_BASE_URL")
+        or os.getenv("OPENAI_BASE_URL")
+        or "https://api.openai.com/v1"
+    ).rstrip("/")
+    api_key = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY", "")
+    model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding API not configured. Set EMBEDDING_API_KEY env var.",
+        )
+
+    # Truncate to safe token length (~8 k chars covers most 8192-token limits)
+    text = req.text[:8000]
+
+    payload: dict = {"input": text, "model": model}
+    # text-embedding-3-* accepts a dimensions parameter (reduces output dims)
+    if "text-embedding-3" in model:
+        dims = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
+        payload["dimensions"] = dims
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{base_url}/embeddings",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            embedding = data["data"][0]["embedding"]
+            return {
+                "embedding": embedding,
+                "model": model,
+                "dimensions": len(embedding),
+            }
+    except httpx.HTTPStatusError as exc:
+        logger.error(f"Embedding API HTTP error {exc.response.status_code}: {exc.response.text}")
+        raise HTTPException(status_code=502, detail=f"Embedding API error: {exc.response.status_code}")
+    except Exception as exc:
+        logger.error(f"Embedding request failed: {exc}")
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 # ===== 四层参考书分析 =====
@@ -102,6 +200,10 @@ async def analyze_reference(req: AnalyzeRequest):
     if not text:
         raise HTTPException(status_code=400, detail="无法读取文件")
 
+    # Split sentences once for reuse across layers and sample extraction
+    import re as _re
+    sentences = [s.strip() for s in _re.split(r'[。！？\n]+', text) if s.strip()]
+
     # Layer 1: Style fingerprint
     style_result = style_analyzer.analyze(text)
 
@@ -113,6 +215,10 @@ async def analyze_reference(req: AnalyzeRequest):
 
     # Layer 4: Plot element extraction -> quarantine zone
     plot_result = plot_extractor.extract(text)
+
+    # Extract text samples for RAG vector store
+    style_samples = _extract_style_samples(sentences)
+    sensory_samples = _extract_sensory_samples(sentences)
 
     # Save to database
     conn = get_db()
@@ -157,6 +263,8 @@ async def analyze_reference(req: AnalyzeRequest):
         "narrative_layer": narrative_result,
         "atmosphere_layer": atmosphere_result,
         "plot_elements_count": len(plot_result.get("elements", [])),
+        "style_samples": style_samples,
+        "sensory_samples": sensory_samples,
         "status": "completed",
     }
 

@@ -60,6 +60,18 @@ type UpdateLLMProfileRequest struct {
 	IsDefault   bool    `json:"is_default"`
 }
 
+// RAGStatus is returned by GET /api/projects/:id/rag/status.
+type RAGCollectionStat struct {
+	Collection string `json:"collection"`
+	Count      int    `json:"count"`
+}
+
+type RAGStatus struct {
+	ProjectID   string              `json:"project_id"`
+	Collections []RAGCollectionStat `json:"collections"`
+	TotalChunks int                 `json:"total_chunks"`
+}
+
 type ReferenceMaterial struct {
 	ID              string          `json:"id" db:"id"`
 	ProjectID       string          `json:"project_id" db:"project_id"`
@@ -72,6 +84,7 @@ type ReferenceMaterial struct {
 	AtmosphereLayer json.RawMessage `json:"atmosphere_layer" db:"atmosphere_layer"`
 	MigrationConfig json.RawMessage `json:"migration_config" db:"migration_config"`
 	StyleCollection string          `json:"style_collection" db:"style_collection"`
+	SampleTexts     json.RawMessage `json:"sample_texts,omitempty" db:"sample_texts"`
 	Status          string          `json:"status" db:"status"`
 	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
 }

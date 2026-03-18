@@ -219,3 +219,9 @@ export const llmProfileApi = {
   delete: (id: string) => api.delete(`/llm-profiles/${id}`),
   setDefault: (id: string) => api.post(`/llm-profiles/${id}/set-default`),
 }
+
+// RAG knowledge-base
+export const ragApi = {
+  getStatus: (projectId: string) => api.get(`/projects/${projectId}/rag/status`),
+  rebuild: (projectId: string) => api.post(`/projects/${projectId}/rag/rebuild`),
+}

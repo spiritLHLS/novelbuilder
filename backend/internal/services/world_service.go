@@ -585,11 +585,12 @@ func parseIssues(content string) []models.QualityIssue {
 type ReferenceService struct {
 	db         *pgxpool.Pool
 	sidecarURL string
+	rag        *RAGService
 	logger     *zap.Logger
 }
 
-func NewReferenceService(db *pgxpool.Pool, sidecarURL string, logger *zap.Logger) *ReferenceService {
-	return &ReferenceService{db: db, sidecarURL: sidecarURL, logger: logger}
+func NewReferenceService(db *pgxpool.Pool, sidecarURL string, rag *RAGService, logger *zap.Logger) *ReferenceService {
+	return &ReferenceService{db: db, sidecarURL: sidecarURL, rag: rag, logger: logger}
 }
 
 func (s *ReferenceService) Create(ctx context.Context, projectID, title, author, genre, filePath string) (*models.ReferenceMaterial, error) {
@@ -609,11 +610,13 @@ func (s *ReferenceService) Get(ctx context.Context, id string) (*models.Referenc
 	err := s.db.QueryRow(ctx,
 		`SELECT id, project_id, title, author, genre, COALESCE(file_path, ''),
 		        COALESCE(style_layer, '{}'), COALESCE(narrative_layer, '{}'), COALESCE(atmosphere_layer, '{}'),
-		        COALESCE(migration_config, '{}'), COALESCE(style_collection, ''), status, created_at
+		        COALESCE(migration_config, '{}'), COALESCE(style_collection, ''), status, created_at,
+		        sample_texts
 		 FROM reference_materials WHERE id = $1`, id).Scan(
 		&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
 		&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
-		&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt)
+		&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
+		&ref.SampleTexts)
 	return &ref, err
 }
 
@@ -621,7 +624,8 @@ func (s *ReferenceService) List(ctx context.Context, projectID string) ([]models
 	rows, err := s.db.Query(ctx,
 		`SELECT id, project_id, title, author, genre, COALESCE(file_path, ''),
 		        COALESCE(style_layer, '{}'), COALESCE(narrative_layer, '{}'), COALESCE(atmosphere_layer, '{}'),
-		        COALESCE(migration_config, '{}'), COALESCE(style_collection, ''), status, created_at
+		        COALESCE(migration_config, '{}'), COALESCE(style_collection, ''), status, created_at,
+		        sample_texts
 		 FROM reference_materials WHERE project_id = $1 ORDER BY created_at`, projectID)
 	if err != nil {
 		return nil, err
@@ -633,7 +637,8 @@ func (s *ReferenceService) List(ctx context.Context, projectID string) ([]models
 		var ref models.ReferenceMaterial
 		if err := rows.Scan(&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
 			&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
-			&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt); err != nil {
+			&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
+			&ref.SampleTexts); err != nil {
 			return nil, err
 		}
 		refs = append(refs, ref)
@@ -654,4 +659,93 @@ func (s *ReferenceService) UpdateAnalysis(ctx context.Context, id string, style,
 		 WHERE id = $4`,
 		style, narrative, atmosphere, id)
 	return err
+}
+
+// IngestSamples vectorises style and sensory text samples extracted from a reference material
+// and stores them in the vector_store. It first clears any existing vectors for that source,
+// then caches the raw sample texts in reference_materials.sample_texts for future rebuilds.
+func (s *ReferenceService) IngestSamples(ctx context.Context, projectID, refID string, styleSamples, sensorySamples []string) error {
+	if s.rag == nil {
+		return nil
+	}
+
+	// Persist sample texts so rebuild doesn't require re-reading files
+	type sampleCache struct {
+		Style   []string `json:"style"`
+		Sensory []string `json:"sensory"`
+	}
+	cacheJSON, _ := json.Marshal(sampleCache{Style: styleSamples, Sensory: sensorySamples})
+	s.db.Exec(ctx, `UPDATE reference_materials SET sample_texts = $1 WHERE id = $2`, cacheJSON, refID)
+
+	// Delete old vectors for this reference before re-inserting
+	if err := s.rag.DeleteBySourceID(ctx, projectID, refID); err != nil {
+		s.logger.Warn("failed to clear old vectors for reference", zap.String("ref_id", refID), zap.Error(err))
+	}
+
+	meta := map[string]interface{}{"ref_id": refID}
+
+	var lastErr error
+	for _, sample := range styleSamples {
+		if err := s.rag.StoreEmbedding(ctx, projectID, "style_samples", sample, "reference", refID, meta); err != nil {
+			s.logger.Warn("store style sample failed", zap.Error(err))
+			lastErr = err
+		}
+	}
+	for _, sample := range sensorySamples {
+		if err := s.rag.StoreEmbedding(ctx, projectID, "sensory_samples", sample, "reference", refID, meta); err != nil {
+			s.logger.Warn("store sensory sample failed", zap.Error(err))
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+// RebuildProject re-ingests all cached samples for every completed reference in a project.
+// Returns the number of reference materials processed.
+func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string) (int, error) {
+	if s.rag == nil {
+		return 0, fmt.Errorf("RAG service not configured")
+	}
+
+	// Clear ALL vectors for the project so we start fresh
+	if err := s.rag.DeleteForProject(ctx, projectID); err != nil {
+		return 0, fmt.Errorf("clear project vectors: %w", err)
+	}
+
+	// Fetch all completed references that have cached samples
+	rows, err := s.db.Query(ctx,
+		`SELECT id, sample_texts FROM reference_materials
+		 WHERE project_id = $1 AND status = 'completed' AND sample_texts IS NOT NULL`,
+		projectID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type sampleCache struct {
+		Style   []string `json:"style"`
+		Sensory []string `json:"sensory"`
+	}
+
+	rebuilt := 0
+	for rows.Next() {
+		var refID string
+		var samplesRaw []byte
+		if err := rows.Scan(&refID, &samplesRaw); err != nil {
+			continue
+		}
+		var cache sampleCache
+		if err := json.Unmarshal(samplesRaw, &cache); err != nil {
+			continue
+		}
+		meta := map[string]interface{}{"ref_id": refID}
+		for _, sample := range cache.Style {
+			s.rag.StoreEmbedding(ctx, projectID, "style_samples", sample, "reference", refID, meta)
+		}
+		for _, sample := range cache.Sensory {
+			s.rag.StoreEmbedding(ctx, projectID, "sensory_samples", sample, "reference", refID, meta)
+		}
+		rebuilt++
+	}
+	return rebuilt, nil
 }

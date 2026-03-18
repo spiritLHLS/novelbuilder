@@ -69,7 +69,7 @@ func main() {
 	foreshadowingService := services.NewForeshadowingService(db, logger)
 	volumeService := services.NewVolumeService(db, logger)
 	qualityService := services.NewQualityService(db, aiGateway, logger)
-	referenceService := services.NewReferenceService(db, cfg.PythonSidecar.URL, logger)
+	referenceService := services.NewReferenceService(db, cfg.PythonSidecar.URL, ragService, logger)
 	agentReviewService := services.NewAgentReviewService(db, aiGateway, logger)
 	exportService := services.NewExportService(db, logger)
 
@@ -85,6 +85,7 @@ func main() {
 		volumeService,
 		qualityService,
 		referenceService,
+		ragService,
 		wfEngine,
 		agentReviewService,
 		exportService,

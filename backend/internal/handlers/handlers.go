@@ -30,6 +30,7 @@ type Handler struct {
 	volumes        *services.VolumeService
 	quality        *services.QualityService
 	references     *services.ReferenceService
+	rag            *services.RAGService
 	workflow       *workflow.Engine
 	agentReview    *services.AgentReviewService
 	export         *services.ExportService
@@ -48,6 +49,7 @@ func NewHandler(
 	volumes *services.VolumeService,
 	quality *services.QualityService,
 	references *services.ReferenceService,
+	rag *services.RAGService,
 	wf *workflow.Engine,
 	agentReview *services.AgentReviewService,
 	export *services.ExportService,
@@ -65,6 +67,7 @@ func NewHandler(
 		volumes:        volumes,
 		quality:        quality,
 		references:     references,
+		rag:            rag,
 		workflow:       wf,
 		agentReview:    agentReview,
 		export:         export,
@@ -134,6 +137,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/references/:id", h.GetReference)
 	api.PUT("/references/:id/migration-config", h.UpdateMigrationConfig)
 	api.POST("/references/:id/analyze", h.AnalyzeReference)
+
+	// RAG knowledge base management
+	api.POST("/projects/:id/rag/rebuild", h.RebuildRAG)
+	api.GET("/projects/:id/rag/status", h.GetRAGStatus)
 
 	api.POST("/projects/:id/agent-reviews", h.StartAgentReview)
 	api.GET("/projects/:id/agent-reviews", h.ListAgentReviews)
@@ -862,13 +869,63 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 		StyleLayer      json.RawMessage `json:"style_layer"`
 		NarrativeLayer  json.RawMessage `json:"narrative_layer"`
 		AtmosphereLayer json.RawMessage `json:"atmosphere_layer"`
+		StyleSamples    []string        `json:"style_samples"`
+		SensorySamples  []string        `json:"sensory_samples"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&analysisResult); err == nil {
 		h.references.UpdateAnalysis(c.Request.Context(), refID,
 			analysisResult.StyleLayer, analysisResult.NarrativeLayer, analysisResult.AtmosphereLayer)
+
+		// Ingest text samples into the vector store (async to avoid blocking the HTTP response)
+		go func() {
+			if ingestErr := h.references.IngestSamples(
+				c.Request.Context(), ref.ProjectID, refID,
+				analysisResult.StyleSamples, analysisResult.SensorySamples,
+			); ingestErr != nil {
+				h.logger.Warn("RAG ingest failed", zap.String("ref_id", refID), zap.Error(ingestErr))
+			}
+		}()
 	}
 
-	c.JSON(200, gin.H{"status": "completed"})
+	c.JSON(200, gin.H{
+		"status":          "completed",
+		"style_samples":   len(analysisResult.StyleSamples),
+		"sensory_samples": len(analysisResult.SensorySamples),
+	})
+}
+
+// ---- RAG knowledge-base handlers ----
+
+func (h *Handler) RebuildRAG(c *gin.Context) {
+	projectID := c.Param("id")
+	rebuilt, err := h.references.RebuildProject(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"rebuilt_sources": rebuilt, "project_id": projectID})
+}
+
+func (h *Handler) GetRAGStatus(c *gin.Context) {
+	projectID := c.Param("id")
+	if h.rag == nil {
+		c.JSON(200, gin.H{"project_id": projectID, "collections": []interface{}{}, "total_chunks": 0})
+		return
+	}
+	stats, err := h.rag.GetProjectStats(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	total := 0
+	for _, s := range stats {
+		total += s.Count
+	}
+	c.JSON(200, gin.H{
+		"project_id":   projectID,
+		"collections":  stats,
+		"total_chunks": total,
+	})
 }
 
 // ---- Agent Review Handlers ----

@@ -95,23 +95,25 @@ func (r *RAGService) SearchSensory(ctx context.Context, projectID, query, collec
 	var queryErr error
 
 	if len(embedding) > 0 {
-		// Vector similarity search using pgvector
+		// Vector similarity search using pgvector cosine distance
 		pgVec := float32SliceToPGVec(embedding)
 		sqlRows, e := r.db.Query(ctx,
 			`SELECT content FROM vector_store
-			 WHERE project_id = $1 AND collection = $2
+			 WHERE project_id = $1 AND collection = $2 AND embedding IS NOT NULL
 			 ORDER BY embedding <=> $3::vector
 			 LIMIT $4`,
 			projectID, collection, pgVec, k)
 		rows, queryErr = sqlRows, e
 	} else {
-		// Fallback: return recent entries without vector ranking
+		// Fallback: keyword match via ILIKE, ordered by recency
+		likeQuery := "%" + query + "%"
 		sqlRows, e := r.db.Query(ctx,
 			`SELECT content FROM vector_store
 			 WHERE project_id = $1 AND collection = $2
+			   AND (content ILIKE $3 OR $3 = '%%')
 			 ORDER BY created_at DESC
-			 LIMIT $3`,
-			projectID, collection, k)
+			 LIMIT $4`,
+			projectID, collection, likeQuery, k)
 		rows, queryErr = sqlRows, e
 	}
 
@@ -140,8 +142,9 @@ func (r *RAGService) SearchSensory(ctx context.Context, projectID, query, collec
 }
 
 // StoreEmbedding embeds and stores a piece of text in the vector_store.
+// sourceType / sourceID are used for selective deletion during rebuild (see migration 004).
 // If the sidecar is unavailable the entry is stored with a NULL embedding.
-func (r *RAGService) StoreEmbedding(ctx context.Context, projectID, collection, content string, metadata map[string]interface{}) error {
+func (r *RAGService) StoreEmbedding(ctx context.Context, projectID, collection, content, sourceType, sourceID string, metadata map[string]interface{}) error {
 	embedding, _ := r.GetEmbedding(ctx, content)
 
 	id := uuid.New().String()
@@ -150,16 +153,58 @@ func (r *RAGService) StoreEmbedding(ctx context.Context, projectID, collection, 
 	if len(embedding) > 0 {
 		pgVec := float32SliceToPGVec(embedding)
 		_, err := r.db.Exec(ctx,
-			`INSERT INTO vector_store (id, project_id, collection, content, metadata, embedding, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6::vector, NOW())`,
-			id, projectID, collection, content, metaBytes, pgVec)
+			`INSERT INTO vector_store (id, project_id, collection, content, metadata, embedding, source_type, source_id, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6::vector, $7, $8, NOW())`,
+			id, projectID, collection, content, metaBytes, pgVec, sourceType, sourceID)
 		return err
 	}
 
 	// Store without embedding (column is nullable)
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO vector_store (id, project_id, collection, content, metadata, created_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW())`,
-		id, projectID, collection, content, metaBytes)
+		`INSERT INTO vector_store (id, project_id, collection, content, metadata, source_type, source_id, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+		id, projectID, collection, content, metaBytes, sourceType, sourceID)
 	return err
+}
+
+// DeleteBySourceID removes all vector_store rows for a specific source (e.g., one reference material).
+func (r *RAGService) DeleteBySourceID(ctx context.Context, projectID, sourceID string) error {
+	_, err := r.db.Exec(ctx,
+		`DELETE FROM vector_store WHERE project_id = $1 AND source_id = $2`,
+		projectID, sourceID)
+	return err
+}
+
+// DeleteForProject removes ALL vector_store rows for a project (used for full rebuild).
+func (r *RAGService) DeleteForProject(ctx context.Context, projectID string) error {
+	_, err := r.db.Exec(ctx,
+		`DELETE FROM vector_store WHERE project_id = $1`, projectID)
+	return err
+}
+
+// CollectionStat carries per-collection row counts for a project.
+type CollectionStat struct {
+	Collection string `json:"collection"`
+	Count      int    `json:"count"`
+}
+
+// GetProjectStats returns per-collection vector counts for a project.
+func (r *RAGService) GetProjectStats(ctx context.Context, projectID string) ([]CollectionStat, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT collection, COUNT(*) FROM vector_store WHERE project_id = $1 GROUP BY collection ORDER BY collection`,
+		projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []CollectionStat
+	for rows.Next() {
+		var s CollectionStat
+		if err := rows.Scan(&s.Collection, &s.Count); err != nil {
+			return nil, err
+		}
+		stats = append(stats, s)
+	}
+	return stats, nil
 }
