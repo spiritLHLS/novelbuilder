@@ -204,10 +204,19 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 		blueprint.MasterOutline = rawJSON
 	}
 
+	// Wrap all DB writes in a single atomic transaction to prevent partial state
+	// on storage failure. AI generation runs BEFORE this tx opens
+	// so the transaction is short and never held during slow LLM calls.
+	tx, txErr := s.db.Begin(ctx)
+	if txErr != nil {
+		return nil, fmt.Errorf("begin transaction: %w", txErr)
+	}
+	defer tx.Rollback(ctx)
+
 	// Store world bible
 	if blueprint.WorldBible != nil {
 		wbID := uuid.New().String()
-		s.db.Exec(ctx,
+		tx.Exec(ctx,
 			`INSERT INTO world_bibles (id, project_id, content, version, created_at, updated_at)
 			 VALUES ($1, $2, $3, 1, NOW(), NOW())
 			 ON CONFLICT (project_id) DO UPDATE SET content = $3, version = world_bibles.version + 1, updated_at = NOW()`,
@@ -227,7 +236,7 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 				 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
 				uuid.New().String(), projectID, ch.Name, ch.RoleType, profileJSON)
 		}
-		br := s.db.SendBatch(ctx, chBatch)
+		br := tx.SendBatch(ctx, chBatch)
 		for range blueprint.Characters {
 			br.Exec() //nolint:errcheck
 		}
@@ -251,7 +260,7 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 				 VALUES ($1, $2, $3, $4, $5, 'planted', NOW(), NOW())`,
 				uuid.New().String(), projectID, fs.Content, embedMethod, priority)
 		}
-		br := s.db.SendBatch(ctx, fsBatch)
+		br := tx.SendBatch(ctx, fsBatch)
 		for range blueprint.Foreshadowings {
 			br.Exec() //nolint:errcheck
 		}
@@ -274,7 +283,7 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 	}
 
 	var bp models.BookBlueprint
-	err = s.db.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO book_blueprints (id, project_id, master_outline, relation_graph, global_timeline, status, version, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, 'draft', 1, NOW(), NOW())
 		 RETURNING id, project_id, world_bible_ref, master_outline, relation_graph, global_timeline, status, version, review_comment, created_at, updated_at`,
@@ -298,19 +307,23 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 				 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', NOW(), NOW())`,
 				uuid.New().String(), projectID, i+1, title, bpID, vol.ChapterStart, vol.ChapterEnd)
 		}
-		br := s.db.SendBatch(ctx, volBatch)
+		br := tx.SendBatch(ctx, volBatch)
 		for range blueprint.Volumes {
 			br.Exec() //nolint:errcheck
 		}
 		br.Close()
 	}
 
-	// Create workflow step for blueprint
+	// Update project status within the transaction for atomicity
+	tx.Exec(ctx, `UPDATE projects SET status = 'blueprint_generated', updated_at = NOW() WHERE id = $1`, projectID)
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit blueprint transaction: %w", err)
+	}
+
+	// Create workflow step after successful commit (metadata; non-critical if this fails)
 	stepID, _ := s.wf.CreateStep(ctx, runID, "blueprint", "blueprint_gate", 0)
 	s.wf.MarkStepGenerated(ctx, stepID, bpID)
-
-	// Update project status
-	s.db.Exec(ctx, `UPDATE projects SET status = 'blueprint_generated', updated_at = NOW() WHERE id = $1`, projectID)
 
 	s.logger.Info("blueprint generated", zap.String("project_id", projectID), zap.String("blueprint_id", bpID))
 	return &bp, nil
@@ -347,17 +360,14 @@ func (s *BlueprintService) Approve(ctx context.Context, id, comment string) erro
 	var projectID string
 	s.db.QueryRow(ctx, `SELECT project_id FROM book_blueprints WHERE id = $1`, id).Scan(&projectID)
 
-	rows, _ := s.db.Query(ctx,
+	var stepID string
+	var stepVersion int
+	if err := s.db.QueryRow(ctx,
 		`SELECT ws.id, ws.version FROM workflow_steps ws
 		 JOIN workflow_runs wr ON ws.run_id = wr.id
 		 WHERE wr.project_id = $1 AND ws.step_key = 'blueprint' AND ws.status = 'generated'
-		 LIMIT 1`, projectID)
-	defer rows.Close()
-	if rows.Next() {
-		var stepID string
-		var version int
-		rows.Scan(&stepID, &version)
-		s.wf.TransitStep(ctx, stepID, "approved", version)
+		 LIMIT 1`, projectID).Scan(&stepID, &stepVersion); err == nil {
+		s.wf.TransitStep(ctx, stepID, "approved", stepVersion)
 	}
 
 	s.db.Exec(ctx, `UPDATE projects SET status = 'blueprint_approved', updated_at = NOW() WHERE id = $1`, projectID)
@@ -622,6 +632,15 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 	return nil
 }
 
+// MaxChapterNum returns the highest chapter_num for the project (0 if none).
+// Used by ContinueGenerate to avoid loading all chapter content just to find the max.
+func (s *ChapterService) MaxChapterNum(ctx context.Context, projectID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(MAX(chapter_num), 0) FROM chapters WHERE project_id = $1`, projectID).Scan(&n)
+	return n, err
+}
+
 func (s *ChapterService) SubmitReview(ctx context.Context, id string) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE chapters SET status = 'pending_review', updated_at = NOW() WHERE id = $1`, id)
@@ -709,7 +728,6 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	charRows, _ := s.db.Query(ctx,
 		`SELECT name, role_type, profile, current_state FROM characters WHERE project_id = $1`, projectID)
 	if charRows != nil {
-		defer charRows.Close()
 		for charRows.Next() {
 			var name, roleType string
 			var profile, state json.RawMessage
@@ -719,6 +737,7 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 				sb.WriteString(fmt.Sprintf("  当前状态：%s\n", string(state)))
 			}
 		}
+		charRows.Close() // close immediately to return connection to pool
 	}
 	sb.WriteString("\n")
 
@@ -744,13 +763,13 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		`SELECT content, embed_method, status, priority FROM foreshadowings WHERE project_id = $1 ORDER BY priority DESC`,
 		projectID)
 	if fsRows != nil {
-		defer fsRows.Close()
 		for fsRows.Next() {
 			var content, embedMethod, status string
 			var priority int
 			fsRows.Scan(&content, &embedMethod, &status, &priority)
 			sb.WriteString(fmt.Sprintf("- [%s] P%d %s（方式：%s）\n", status, priority, content, embedMethod))
 		}
+		fsRows.Close() // close immediately to return connection to pool
 	}
 	sb.WriteString("\n")
 

@@ -540,12 +540,15 @@ func (h *Handler) GenerateChapter(c *gin.Context) {
 	var req models.GenerateChapterRequest
 	c.ShouldBindJSON(&req)
 
-	chapterNumStr := c.Query("chapter_num")
-	chapterNum := 1
-	if chapterNumStr != "" {
-		if n, err := strconv.Atoi(chapterNumStr); err == nil {
+	// chapter_num: prefer JSON body field, fall back to query param
+	chapterNum := req.ChapterNum
+	if chapterNum == 0 {
+		if n, err := strconv.Atoi(c.Query("chapter_num")); err == nil {
 			chapterNum = n
 		}
+	}
+	if chapterNum == 0 {
+		chapterNum = 1
 	}
 
 	ch, err := h.chapters.Generate(c.Request.Context(), c.Param("id"), chapterNum, req)
@@ -597,14 +600,10 @@ func (h *Handler) ContinueGenerate(c *gin.Context) {
 		return
 	}
 
-	var lastNum int
-	rows, _ := h.chapters.List(c.Request.Context(), projectID)
-	if rows != nil {
-		for _, ch := range rows {
-			if ch.ChapterNum > lastNum {
-				lastNum = ch.ChapterNum
-			}
-		}
+	lastNum, err := h.chapters.MaxChapterNum(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to determine next chapter number"})
+		return
 	}
 	nextNum := lastNum + 1
 
@@ -626,16 +625,19 @@ func (h *Handler) ContinueGenerate(c *gin.Context) {
 func (h *Handler) StreamChapter(c *gin.Context) {
 	projectID := c.Param("id")
 
-	chapterNumStr := c.Query("chapter_num")
-	chapterNum := 1
-	if chapterNumStr != "" {
-		if n, err := strconv.Atoi(chapterNumStr); err == nil {
+	var req models.GenerateChapterRequest
+	c.ShouldBindJSON(&req)
+
+	// chapter_num: prefer JSON body field, fall back to query param
+	chapterNum := req.ChapterNum
+	if chapterNum == 0 {
+		if n, err := strconv.Atoi(c.Query("chapter_num")); err == nil {
 			chapterNum = n
 		}
 	}
-
-	var req models.GenerateChapterRequest
-	c.ShouldBindJSON(&req)
+	if chapterNum == 0 {
+		chapterNum = 1
+	}
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -850,7 +852,13 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 		"project_id":  ref.ProjectID,
 	})
 
-	resp, err := http.Post(sidecarURL+"/analyze", "application/json", bytes.NewReader(reqBody))
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, sidecarURL+"/analyze", bytes.NewReader(reqBody))
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to build sidecar request"})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
 	if resp != nil {
 		defer resp.Body.Close()
 	}

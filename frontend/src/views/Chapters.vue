@@ -26,7 +26,7 @@
 
     <!-- Chapter List -->
     <el-table :data="chapters" v-loading="loading" style="width: 100%;">
-      <el-table-column prop="chapter_number" label="章号" width="80" sortable />
+      <el-table-column prop="chapter_num" label="章号" width="80" sortable />
       <el-table-column prop="title" label="章节标题" />
       <el-table-column label="字数" width="100">
         <template #default="{ row }">{{ row.word_count || 0 }}</template>
@@ -58,7 +58,7 @@
           <el-row :gutter="16">
             <el-col :span="12">
               <el-form-item label="章节号">
-                <el-input-number v-model="genForm.chapter_number" :min="1" style="width: 100%;" />
+                <el-input-number v-model="genForm.chapter_num" :min="1" style="width: 100%;" />
               </el-form-item>
             </el-col>
             <el-col :span="12">
@@ -134,7 +134,7 @@ const streamBox = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
 
 const genForm = ref({
-  chapter_number: 1, target_words: 3000, title: '', direction: '', stream: true,
+  chapter_num: 1, target_words: 3000, title: '', direction: '', stream: true,
 })
 
 const renderedStream = computed(() =>
@@ -161,14 +161,15 @@ function formatDate(d: string) {
 
 onMounted(async () => {
   await fetchChapters()
-  genForm.value.chapter_number = chapters.value.length + 1
+  const maxNum = chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0)
+  genForm.value.chapter_num = maxNum + 1
 })
 
 async function fetchChapters() {
   loading.value = true
   try {
     const res = await chapterApi.list(projectId)
-    chapters.value = (res.data.data || []).sort((a: any, b: any) => a.chapter_number - b.chapter_number)
+    chapters.value = (res.data.data || []).sort((a: any, b: any) => a.chapter_num - b.chapter_num)
   } finally {
     loading.value = false
   }
@@ -197,7 +198,8 @@ async function handleExport(format: 'txt' | 'markdown') {
 }
 
 function showGenerate() {
-  genForm.value.chapter_number = chapters.value.length + 1
+  const maxNum = chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0)
+  genForm.value.chapter_num = maxNum + 1
   streamContent.value = ''
   streaming.value = false
   streamDone.value = false
@@ -205,7 +207,7 @@ function showGenerate() {
 }
 
 function regenerateChapter(ch: any) {
-  genForm.value.chapter_number = ch.chapter_number
+  genForm.value.chapter_num = ch.chapter_num
   genForm.value.title = ch.title || ''
   streamContent.value = ''
   streaming.value = false
@@ -226,7 +228,7 @@ async function startGenerate() {
       await chapterApi.streamGenerate(
         projectId,
         {
-          chapter_number: genForm.value.chapter_number,
+          chapter_num: genForm.value.chapter_num,
           target_words: genForm.value.target_words,
           title: genForm.value.title,
           direction: genForm.value.direction,
@@ -255,7 +257,7 @@ async function startGenerate() {
   } else {
     try {
       await chapterApi.generate(projectId, {
-        chapter_number: genForm.value.chapter_number,
+        chapter_num: genForm.value.chapter_num,
         target_words: genForm.value.target_words,
         title: genForm.value.title,
         direction: genForm.value.direction,

@@ -55,7 +55,8 @@ CREATE TABLE world_bibles (
     migration_source UUID REFERENCES reference_materials(id),
     version         INT DEFAULT 1,
     created_at      TIMESTAMP DEFAULT NOW(),
-    updated_at      TIMESTAMP DEFAULT NOW()
+    updated_at      TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT uq_world_bibles_project UNIQUE (project_id)
 );
 
 CREATE TABLE world_bible_constitutions (
@@ -66,7 +67,8 @@ CREATE TABLE world_bible_constitutions (
     forbidden_anchors JSONB NOT NULL DEFAULT '[]',
     version         INT DEFAULT 1,
     created_at      TIMESTAMP DEFAULT NOW(),
-    updated_at      TIMESTAMP DEFAULT NOW()
+    updated_at      TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT uq_world_bible_constitutions_project UNIQUE (project_id)
 );
 
 CREATE TABLE characters (
@@ -214,15 +216,15 @@ CREATE TABLE workflow_snapshots (
     created_at      TIMESTAMP DEFAULT NOW()
 );
 
-CREATE TABLE request_idempotency (
+CREATE TABLE idempotency_keys (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     idempotency_key VARCHAR(128) NOT NULL,
-    endpoint        VARCHAR(200) NOT NULL,
-    request_hash    VARCHAR(128) NOT NULL,
-    response_status INT,
+    action          VARCHAR(200) NOT NULL,
+    request_hash    VARCHAR(128),
+    status_code     INT,
     response_body   JSONB,
     created_at      TIMESTAMP DEFAULT NOW(),
-    UNIQUE (idempotency_key, endpoint)
+    UNIQUE (idempotency_key, action)
 );
 
 -- ============================================================
@@ -282,6 +284,17 @@ CREATE INDEX idx_outlines_project ON outlines(project_id);
 CREATE INDEX idx_characters_project ON characters(project_id);
 CREATE INDEX idx_foreshadowings_project ON foreshadowings(project_id);
 CREATE INDEX idx_reference_materials_project ON reference_materials(project_id);
+CREATE INDEX idx_world_bibles_project ON world_bibles(project_id);
+CREATE INDEX idx_world_bible_constitutions_project ON world_bible_constitutions(project_id);
+CREATE INDEX idx_book_blueprints_project ON book_blueprints(project_id);
+CREATE INDEX idx_chapters_project_num ON chapters(project_id, chapter_num);
+
+-- Deferred FK constraints for foreshadowings (chapters table created later)
+ALTER TABLE foreshadowings
+    ADD CONSTRAINT fk_foreshadowings_embed_chapter
+        FOREIGN KEY (embed_chapter_id) REFERENCES chapters(id) ON DELETE SET NULL,
+    ADD CONSTRAINT fk_foreshadowings_resolve_chapter
+        FOREIGN KEY (resolve_chapter_id) REFERENCES chapters(id) ON DELETE SET NULL;
 
 -- ============================================================
 -- Triggers: Chapter Sequence Guard
@@ -340,10 +353,12 @@ $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_projects_updated_at BEFORE UPDATE ON projects FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER trg_world_bibles_updated_at BEFORE UPDATE ON world_bibles FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER trg_world_bible_constitutions_updated_at BEFORE UPDATE ON world_bible_constitutions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER trg_characters_updated_at BEFORE UPDATE ON characters FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER trg_chapters_updated_at BEFORE UPDATE ON chapters FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER trg_volumes_updated_at BEFORE UPDATE ON volumes FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER trg_foreshadowings_updated_at BEFORE UPDATE ON foreshadowings FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER trg_book_blueprints_updated_at BEFORE UPDATE ON book_blueprints FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================
 -- Agent Review Tables

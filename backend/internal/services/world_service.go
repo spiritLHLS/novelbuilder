@@ -59,22 +59,18 @@ func (s *WorldBibleService) GetConstitution(ctx context.Context, projectID strin
 
 func (s *WorldBibleService) UpdateConstitution(ctx context.Context, projectID string, immutable, mutable, forbidden json.RawMessage) (*models.WorldBibleConstitution, error) {
 	var wbc models.WorldBibleConstitution
-	// Try update first
+	// Atomic UPSERT: requires UNIQUE (project_id) constraint added in migration.
 	err := s.db.QueryRow(ctx,
-		`UPDATE world_bible_constitutions SET immutable_rules = $1, mutable_rules = $2, forbidden_anchors = $3, version = version + 1
-		 WHERE project_id = $4
+		`INSERT INTO world_bible_constitutions (project_id, immutable_rules, mutable_rules, forbidden_anchors)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (project_id) DO UPDATE SET
+		     immutable_rules  = EXCLUDED.immutable_rules,
+		     mutable_rules    = EXCLUDED.mutable_rules,
+		     forbidden_anchors = EXCLUDED.forbidden_anchors,
+		     version          = world_bible_constitutions.version + 1
 		 RETURNING id, project_id, immutable_rules, mutable_rules, forbidden_anchors, version, created_at, updated_at`,
-		immutable, mutable, forbidden, projectID).Scan(&wbc.ID, &wbc.ProjectID, &wbc.ImmutableRules,
+		projectID, immutable, mutable, forbidden).Scan(&wbc.ID, &wbc.ProjectID, &wbc.ImmutableRules,
 		&wbc.MutableRules, &wbc.ForbiddenAnchors, &wbc.Version, &wbc.CreatedAt, &wbc.UpdatedAt)
-	if err != nil {
-		// Insert new
-		err = s.db.QueryRow(ctx,
-			`INSERT INTO world_bible_constitutions (project_id, immutable_rules, mutable_rules, forbidden_anchors)
-			 VALUES ($1, $2, $3, $4)
-			 RETURNING id, project_id, immutable_rules, mutable_rules, forbidden_anchors, version, created_at, updated_at`,
-			projectID, immutable, mutable, forbidden).Scan(&wbc.ID, &wbc.ProjectID, &wbc.ImmutableRules,
-			&wbc.MutableRules, &wbc.ForbiddenAnchors, &wbc.Version, &wbc.CreatedAt, &wbc.UpdatedAt)
-	}
 	return &wbc, err
 }
 

@@ -235,12 +235,12 @@ onMounted(fetchWorkflow)
 async function fetchWorkflow() {
   try {
     const res = await workflowApi.getHistory(projectId)
-    const data = res.data.data
-    if (data?.runs?.length) {
-      currentRun.value = data.runs[0]
+    const runs: any[] = res.data.data || []
+    if (runs.length) {
+      currentRun.value = runs[0]
       steps.value = currentRun.value.steps || []
-      snapshots.value = currentRun.value.snapshots || []
-      history.value = data.runs
+      snapshots.value = []
+      history.value = runs
     }
   } catch { /* empty */ }
 }
@@ -291,8 +291,7 @@ async function executeRollback() {
   if (!rollbackTargetStep.value) { ElMessage.warning('请选择回滚目标'); return }
   rollingBack.value = true
   try {
-    await workflowApi.rollback(projectId, {
-      run_id: currentRun.value.id,
+    await workflowApi.rollback(currentRun.value.id, {
       target_step_id: rollbackTargetStep.value,
       reason: rollbackReason.value,
     })

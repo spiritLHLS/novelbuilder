@@ -143,43 +143,83 @@ type StepDetail struct {
 }
 
 func (e *Engine) GetRunHistory(ctx context.Context, projectID string) ([]RunHistory, error) {
+	// Single JOIN query eliminates the N+1 pattern.
 	rows, err := e.db.Query(ctx,
-		`SELECT id, project_id, strict_review, current_step, status, created_at
-		 FROM workflow_runs WHERE project_id = $1 ORDER BY created_at DESC`, projectID)
+		`SELECT wr.id, wr.project_id, wr.strict_review, wr.current_step, wr.status, wr.created_at,
+		        ws.id, ws.step_key, ws.step_order, ws.gate_level, ws.status,
+		        ws.output_ref, ws.review_comment, ws.version, ws.generated_at, ws.reviewed_at, ws.created_at
+		 FROM workflow_runs wr
+		 LEFT JOIN workflow_steps ws ON ws.run_id = wr.id
+		 WHERE wr.project_id = $1
+		 ORDER BY wr.created_at DESC, ws.step_order`, projectID)
 	if err != nil {
-		return nil, fmt.Errorf("query runs: %w", err)
+		return nil, fmt.Errorf("query run history: %w", err)
 	}
 	defer rows.Close()
 
-	var runs []RunHistory
+	runMap := make(map[string]*RunHistory)
+	var runOrder []string
+
 	for rows.Next() {
-		var r RunHistory
-		if err := rows.Scan(&r.ID, &r.ProjectID, &r.StrictReview, &r.CurrentStep, &r.Status, &r.CreatedAt); err != nil {
+		var (
+			runID, runProjectID, currentStep, runStatus string
+			strictReview                                bool
+			runCreatedAt                                time.Time
+			// step columns are nullable due to LEFT JOIN
+			stepID        *string
+			stepKey       *string
+			stepOrder     *int
+			gateLevel     *string
+			stepStatus    *string
+			outputRef     *string
+			reviewComment *string
+			version       *int
+			generatedAt   *time.Time
+			reviewedAt    *time.Time
+			stepCreatedAt *time.Time
+		)
+		if err := rows.Scan(
+			&runID, &runProjectID, &strictReview, &currentStep, &runStatus, &runCreatedAt,
+			&stepID, &stepKey, &stepOrder, &gateLevel, &stepStatus,
+			&outputRef, &reviewComment, &version, &generatedAt, &reviewedAt, &stepCreatedAt,
+		); err != nil {
 			return nil, err
 		}
-		runs = append(runs, r)
-	}
 
-	for i := range runs {
-		stepRows, err := e.db.Query(ctx,
-			`SELECT id, step_key, step_order, gate_level, status, output_ref, review_comment, version, generated_at, reviewed_at, created_at
-			 FROM workflow_steps WHERE run_id = $1 ORDER BY step_order`, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		for stepRows.Next() {
-			var s StepDetail
-			if err := stepRows.Scan(&s.ID, &s.StepKey, &s.StepOrder, &s.GateLevel, &s.Status,
-				&s.OutputRef, &s.ReviewComment, &s.Version, &s.GeneratedAt, &s.ReviewedAt, &s.CreatedAt); err != nil {
-				stepRows.Close()
-				return nil, err
+		if _, exists := runMap[runID]; !exists {
+			runMap[runID] = &RunHistory{
+				ID:           runID,
+				ProjectID:    runProjectID,
+				StrictReview: strictReview,
+				CurrentStep:  currentStep,
+				Status:       runStatus,
+				CreatedAt:    runCreatedAt,
 			}
-			runs[i].Steps = append(runs[i].Steps, s)
+			runOrder = append(runOrder, runID)
 		}
-		stepRows.Close()
+
+		if stepID != nil {
+			runMap[runID].Steps = append(runMap[runID].Steps, StepDetail{
+				ID:            *stepID,
+				StepKey:       *stepKey,
+				StepOrder:     *stepOrder,
+				GateLevel:     *gateLevel,
+				Status:        *stepStatus,
+				OutputRef:     outputRef,
+				ReviewComment: *reviewComment,
+				Version:       *version,
+				GeneratedAt:   generatedAt,
+				ReviewedAt:    reviewedAt,
+				CreatedAt:     *stepCreatedAt,
+			})
+		}
 	}
 
-	return runs, nil
+	result := make([]RunHistory, 0, len(runOrder))
+	for _, id := range runOrder {
+		result = append(result, *runMap[id])
+	}
+	return result, nil
 }
 
 func (e *Engine) CheckIdempotency(ctx context.Context, key, action string) (bool, []byte, error) {

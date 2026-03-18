@@ -284,6 +284,7 @@ type ContinueGenerateRequest struct {
 }
 
 type GenerateChapterRequest struct {
+	ChapterNum      int     `json:"chapter_num"`
 	NarrativeOrder  string  `json:"narrative_order"`
 	POVCharacter    string  `json:"pov_character"`
 	AllowPOVDrift   bool    `json:"allow_pov_drift"`
