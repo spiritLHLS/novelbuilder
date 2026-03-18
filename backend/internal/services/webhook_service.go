@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +18,34 @@ import (
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
+
+// isPrivateURL returns true if the URL resolves to a loopback, link-local,
+// or RFC-1918 private address — used to block SSRF via webhook URLs.
+func isPrivateURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return true // treat unparsable URLs as unsafe
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return true // only allow HTTP/HTTPS
+	}
+	host := u.Hostname()
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		// If DNS fails, block the request conservatively
+		return true
+	}
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			return true
+		}
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
+			return true
+		}
+	}
+	return false
+}
 
 type WebhookService struct {
 	db         *pgxpool.Pool
@@ -53,6 +83,9 @@ func (s *WebhookService) List(ctx context.Context, projectID string) ([]models.N
 }
 
 func (s *WebhookService) Create(ctx context.Context, projectID string, req models.CreateWebhookRequest) (*models.NotificationWebhook, error) {
+	if isPrivateURL(req.URL) {
+		return nil, fmt.Errorf("webhook URL must point to a public host")
+	}
 	id := uuid.New().String()
 	now := time.Now()
 
@@ -137,6 +170,10 @@ func (s *WebhookService) Fire(ctx context.Context, projectID, event string, payl
 	for _, h := range hooks {
 		h := h
 		go func() {
+			if isPrivateURL(h.url) {
+				s.logger.Warn("webhook fire: blocked private URL", zap.String("webhook_id", h.id), zap.String("url", h.url))
+				return
+			}
 			sig := computeHMAC(body, h.secret)
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.url, bytes.NewReader(body))
 			if err != nil {

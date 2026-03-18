@@ -271,6 +271,9 @@ func (s *EditPropagationService) GetPlan(ctx context.Context, planID string) (*m
 		it.ResultSnapshot = json.RawMessage(rs)
 		p.Items = append(p.Items, it)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("get plan items rows: %w", err)
+	}
 	return &p, nil
 }
 
@@ -298,6 +301,9 @@ func (s *EditPropagationService) ListChangeEvents(ctx context.Context, projectID
 		ev.OldSnapshot = json.RawMessage(old)
 		ev.NewSnapshot = json.RawMessage(newSnap)
 		out = append(out, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list change events rows: %w", err)
 	}
 	return out, nil
 }
@@ -436,8 +442,9 @@ func (s *EditPropagationService) findCandidates(
 	if err == nil {
 		for rows.Next() {
 			var c impactCandidate
-			rows.Scan(&c.ID, &c.ChapterNum, &c.Title, &c.Summary)
-			out = append(out, c)
+			if err := rows.Scan(&c.ID, &c.ChapterNum, &c.Title, &c.Summary); err == nil {
+				out = append(out, c)
+			}
 		}
 		rows.Close()
 	}
@@ -456,8 +463,9 @@ func (s *EditPropagationService) findCandidates(
 	defer rows.Close()
 	for rows.Next() {
 		var c impactCandidate
-		rows.Scan(&c.ID, &c.ChapterNum, &c.Title, &c.Summary)
-		out = append(out, c)
+		if err := rows.Scan(&c.ID, &c.ChapterNum, &c.Title, &c.Summary); err == nil {
+			out = append(out, c)
+		}
 	}
 	return out
 }

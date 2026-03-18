@@ -126,27 +126,15 @@ func main() {
 
 	// CORS middleware
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Idempotency-Key", "X-Request-Id"},
-		ExposeHeaders:    []string{"Content-Length", "X-Request-Id"},
-		AllowCredentials: true,
-		MaxAge:           12 * time.Hour,
+		AllowOrigins:  []string{"*"},
+		AllowMethods:  []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:  []string{"Origin", "Content-Type", "Authorization", "Idempotency-Key", "X-Request-Id"},
+		ExposeHeaders: []string{"Content-Length", "X-Request-Id"},
+		MaxAge:        12 * time.Hour,
 	}))
 
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger(logger))
-
-	// SSE middleware for streaming endpoints
-	r.Use(func(c *gin.Context) {
-		if c.Request.URL.Path == "/api/projects/"+c.Param("id")+"/chapters/stream" {
-			c.Header("Cache-Control", "no-cache")
-			c.Header("Content-Type", "text/event-stream")
-			c.Header("Connection", "keep-alive")
-			c.Header("X-Accel-Buffering", "no")
-		}
-		c.Next()
-	})
 
 	// Register API routes
 	h.RegisterRoutes(r)

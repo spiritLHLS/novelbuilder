@@ -132,11 +132,13 @@ func (s *AgentReviewService) StreamReview(
 	}
 
 	// Persist session start
-	s.db.Exec(ctx,
+	if _, err := s.db.Exec(ctx,
 		`INSERT INTO agent_review_sessions
 		 (id, project_id, review_scope, target_id, status, rounds, consensus, created_at)
 		 VALUES ($1,$2,$3,$4,'running',$5,'',$6)`,
-		sessionID, projectID, req.Scope, req.TargetID, rounds, now)
+		sessionID, projectID, req.Scope, req.TargetID, rounds, now); err != nil {
+		return nil, fmt.Errorf("create review session: %w", err)
+	}
 
 	// Gather context
 	briefing, err := s.buildBriefing(ctx, projectID, req)
@@ -267,6 +269,9 @@ func (s *AgentReviewService) GetSession(ctx context.Context, sessionID string) (
 		json.Unmarshal(tagsJSON, &m.Tags)
 		sess.Messages = append(sess.Messages, m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("get session messages rows: %w", err)
+	}
 	return &sess, nil
 }
 
@@ -287,6 +292,9 @@ func (s *AgentReviewService) ListSessions(ctx context.Context, projectID string)
 			return nil, err
 		}
 		sessions = append(sessions, sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list sessions rows: %w", err)
 	}
 	return sessions, nil
 }

@@ -111,6 +111,9 @@ func (s *CharacterService) List(ctx context.Context, projectID string) ([]models
 		}
 		chars = append(chars, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list characters rows: %w", err)
+	}
 	return chars, nil
 }
 
@@ -184,6 +187,9 @@ func (s *OutlineService) List(ctx context.Context, projectID string) ([]models.O
 		}
 		outlines = append(outlines, o)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list outlines rows: %w", err)
+	}
 	return outlines, nil
 }
 
@@ -248,6 +254,9 @@ func (s *ForeshadowingService) List(ctx context.Context, projectID string) ([]mo
 		}
 		list = append(list, f)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list foreshadowings rows: %w", err)
+	}
 	return list, nil
 }
 
@@ -304,6 +313,9 @@ func (s *VolumeService) List(ctx context.Context, projectID string) ([]models.Vo
 			return nil, err
 		}
 		vols = append(vols, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list volumes rows: %w", err)
 	}
 	return vols, nil
 }

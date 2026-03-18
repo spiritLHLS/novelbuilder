@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useProjectStore } from '@/stores/project'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -126,14 +127,11 @@ const router = createRouter({
 })
 
 router.beforeEach((to, _from, next) => {
-  const projectStore = import('@/stores/project').then(m => {
-    const store = m.useProjectStore()
-    const projectId = to.params.projectId as string
-    if (projectId) {
-      store.setCurrentProject(projectId)
-    }
-  })
-  projectStore.then(() => next())
+  const projectId = to.params.projectId as string
+  if (projectId) {
+    useProjectStore().setCurrentProject(projectId)
+  }
+  next()
 })
 
 export default router

@@ -2,10 +2,12 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/crypto"
 	"github.com/novelbuilder/backend/internal/models"
@@ -54,6 +56,9 @@ func (s *LLMProfileService) List(ctx context.Context) ([]models.LLMProfile, erro
 		p.HasAPIKey = rawKey != ""
 		p.MaskedAPIKey = maskAPIKey(rawKey)
 		profiles = append(profiles, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list llm_profiles rows: %w", err)
 	}
 	return profiles, nil
 }
@@ -110,7 +115,10 @@ func (s *LLMProfileService) GetDefault(ctx context.Context) (*models.LLMProfileF
 		&p.ModelName, &p.MaxTokens, &p.Temperature, &p.IsDefault,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
-		return nil, nil // no default configured
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil // no default profile configured yet
+		}
+		return nil, fmt.Errorf("get default llm_profile: %w", err)
 	}
 	rawKey, _ := crypto.Decrypt(storedKey, s.encryptionKey)
 	p.APIKey = rawKey
@@ -205,7 +213,7 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 		existing.BaseURL = req.BaseURL
 	}
 	// maskedKey tracks the plain-text key for safe display in the returned struct.
-	maskedKey := ""
+	var maskedKey string
 	if req.APIKey != "" {
 		maskedKey = req.APIKey
 		encKey, err := crypto.Encrypt(req.APIKey, s.encryptionKey)
@@ -213,6 +221,10 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 			return nil, fmt.Errorf("encrypt api key: %w", err)
 		}
 		existing.APIKey = encKey
+	} else {
+		// Key unchanged: decrypt existing stored key to build the masked display value.
+		plain, _ := crypto.Decrypt(existing.APIKey, s.encryptionKey)
+		maskedKey = plain
 	}
 	if req.ModelName != "" {
 		existing.ModelName = req.ModelName
@@ -220,8 +232,8 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 	if req.MaxTokens > 0 {
 		existing.MaxTokens = req.MaxTokens
 	}
-	if req.Temperature > 0 {
-		existing.Temperature = req.Temperature
+	if req.Temperature != nil {
+		existing.Temperature = *req.Temperature
 	}
 	existing.IsDefault = req.IsDefault
 

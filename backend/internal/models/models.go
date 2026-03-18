@@ -50,14 +50,14 @@ type CreateLLMProfileRequest struct {
 }
 
 type UpdateLLMProfileRequest struct {
-	Name        string  `json:"name"`
-	Provider    string  `json:"provider"`
-	BaseURL     string  `json:"base_url"`
-	APIKey      string  `json:"api_key"`
-	ModelName   string  `json:"model_name"`
-	MaxTokens   int     `json:"max_tokens"`
-	Temperature float64 `json:"temperature"`
-	IsDefault   bool    `json:"is_default"`
+	Name        string   `json:"name"`
+	Provider    string   `json:"provider"`
+	BaseURL     string   `json:"base_url"`
+	APIKey      string   `json:"api_key"`
+	ModelName   string   `json:"model_name"`
+	MaxTokens   int      `json:"max_tokens"`
+	Temperature *float64 `json:"temperature"`
+	IsDefault   bool     `json:"is_default"`
 }
 
 // RAGStatus is returned by GET /api/projects/:id/rag/status.
@@ -666,21 +666,21 @@ type CreateWebhookRequest struct {
 // ============================================================
 
 type AgentRunRequest struct {
-	TaskType    string                 `json:"task_type"`    // generate_chapter | review | world_build
-	UserPrompt  string                 `json:"user_prompt"`
-	ChapterNum  *int                   `json:"chapter_num,omitempty"`
-	OutlineHint string                 `json:"outline_hint,omitempty"`
+	TaskType     string                 `json:"task_type"` // generate_chapter | review | world_build
+	UserPrompt   string                 `json:"user_prompt"`
+	ChapterNum   *int                   `json:"chapter_num,omitempty"`
+	OutlineHint  string                 `json:"outline_hint,omitempty"`
 	StyleProfile map[string]interface{} `json:"style_profile,omitempty"`
-	LLMConfig   map[string]interface{} `json:"llm_config,omitempty"`
-	MaxRetries  int                    `json:"max_retries,omitempty"`
+	LLMConfig    map[string]interface{} `json:"llm_config,omitempty"`
+	MaxRetries   int                    `json:"max_retries,omitempty"`
 }
 
 type AgentSessionStatus struct {
-	SessionID string                 `json:"session_id"`
-	Status    string                 `json:"status"`  // running | done | error
+	SessionID string                   `json:"session_id"`
+	Status    string                   `json:"status"` // running | done | error
 	Progress  []map[string]interface{} `json:"progress,omitempty"`
-	Result    *AgentResult           `json:"result,omitempty"`
-	Error     string                 `json:"error,omitempty"`
+	Result    *AgentResult             `json:"result,omitempty"`
+	Error     string                   `json:"error,omitempty"`
 }
 
 type AgentResult struct {
@@ -715,10 +715,10 @@ type GraphData struct {
 }
 
 type GraphUpsertRequest struct {
-	EntityType string                 `json:"entity_type" binding:"required"`
-	EntityID   string                 `json:"entity_id"   binding:"required"`
-	Name       string                 `json:"name"        binding:"required"`
-	Properties map[string]interface{} `json:"properties,omitempty"`
+	EntityType string                   `json:"entity_type" binding:"required"`
+	EntityID   string                   `json:"entity_id"   binding:"required"`
+	Name       string                   `json:"name"        binding:"required"`
+	Properties map[string]interface{}   `json:"properties,omitempty"`
 	Relations  []map[string]interface{} `json:"relations,omitempty"`
 }
 

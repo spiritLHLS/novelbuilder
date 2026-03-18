@@ -51,6 +51,9 @@ func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 		}
 		projects = append(projects, p)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list projects rows: %w", err)
+	}
 	return projects, nil
 }
 
@@ -216,11 +219,13 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 	// Store world bible
 	if blueprint.WorldBible != nil {
 		wbID := uuid.New().String()
-		tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO world_bibles (id, project_id, content, version, created_at, updated_at)
 			 VALUES ($1, $2, $3, 1, NOW(), NOW())
 			 ON CONFLICT (project_id) DO UPDATE SET content = $3, version = world_bibles.version + 1, updated_at = NOW()`,
-			wbID, projectID, blueprint.WorldBible)
+			wbID, projectID, blueprint.WorldBible); err != nil {
+			return nil, fmt.Errorf("store world bible: %w", err)
+		}
 	}
 
 	// Store characters (batch insert)
@@ -237,10 +242,15 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 				uuid.New().String(), projectID, ch.Name, ch.RoleType, profileJSON)
 		}
 		br := tx.SendBatch(ctx, chBatch)
-		for range blueprint.Characters {
-			br.Exec() //nolint:errcheck
+		for i := range blueprint.Characters {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				return nil, fmt.Errorf("insert character %d: %w", i, err)
+			}
 		}
-		br.Close()
+		if err := br.Close(); err != nil {
+			return nil, fmt.Errorf("character batch close: %w", err)
+		}
 	}
 
 	// Store foreshadowings (batch insert)
@@ -261,10 +271,15 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 				uuid.New().String(), projectID, fs.Content, embedMethod, priority)
 		}
 		br := tx.SendBatch(ctx, fsBatch)
-		for range blueprint.Foreshadowings {
-			br.Exec() //nolint:errcheck
+		for i := range blueprint.Foreshadowings {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				return nil, fmt.Errorf("insert foreshadowing %d: %w", i, err)
+			}
 		}
-		br.Close()
+		if err := br.Close(); err != nil {
+			return nil, fmt.Errorf("foreshadowing batch close: %w", err)
+		}
 	}
 
 	// Create book blueprint record
@@ -308,14 +323,21 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 				uuid.New().String(), projectID, i+1, title, bpID, vol.ChapterStart, vol.ChapterEnd)
 		}
 		br := tx.SendBatch(ctx, volBatch)
-		for range blueprint.Volumes {
-			br.Exec() //nolint:errcheck
+		for i := range blueprint.Volumes {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				return nil, fmt.Errorf("insert volume %d: %w", i, err)
+			}
 		}
-		br.Close()
+		if err := br.Close(); err != nil {
+			return nil, fmt.Errorf("volume batch close: %w", err)
+		}
 	}
 
 	// Update project status within the transaction for atomicity
-	tx.Exec(ctx, `UPDATE projects SET status = 'blueprint_generated', updated_at = NOW() WHERE id = $1`, projectID)
+	if _, err := tx.Exec(ctx, `UPDATE projects SET status = 'blueprint_generated', updated_at = NOW() WHERE id = $1`, projectID); err != nil {
+		return nil, fmt.Errorf("update project status: %w", err)
+	}
 
 	if err = tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit blueprint transaction: %w", err)
@@ -358,7 +380,10 @@ func (s *BlueprintService) Approve(ctx context.Context, id, comment string) erro
 
 	// Also approve the workflow step
 	var projectID string
-	s.db.QueryRow(ctx, `SELECT project_id FROM book_blueprints WHERE id = $1`, id).Scan(&projectID)
+	if err := s.db.QueryRow(ctx, `SELECT project_id FROM book_blueprints WHERE id = $1`, id).Scan(&projectID); err != nil {
+		s.logger.Error("Approve: failed to get project_id", zap.String("blueprint_id", id), zap.Error(err))
+		return nil
+	}
 
 	var stepID string
 	var stepVersion int
@@ -446,6 +471,9 @@ func (s *ChapterService) List(ctx context.Context, projectID string) ([]models.C
 			return nil, err
 		}
 		chapters = append(chapters, ch)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list chapters rows: %w", err)
 	}
 	return chapters, nil
 }
@@ -550,7 +578,7 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 	}
 
 	// Store summary in Redis for RecurrentGPT sliding window memory
-	s.rdb.Set(ctx, fmt.Sprintf("chapter_summary:%s:%d", projectID, chapterNum), summary, 0)
+	s.rdb.Set(ctx, fmt.Sprintf("chapter_summary:%s:%d", projectID, chapterNum), summary, 7*24*time.Hour)
 	// Store content in Redis for recent context
 	s.rdb.Set(ctx, fmt.Sprintf("chapter_content:%s:%d", projectID, chapterNum), chapterContent, 24*time.Hour)
 
@@ -638,7 +666,7 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', 1, NOW(), NOW())`,
 		chID, projectID, volumeID, chapterNum, title, content, wordCount, summary, genParams)
 
-	s.rdb.Set(ctx, fmt.Sprintf("chapter_summary:%s:%d", projectID, chapterNum), summary, 0)
+	s.rdb.Set(ctx, fmt.Sprintf("chapter_summary:%s:%d", projectID, chapterNum), summary, 7*24*time.Hour)
 	s.rdb.Set(ctx, fmt.Sprintf("chapter_content:%s:%d", projectID, chapterNum), content, 24*time.Hour)
 
 	// ── Async originality audit ───────────────────────────────────────────────

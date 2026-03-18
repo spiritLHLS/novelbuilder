@@ -24,13 +24,16 @@ type TaskQueueService struct {
 	workers    int
 	logger     *zap.Logger
 
-	handlers map[string]TaskHandler
-	mu       sync.RWMutex
-	stop     chan struct{}
-	wg       sync.WaitGroup
+	handlers   map[string]TaskHandler
+	mu         sync.RWMutex
+	stop       chan struct{}
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 func NewTaskQueueService(db *pgxpool.Pool, workers, maxRetries int, logger *zap.Logger) *TaskQueueService {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &TaskQueueService{
 		db:         db,
 		workers:    workers,
@@ -38,6 +41,8 @@ func NewTaskQueueService(db *pgxpool.Pool, workers, maxRetries int, logger *zap.
 		logger:     logger,
 		handlers:   make(map[string]TaskHandler),
 		stop:       make(chan struct{}),
+		stopCtx:    ctx,
+		stopCancel: cancel,
 	}
 }
 
@@ -59,6 +64,7 @@ func (s *TaskQueueService) Start() {
 
 // Stop signals workers to exit and waits for them.
 func (s *TaskQueueService) Stop() {
+	s.stopCancel()
 	close(s.stop)
 	s.wg.Wait()
 	s.logger.Info("task queue stopped")
@@ -74,7 +80,7 @@ func (s *TaskQueueService) worker() {
 		case <-s.stop:
 			return
 		case <-ticker.C:
-			if err := s.processOne(context.Background()); err != nil {
+			if err := s.processOne(s.stopCtx); err != nil {
 				s.logger.Debug("task worker: no task or error", zap.Error(err))
 			}
 		}

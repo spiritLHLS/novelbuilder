@@ -25,7 +25,7 @@
               <el-input-number
                 v-model="presets.ai_score_threshold"
                 :min="0" :max="100" :precision="1"
-                @change="v => setPreset('ai_score_threshold', String(v))"
+                @change="(v: number | undefined) => setPreset('ai_score_threshold', String(v))"
                 style="width:100%"
               />
             </el-form-item>
@@ -33,7 +33,7 @@
               <el-input-number
                 v-model="presets.originality_threshold"
                 :min="0" :max="1" :step="0.05" :precision="2"
-                @change="v => setPreset('originality_threshold', String(v))"
+                @change="(v: number | undefined) => setPreset('originality_threshold', String(v))"
                 style="width:100%"
               />
             </el-form-item>
@@ -41,7 +41,7 @@
               <el-input-number
                 v-model="presets.min_reward_density"
                 :min="0" :max="10" :step="0.1" :precision="1"
-                @change="v => setPreset('min_reward_density', String(v))"
+                @change="(v: number | undefined) => setPreset('min_reward_density', String(v))"
                 style="width:100%"
               />
             </el-form-item>
@@ -49,7 +49,7 @@
               <el-input-number
                 v-model="presets.burstiness_target_cv"
                 :min="0" :max="5" :step="0.1" :precision="2"
-                @change="v => setPreset('burstiness_target_cv', String(v))"
+                @change="(v: number | undefined) => setPreset('burstiness_target_cv', String(v))"
                 style="width:100%"
               />
             </el-form-item>
@@ -65,7 +65,7 @@
                 v-model="presets.strict_review"
                 active-value="true"
                 inactive-value="false"
-                @change="v => setPreset('strict_review', String(v))"
+                @change="(v: string | boolean) => setPreset('strict_review', String(v))"
               />
               <span class="hint">开启后章节生成后需要人工审核</span>
             </el-form-item>

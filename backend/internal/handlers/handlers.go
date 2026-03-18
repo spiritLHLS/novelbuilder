@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -779,7 +780,11 @@ func (h *Handler) ApproveChapter(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req)
 	if err := h.chapters.Approve(c.Request.Context(), c.Param("id"), req.ReviewComment, req.Version); err != nil {
-		c.JSON(409, gin.H{"error": err.Error(), "code": "WF_006", "message": "当前页面版本已过期。"})
+		if errors.Is(err, workflow.ErrOptimisticLock) {
+			c.JSON(409, gin.H{"error": err.Error(), "code": "WF_006", "message": "当前页面版本已过期。"})
+		} else {
+			c.JSON(500, gin.H{"error": err.Error()})
+		}
 		return
 	}
 	c.JSON(200, gin.H{"status": "approved", "next_action": "chapter_continue_available"})
@@ -792,7 +797,11 @@ func (h *Handler) RejectChapter(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req)
 	if err := h.chapters.Reject(c.Request.Context(), c.Param("id"), req.ReviewComment, req.Version); err != nil {
-		c.JSON(409, gin.H{"error": err.Error(), "code": "WF_006", "message": "当前页面版本已过期。"})
+		if errors.Is(err, workflow.ErrOptimisticLock) {
+			c.JSON(409, gin.H{"error": err.Error(), "code": "WF_006", "message": "当前页面版本已过期。"})
+		} else {
+			c.JSON(500, gin.H{"error": err.Error()})
+		}
 		return
 	}
 	c.JSON(200, gin.H{"status": "rejected"})

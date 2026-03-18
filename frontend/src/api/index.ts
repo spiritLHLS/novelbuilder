@@ -107,6 +107,10 @@ export const chapterApi = {
       body: JSON.stringify(data),
       signal,
     })
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(`Stream error ${response.status}: ${errText}`)
+    }
     const reader = response.body?.getReader()
     if (!reader) throw new Error('Stream not available')
     const decoder = new TextDecoder()

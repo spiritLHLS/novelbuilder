@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,11 +20,17 @@ import (
 type OriginalityService struct {
 	db         *pgxpool.Pool
 	sidecarURL string
+	httpClient *http.Client
 	logger     *zap.Logger
 }
 
 func NewOriginalityService(db *pgxpool.Pool, sidecarURL string, logger *zap.Logger) *OriginalityService {
-	return &OriginalityService{db: db, sidecarURL: sidecarURL, logger: logger}
+	return &OriginalityService{
+		db:         db,
+		sidecarURL: sidecarURL,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+		logger:     logger,
+	}
 }
 
 // metricsRequest body for the Python sidecar /metrics endpoint.
@@ -114,7 +121,7 @@ func (s *OriginalityService) callMetrics(ctx context.Context, text string) (*met
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("sidecar /metrics unreachable: %w", err)
 	}

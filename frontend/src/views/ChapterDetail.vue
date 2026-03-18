@@ -3,7 +3,7 @@
     <div class="page-header">
       <div>
         <el-button text @click="goBack"><el-icon><ArrowLeft /></el-icon>返回章节列表</el-button>
-        <h1 v-if="chapter">第{{ chapter.chapter_number }}章 {{ chapter.title || '' }}</h1>
+        <h1 v-if="chapter">第{{ chapter.chapter_num }}章 {{ chapter.title || '' }}</h1>
       </div>
       <div class="header-actions" v-if="chapter">
         <el-tag :type="statusType" size="large">{{ statusLabel }}</el-tag>
@@ -34,7 +34,7 @@
         <el-card shadow="hover">
           <template #header><span>章节信息</span></template>
           <el-descriptions :column="1" size="small" border>
-            <el-descriptions-item label="章节号">{{ chapter.chapter_number }}</el-descriptions-item>
+            <el-descriptions-item label="章节号">{{ chapter.chapter_num }}</el-descriptions-item>
             <el-descriptions-item label="字数">{{ chapter.word_count || 0 }}</el-descriptions-item>
             <el-descriptions-item label="版本">{{ chapter.version }}</el-descriptions-item>
             <el-descriptions-item label="状态">
@@ -179,7 +179,7 @@ function goBack() {
 
 async function submitReview() {
   try {
-    // trigger workflow transition
+    await chapterApi.submitReview(projectId, chapterId)
     chapter.value.status = 'pending_review'
     ElMessage.success('已提交审核')
   } catch { ElMessage.error('操作失败') }
@@ -187,6 +187,7 @@ async function submitReview() {
 
 async function approveChapter() {
   try {
+    await chapterApi.approve(projectId, chapterId, '', chapter.value.version)
     chapter.value.status = 'approved'
     ElMessage.success('章节已通过')
   } catch { ElMessage.error('操作失败') }
@@ -195,6 +196,7 @@ async function approveChapter() {
 async function rejectChapter() {
   const { value: reason } = await ElMessageBox.prompt('请输入驳回原因', '驳回', { type: 'warning' })
   try {
+    await chapterApi.reject(projectId, chapterId, reason, chapter.value.version)
     chapter.value.status = 'rejected'
     reviews.value.unshift({
       id: Date.now().toString(), decision: 'rejected', role_name: '人工审核',
