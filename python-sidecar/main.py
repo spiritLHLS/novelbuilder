@@ -674,6 +674,21 @@ async def humanize_text(req: HumanizeRequest):
     return {"result": result}
 
 
+@app.post("/metrics")
+async def metrics_flat(req: MetricsRequest):
+    """
+    Flat /metrics endpoint consumed by the Go originality_service.
+    Returns perplexity, burstiness, ai_probability, verdict at top level.
+    """
+    result = metrics_estimator.estimate(req.text)
+    return {
+        "perplexity": result.get("perplexity_estimate", 0.0),
+        "burstiness": result.get("burstiness", 0.0),
+        "ai_probability": result.get("ai_probability", 0.0),
+        "verdict": result.get("verdict", "uncertain"),
+    }
+
+
 @app.post("/metrics/perplexity-burstiness")
 async def estimate_metrics(req: MetricsRequest):
     result = metrics_estimator.estimate(req.text)
