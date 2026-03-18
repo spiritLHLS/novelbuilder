@@ -6,13 +6,15 @@ import (
 )
 
 type Project struct {
-	ID          string    `json:"id" db:"id"`
-	Title       string    `json:"title" db:"title"`
-	Genre       string    `json:"genre" db:"genre"`
-	Description string    `json:"description" db:"description"`
-	Status      string    `json:"status" db:"status"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	ID               string    `json:"id" db:"id"`
+	Title            string    `json:"title" db:"title"`
+	Genre            string    `json:"genre" db:"genre"`
+	Description      string    `json:"description" db:"description"`
+	StyleDescription string    `json:"style_description" db:"style_description"`
+	TargetWords      int       `json:"target_words" db:"target_words"`
+	Status           string    `json:"status" db:"status"`
+	CreatedAt        time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // LLMProfile represents a user-configured AI model profile stored in the database.
@@ -257,9 +259,11 @@ type VectorStoreEntry struct {
 // Request/Response types
 
 type CreateProjectRequest struct {
-	Title       string `json:"title" binding:"required"`
-	Genre       string `json:"genre"`
-	Description string `json:"description"`
+	Title            string `json:"title" binding:"required"`
+	Genre            string `json:"genre"`
+	Description      string `json:"description"`
+	StyleDescription string `json:"style_description"`
+	TargetWords      int    `json:"target_words"`
 }
 
 type GenerateBlueprintRequest struct {

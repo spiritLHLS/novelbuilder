@@ -36,7 +36,7 @@ func NewProjectService(db *pgxpool.Pool, logger *zap.Logger) *ProjectService {
 
 func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT id, title, genre, description, status, created_at, updated_at
+		`SELECT id, title, genre, description, style_description, target_words, status, created_at, updated_at
 		 FROM projects ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -46,7 +46,7 @@ func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 	var projects []models.Project
 	for rows.Next() {
 		var p models.Project
-		if err := rows.Scan(&p.ID, &p.Title, &p.Genre, &p.Description, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		projects = append(projects, p)
@@ -59,13 +59,16 @@ func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 
 func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectRequest) (*models.Project, error) {
 	id := uuid.New().String()
+	if req.TargetWords <= 0 {
+		req.TargetWords = 500000
+	}
 	var p models.Project
 	err := s.db.QueryRow(ctx,
-		`INSERT INTO projects (id, title, genre, description, status, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, 'draft', NOW(), NOW())
-		 RETURNING id, title, genre, description, status, created_at, updated_at`,
-		id, req.Title, req.Genre, req.Description).Scan(
-		&p.ID, &p.Title, &p.Genre, &p.Description, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+		`INSERT INTO projects (id, title, genre, description, style_description, target_words, status, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'draft', NOW(), NOW())
+		 RETURNING id, title, genre, description, style_description, target_words, status, created_at, updated_at`,
+		id, req.Title, req.Genre, req.Description, req.StyleDescription, req.TargetWords).Scan(
+		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create project: %w", err)
 	}
@@ -75,9 +78,9 @@ func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectReq
 func (s *ProjectService) Get(ctx context.Context, id string) (*models.Project, error) {
 	var p models.Project
 	err := s.db.QueryRow(ctx,
-		`SELECT id, title, genre, description, status, created_at, updated_at
+		`SELECT id, title, genre, description, style_description, target_words, status, created_at, updated_at
 		 FROM projects WHERE id = $1`, id).Scan(
-		&p.ID, &p.Title, &p.Genre, &p.Description, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get project: %w", err)
 	}
@@ -85,13 +88,16 @@ func (s *ProjectService) Get(ctx context.Context, id string) (*models.Project, e
 }
 
 func (s *ProjectService) Update(ctx context.Context, id string, req models.CreateProjectRequest) (*models.Project, error) {
+	if req.TargetWords <= 0 {
+		req.TargetWords = 500000
+	}
 	var p models.Project
 	err := s.db.QueryRow(ctx,
-		`UPDATE projects SET title = $1, genre = $2, description = $3, updated_at = NOW()
-		 WHERE id = $4
-		 RETURNING id, title, genre, description, status, created_at, updated_at`,
-		req.Title, req.Genre, req.Description, id).Scan(
-		&p.ID, &p.Title, &p.Genre, &p.Description, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+		`UPDATE projects SET title = $1, genre = $2, description = $3, style_description = $4, target_words = $5, updated_at = NOW()
+		 WHERE id = $6
+		 RETURNING id, title, genre, description, style_description, target_words, status, created_at, updated_at`,
+		req.Title, req.Genre, req.Description, req.StyleDescription, req.TargetWords, id).Scan(
+		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("update project: %w", err)
 	}

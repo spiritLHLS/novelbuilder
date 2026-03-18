@@ -364,6 +364,10 @@ func (h *Handler) RejectBlueprint(c *gin.Context) {
 func (h *Handler) GetWorldBible(c *gin.Context) {
 	wb, err := h.worldBibles.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if wb == nil {
 		c.JSON(404, gin.H{"error": "world bible not found"})
 		return
 	}
@@ -387,6 +391,10 @@ func (h *Handler) UpdateWorldBible(c *gin.Context) {
 func (h *Handler) GetConstitution(c *gin.Context) {
 	wbc, err := h.worldBibles.GetConstitution(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if wbc == nil {
 		c.JSON(404, gin.H{"error": "constitution not found"})
 		return
 	}

@@ -9,13 +9,15 @@ CREATE EXTENSION IF NOT EXISTS "vector";
 -- ============================================================
 
 CREATE TABLE projects (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    title           VARCHAR(300) NOT NULL,
-    genre           VARCHAR(50),
-    description     TEXT,
-    status          VARCHAR(20) DEFAULT 'active',
-    created_at      TIMESTAMP DEFAULT NOW(),
-    updated_at      TIMESTAMP DEFAULT NOW()
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title             VARCHAR(300) NOT NULL,
+    genre             VARCHAR(50),
+    description       TEXT,
+    style_description TEXT,
+    target_words      INT NOT NULL DEFAULT 500000,
+    status            VARCHAR(20) DEFAULT 'active',
+    created_at        TIMESTAMP DEFAULT NOW(),
+    updated_at        TIMESTAMP DEFAULT NOW()
 );
 
 CREATE TABLE reference_materials (
