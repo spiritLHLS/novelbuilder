@@ -41,6 +41,7 @@ type Handler struct {
 	taskQueue      *services.TaskQueueService
 	resourceLedger *services.ResourceLedgerService
 	webhooks       *services.WebhookService
+	sidecar        *services.SidecarService
 	logger         *zap.Logger
 }
 
@@ -66,6 +67,7 @@ func NewHandler(
 	taskQueue *services.TaskQueueService,
 	resourceLedger *services.ResourceLedgerService,
 	webhooks *services.WebhookService,
+	sidecar *services.SidecarService,
 	logger *zap.Logger,
 ) *Handler {
 	return &Handler{
@@ -90,6 +92,7 @@ func NewHandler(
 		taskQueue:      taskQueue,
 		resourceLedger: resourceLedger,
 		webhooks:       webhooks,
+		sidecar:        sidecar,
 		logger:         logger,
 	}
 }
@@ -226,6 +229,22 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/projects/:id/webhooks", h.CreateWebhook)
 	api.PUT("/webhooks/:id", h.UpdateWebhook)
 	api.DELETE("/webhooks/:id", h.DeleteWebhook)
+
+	// ── LangGraph Agent ──────────────────────────────────────────────────────
+	api.POST("/projects/:id/agent/run", h.AgentRun)
+	api.GET("/agent/sessions/:sid/status", h.AgentSessionStatus)
+	api.GET("/agent/sessions/:sid/stream", h.AgentSessionStream)
+
+	// ── Knowledge Graph (Neo4j) ───────────────────────────────────────────────
+	api.GET("/projects/:id/graph/entities", h.GetGraphEntities)
+	api.POST("/projects/:id/graph/query", h.QueryGraph)
+	api.POST("/projects/:id/graph/upsert", h.UpsertGraphEntity)
+	api.POST("/projects/:id/graph/sync", h.SyncProjectGraph)
+
+	// ── Vector Store (Qdrant) ──────────────────────────────────────────────────
+	api.GET("/projects/:id/vector/status", h.GetVectorStatus)
+	api.POST("/projects/:id/vector/rebuild", h.RebuildVectorIndex)
+	api.POST("/projects/:id/vector/search", h.SearchVector)
 }
 
 func (h *Handler) ListProjects(c *gin.Context) {
@@ -1598,4 +1617,165 @@ func (h *Handler) DeleteWebhook(c *gin.Context) {
 		return
 	}
 	c.JSON(204, nil)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LangGraph Agent Handlers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func (h *Handler) AgentRun(c *gin.Context) {
+	projectID := c.Param("id")
+	var req models.AgentRunRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if req.TaskType == "" {
+		req.TaskType = "generate_chapter"
+	}
+	sessionID, err := h.sidecar.RunAgent(c.Request.Context(), projectID, req)
+	if err != nil {
+		h.logger.Error("agent run failed", zap.Error(err))
+		c.JSON(502, gin.H{"error": "agent service unavailable: " + err.Error()})
+		return
+	}
+	c.JSON(202, gin.H{"session_id": sessionID, "status": "running"})
+}
+
+func (h *Handler) AgentSessionStatus(c *gin.Context) {
+	sid := c.Param("sid")
+	status, err := h.sidecar.GetAgentStatus(c.Request.Context(), sid)
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, status)
+}
+
+func (h *Handler) AgentSessionStream(c *gin.Context) {
+	// Proxy the SSE stream from Python sidecar
+	sid := c.Param("sid")
+	sidecarURL := h.sidecar.StreamURL(sid)
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, sidecarURL, nil)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "sidecar stream unavailable"})
+		return
+	}
+	defer resp.Body.Close()
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(200)
+
+	buf := make([]byte, 4096)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			c.Writer.Write(buf[:n])
+			c.Writer.Flush()
+		}
+		if err != nil {
+			break
+		}
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Knowledge Graph (Neo4j) Handlers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func (h *Handler) GetGraphEntities(c *gin.Context) {
+	data, err := h.sidecar.GetGraphEntities(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, data)
+}
+
+func (h *Handler) QueryGraph(c *gin.Context) {
+	var req models.GraphQueryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	raw, err := h.sidecar.QueryGraph(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.Data(200, "application/json", raw)
+}
+
+func (h *Handler) UpsertGraphEntity(c *gin.Context) {
+	var req models.GraphUpsertRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.sidecar.UpsertGraphEntity(c.Request.Context(), c.Param("id"), req); err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func (h *Handler) SyncProjectGraph(c *gin.Context) {
+	if err := h.sidecar.SyncProjectGraph(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "message": "graph sync triggered"})
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Vector Store (Qdrant) Handlers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func (h *Handler) GetVectorStatus(c *gin.Context) {
+	status, err := h.sidecar.GetVectorStatus(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, status)
+}
+
+func (h *Handler) RebuildVectorIndex(c *gin.Context) {
+	var req models.VectorRebuildRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.sidecar.RebuildVectorIndex(c.Request.Context(), c.Param("id"), req.Items); err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func (h *Handler) SearchVector(c *gin.Context) {
+	var req models.VectorSearchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Limit == 0 {
+		req.Limit = 5
+	}
+	raw, err := h.sidecar.SearchVector(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.Data(200, "application/json", raw)
 }

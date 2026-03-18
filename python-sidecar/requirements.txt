@@ -1,13 +1,44 @@
-fastapi==0.110.0
-uvicorn[standard]==0.29.0
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+
+# HTTP client
+httpx==0.27.2
+
+# DB
+psycopg2-binary==2.9.10
+
+# ── LangGraph + LangChain ─────────────────────────────────────────────────────
+langgraph==0.2.56
+langchain==0.3.12
+langchain-core==0.3.25
+langchain-openai==0.2.12
+langchain-community==0.3.12
+
+# ── Graph Memory (Zep Graphiti) ───────────────────────────────────────────────
+graphiti-core==0.3.22
+
+# ── Neo4j driver ──────────────────────────────────────────────────────────────
+neo4j==5.26.0
+
+# ── Vector Store (Qdrant) ─────────────────────────────────────────────────────
+qdrant-client==1.13.0
+
+# ── Local embeddings ──────────────────────────────────────────────────────────
+sentence-transformers==3.3.1
+torch==2.5.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+
+# ── OpenAI SDK (used by langchain-openai + graphiti) ─────────────────────────
+openai==1.58.1
+
+# Redis (short-term memory)
+redis==5.2.1
+
+# NLP / analysis (legacy analyzers)
 jieba==0.42.1
-pdfminer.six==20231228
-snownlp==0.12.3
-transformers==4.38.2
-torch==2.2.1
-numpy==1.26.4
-httpx==0.27.0
-python-multipart==0.0.9
-pydantic==2.6.3
-psycopg2-binary==2.9.9
-redis==5.0.3
+numpy>=1.24,<2.0
+scipy>=1.11
+
+# Document parsers (legacy analyze endpoint)
+pdfminer.six==20221105

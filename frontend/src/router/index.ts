@@ -83,6 +83,11 @@ const router = createRouter({
       component: () => import('@/views/RAG.vue'),
     },
     {
+      path: '/projects/:projectId/graph-memory',
+      name: 'graph-memory',
+      component: () => import('@/views/GraphMemory.vue'),
+    },
+    {
       path: '/workflows/:runId/diff',
       name: 'workflow-diff',
       component: () => import('@/views/Diff.vue'),

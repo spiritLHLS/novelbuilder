@@ -80,6 +80,9 @@ func main() {
 	taskQueueService := services.NewTaskQueueService(db, cfg.TaskQueue.Workers, cfg.TaskQueue.MaxRetries, logger)
 	resourceLedgerService := services.NewResourceLedgerService(db, logger)
 
+	// Sidecar proxy service (agent / graph / vector)
+	sidecarService := services.NewSidecarService(cfg.PythonSidecar.URL, logger)
+
 	// Start background task worker pool
 	taskQueueService.Start()
 	defer taskQueueService.Stop()
@@ -107,6 +110,7 @@ func main() {
 		taskQueueService,
 		resourceLedgerService,
 		webhookService,
+		sidecarService,
 		logger,
 	)
 

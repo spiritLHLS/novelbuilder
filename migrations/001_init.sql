@@ -132,13 +132,13 @@ CREATE TABLE volumes (
     volume_num      INT NOT NULL,
     title           VARCHAR(200),
     blueprint_id    UUID REFERENCES book_blueprints(id),
-    status          VARCHAR(20) DEFAULT 'drafting',
+    status          VARCHAR(20) DEFAULT 'draft',
     chapter_start   INT,
     chapter_end     INT,
     review_comment  TEXT,
     created_at      TIMESTAMP DEFAULT NOW(),
     updated_at      TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT ck_volumes_status CHECK (status IN ('drafting', 'pending_review', 'approved', 'rejected')),
+    CONSTRAINT ck_volumes_status CHECK (status IN ('draft', 'pending_review', 'approved', 'rejected')),
     CONSTRAINT uq_volumes_project_volume UNIQUE (project_id, volume_num)
 );
 
@@ -625,3 +625,66 @@ CREATE INDEX idx_notification_webhooks_project ON notification_webhooks(project_
 
 CREATE TRIGGER trg_notification_webhooks_updated_at BEFORE UPDATE ON notification_webhooks
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================
+-- Agent Sessions (LangGraph session tracking)
+-- ============================================================
+
+CREATE TABLE agent_sessions (
+    id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id    UUID         REFERENCES projects(id) ON DELETE CASCADE,
+    task_type     VARCHAR(50)  NOT NULL DEFAULT 'generate_chapter',
+    status        VARCHAR(20)  NOT NULL DEFAULT 'running',
+    session_key   VARCHAR(200),
+    input_params  JSONB        DEFAULT '{}',
+    result        JSONB,
+    error_msg     TEXT,
+    quality_score FLOAT,
+    created_at    TIMESTAMP    NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMP    NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_agent_session_status CHECK (status IN ('running', 'done', 'error'))
+);
+
+CREATE INDEX idx_agent_sessions_project ON agent_sessions(project_id, created_at DESC);
+CREATE INDEX idx_agent_sessions_status  ON agent_sessions(status) WHERE status = 'running';
+
+CREATE TRIGGER trg_agent_sessions_updated_at BEFORE UPDATE ON agent_sessions
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================
+-- Chapter Summary Cache (narrative-continuity retrieval)
+-- ============================================================
+
+CREATE TABLE chapter_summaries (
+    id          UUID     PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id  UUID     REFERENCES projects(id) ON DELETE CASCADE,
+    chapter_id  UUID     REFERENCES chapters(id) ON DELETE CASCADE,
+    chapter_num INT      NOT NULL,
+    summary     TEXT     NOT NULL DEFAULT '',
+    qdrant_sync BOOLEAN  NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_chapter_summaries_chapter UNIQUE (chapter_id)
+);
+
+CREATE INDEX idx_chapter_summaries_project ON chapter_summaries(project_id, chapter_num);
+CREATE INDEX idx_chapter_summaries_nosync  ON chapter_summaries(project_id) WHERE qdrant_sync = FALSE;
+
+CREATE TRIGGER trg_chapter_summaries_updated_at BEFORE UPDATE ON chapter_summaries
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================
+-- Graph Sync Log (tracks entities pushed to Neo4j)
+-- ============================================================
+
+CREATE TABLE graph_sync_log (
+    id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id    UUID         NOT NULL,
+    entity_type   VARCHAR(50)  NOT NULL,
+    entity_id     UUID         NOT NULL,
+    synced_at     TIMESTAMP    NOT NULL DEFAULT NOW(),
+    neo4j_node_id VARCHAR(200),
+    CONSTRAINT uq_graph_sync_log UNIQUE (entity_type, entity_id)
+);
+
+CREATE INDEX idx_graph_sync_log_project ON graph_sync_log(project_id, entity_type);

@@ -1,7 +1,7 @@
 server:
   host: "0.0.0.0"
   port: 8080
-  mode: "release"  # debug / release
+  mode: "release"
 
 database:
   host: "localhost"
@@ -20,12 +20,22 @@ redis:
 
 python_sidecar:
   url: "http://localhost:8081"
-  timeout: 300
+  timeout: 600
+
+# ── Neo4j (graph memory) ──────────────────────────────────────────────────────
+neo4j:
+  uri: "${NEO4J_URI:-bolt://localhost:7687}"
+  user: "${NEO4J_USER:-neo4j}"
+  password: "${NEO4J_PASSWORD:-novelbuilder}"
+
+# ── Qdrant (vector store) ─────────────────────────────────────────────────────
+qdrant:
+  url: "${QDRANT_URL:-http://localhost:6333}"
 
 ai_gateway:
   default_model: "deepseek-v3"
   models:
-    claude-opus:
+    claude-sonnet:
       provider: "anthropic"
       api_key: "${ANTHROPIC_API_KEY}"
       model: "claude-sonnet-4-20250514"
@@ -48,16 +58,16 @@ ai_gateway:
       api_key: "${OPENAI_API_KEY}"
       model: "gpt-4o-mini"
       base_url: "https://api.openai.com/v1"
-      max_tokens: 8192
+      max_tokens: 4096
 
   task_routing:
-    world_building: "claude-opus"
+    world_building: "claude-sonnet"
     chapter_writing_ancient: "deepseek-v3"
     chapter_writing_urban: "deepseek-v3"
-    chapter_writing_scifi: "claude-opus"
+    chapter_writing_scifi: "claude-sonnet"
     humanization: "deepseek-v3"
     quality_check: "gpt-4o-mini"
-    outline_generation: "claude-opus"
+    outline_generation: "claude-sonnet"
     review_chain: "gpt-4o-mini"
 
 quality:
@@ -65,11 +75,13 @@ quality:
   originality_threshold: 0.7
   min_reward_density: 1.5
   burstiness_target_cv: 0.8
+
 security:
-  encryption_key: "${ENCRYPTION_KEY}"   # 32-byte AES-256 key, base64-encoded or raw string
+  encryption_key: "${ENCRYPTION_KEY}"
 
 task_queue:
   workers: 4
   max_retries: 3
+
 workflow:
   strict_review: true

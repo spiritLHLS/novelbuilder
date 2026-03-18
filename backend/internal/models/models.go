@@ -660,3 +660,94 @@ type CreateWebhookRequest struct {
 	Secret string          `json:"secret"`
 	Events json.RawMessage `json:"events"`
 }
+
+// ============================================================
+// Agent / LangGraph session models
+// ============================================================
+
+type AgentRunRequest struct {
+	TaskType    string                 `json:"task_type"`    // generate_chapter | review | world_build
+	UserPrompt  string                 `json:"user_prompt"`
+	ChapterNum  *int                   `json:"chapter_num,omitempty"`
+	OutlineHint string                 `json:"outline_hint,omitempty"`
+	StyleProfile map[string]interface{} `json:"style_profile,omitempty"`
+	LLMConfig   map[string]interface{} `json:"llm_config,omitempty"`
+	MaxRetries  int                    `json:"max_retries,omitempty"`
+}
+
+type AgentSessionStatus struct {
+	SessionID string                 `json:"session_id"`
+	Status    string                 `json:"status"`  // running | done | error
+	Progress  []map[string]interface{} `json:"progress,omitempty"`
+	Result    *AgentResult           `json:"result,omitempty"`
+	Error     string                 `json:"error,omitempty"`
+}
+
+type AgentResult struct {
+	FinalText      string   `json:"final_text"`
+	ChapterSummary string   `json:"chapter_summary"`
+	QualityScore   float64  `json:"quality_score"`
+	QualityIssues  []string `json:"quality_issues"`
+}
+
+// ============================================================
+// Graph (Neo4j) models
+// ============================================================
+
+type GraphNode struct {
+	ID    string                 `json:"id"`
+	Label string                 `json:"label"`
+	Name  string                 `json:"name"`
+	Props map[string]interface{} `json:"props,omitempty"`
+}
+
+type GraphEdge struct {
+	From     string `json:"from"`
+	FromName string `json:"from_name"`
+	To       string `json:"to"`
+	ToName   string `json:"to_name"`
+	Type     string `json:"type"`
+}
+
+type GraphData struct {
+	Nodes []GraphNode `json:"nodes"`
+	Edges []GraphEdge `json:"edges"`
+}
+
+type GraphUpsertRequest struct {
+	EntityType string                 `json:"entity_type" binding:"required"`
+	EntityID   string                 `json:"entity_id"   binding:"required"`
+	Name       string                 `json:"name"        binding:"required"`
+	Properties map[string]interface{} `json:"properties,omitempty"`
+	Relations  []map[string]interface{} `json:"relations,omitempty"`
+}
+
+type GraphQueryRequest struct {
+	Cypher string                 `json:"cypher" binding:"required"`
+	Params map[string]interface{} `json:"params,omitempty"`
+}
+
+// ============================================================
+// Vector (Qdrant) models
+// ============================================================
+
+type VectorCollectionStat struct {
+	Collection string `json:"collection"`
+	Count      int    `json:"count"`
+}
+
+type VectorStatus struct {
+	ProjectID   string                 `json:"project_id"`
+	Collections []VectorCollectionStat `json:"collections"`
+	Total       int                    `json:"total"`
+}
+
+type VectorSearchRequest struct {
+	Collection string `json:"collection" binding:"required"`
+	Query      string `json:"query"      binding:"required"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
+type VectorRebuildRequest struct {
+	Items []map[string]interface{} `json:"items" binding:"required"`
+}

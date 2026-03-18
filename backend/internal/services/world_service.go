@@ -321,7 +321,7 @@ func (s *VolumeService) SubmitReview(ctx context.Context, id string) error {
 		return fmt.Errorf("volume has %d unapproved chapters", unapproved)
 	}
 
-	_, err = s.db.Exec(ctx, `UPDATE volumes SET status = 'pending_review' WHERE id = $1 AND status = 'drafting'`, id)
+	_, err = s.db.Exec(ctx, `UPDATE volumes SET status = 'pending_review' WHERE id = $1 AND status = 'draft'`, id)
 	return err
 }
 

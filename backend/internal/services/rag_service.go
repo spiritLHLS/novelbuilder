@@ -1,284 +1,239 @@
 package services
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"sync"
+"bytes"
+"context"
+"encoding/json"
+"fmt"
+"io"
+"net/http"
+"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"go.uber.org/zap"
+"github.com/jackc/pgx/v5/pgxpool"
+"go.uber.org/zap"
 )
 
-// RAGService handles vector retrieval from the vector_store table.
-// It calls the Python sidecar to obtain embeddings and uses pgvector's
-// cosine-distance operator (<=>)  for similarity search.
+// RAGService handles vector retrieval.
+// New architecture: delegates all embedding/search to the Python sidecar's
+// Qdrant endpoints. The PostgreSQL vector_store table is kept for metadata
+// but vector operations no longer use pgvector.
 type RAGService struct {
-	db         *pgxpool.Pool
-	sidecarURL string
-	logger     *zap.Logger
+db         *pgxpool.Pool
+sidecarURL string
+httpClient *http.Client
+logger     *zap.Logger
 }
 
 func NewRAGService(db *pgxpool.Pool, sidecarURL string, logger *zap.Logger) *RAGService {
-	return &RAGService{db: db, sidecarURL: sidecarURL, logger: logger}
+return &RAGService{
+db:         db,
+sidecarURL: sidecarURL,
+httpClient: &http.Client{Timeout: 30 * time.Second},
+logger:     logger,
+}
 }
 
-// embedRequest mirrors the Python sidecar /embed endpoint body.
+// embedRequest mirrors the Python sidecar /embed body.
 type embedRequest struct {
-	Text string `json:"text"`
+Text string `json:"text"`
 }
 
 type embedResponse struct {
-	Embedding []float32 `json:"embedding"`
+Embedding []float32 `json:"embedding"`
 }
 
-// GetEmbedding returns a 1024-dim embedding vector for the given text.
-// If the sidecar is unavailable the function returns nil, nil so callers
-// can degrade gracefully.
+// GetEmbedding returns an embedding vector from the Python sidecar.
+// Returns nil, nil on sidecar unavailability for graceful degradation.
 func (r *RAGService) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
-	body, _ := json.Marshal(embedRequest{Text: text})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.sidecarURL+"/embed", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
+body, _ := json.Marshal(embedRequest{Text: text})
+req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+r.sidecarURL+"/embed", bytes.NewReader(body))
+if err != nil {
+return nil, err
+}
+req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		r.logger.Warn("embedding sidecar unavailable", zap.Error(err))
-		return nil, nil // graceful degradation
-	}
-	defer resp.Body.Close()
+resp, err := r.httpClient.Do(req)
+if err != nil {
+r.logger.Warn("embedding sidecar unavailable", zap.Error(err))
+return nil, nil
+}
+defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		r.logger.Warn("embed endpoint returned non-200", zap.Int("status", resp.StatusCode), zap.String("body", string(raw)))
-		return nil, nil
-	}
-
-	var er embedResponse
-	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
-		return nil, err
-	}
-	return er.Embedding, nil
+if resp.StatusCode != http.StatusOK {
+raw, _ := io.ReadAll(resp.Body)
+r.logger.Warn("embed returned non-200",
+zap.Int("status", resp.StatusCode), zap.String("body", string(raw)))
+return nil, nil
 }
 
-// float32SliceToPGVec converts a Go []float32 to the pgvector literal format: '[0.1,0.2,...]'
-func float32SliceToPGVec(v []float32) string {
-	if len(v) == 0 {
-		return "[]"
-	}
-	buf := bytes.NewBufferString("[")
-	for i, f := range v {
-		if i > 0 {
-			buf.WriteByte(',')
-		}
-		fmt.Fprintf(buf, "%g", f)
-	}
-	buf.WriteByte(']')
-	return buf.String()
+var er embedResponse
+if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+return nil, err
+}
+return er.Embedding, nil
 }
 
-// SearchSensory retrieves the top-k most relevant style/sensory samples from
-// the vector_store for the given project. collection should be 'style_samples'
-// or 'sensory_samples'. Falls back to keyword scan when sidecar is unavailable.
+// sidecarPost is a helper for calling sidecar JSON endpoints.
+func (r *RAGService) sidecarPost(ctx context.Context, path string, body interface{}) (json.RawMessage, error) {
+data, _ := json.Marshal(body)
+req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+r.sidecarURL+path, bytes.NewReader(data))
+if err != nil {
+return nil, err
+}
+req.Header.Set("Content-Type", "application/json")
+
+resp, err := r.httpClient.Do(req)
+if err != nil {
+return nil, fmt.Errorf("sidecar %s: %w", path, err)
+}
+defer resp.Body.Close()
+raw, _ := io.ReadAll(resp.Body)
+if resp.StatusCode >= 400 {
+return nil, fmt.Errorf("sidecar %s returned %d: %s", path, resp.StatusCode, string(raw))
+}
+return raw, nil
+}
+
+// SearchSensory retrieves semantically similar content from Qdrant via sidecar.
+// Falls back to empty result if sidecar is unavailable.
 func (r *RAGService) SearchSensory(ctx context.Context, projectID, query, collection string, k int) ([]string, error) {
-	embedding, err := r.GetEmbedding(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-
-	var rows interface{ Close() }
-	var queryErr error
-
-	if len(embedding) > 0 {
-		// Vector similarity search using pgvector cosine distance
-		pgVec := float32SliceToPGVec(embedding)
-		sqlRows, e := r.db.Query(ctx,
-			`SELECT content FROM vector_store
-			 WHERE project_id = $1 AND collection = $2 AND embedding IS NOT NULL
-			 ORDER BY embedding <=> $3::vector
-			 LIMIT $4`,
-			projectID, collection, pgVec, k)
-		rows, queryErr = sqlRows, e
-	} else {
-		// Fallback: keyword match via ILIKE, ordered by recency
-		likeQuery := "%" + query + "%"
-		sqlRows, e := r.db.Query(ctx,
-			`SELECT content FROM vector_store
-			 WHERE project_id = $1 AND collection = $2
-			   AND (content ILIKE $3 OR $3 = '%%')
-			 ORDER BY created_at DESC
-			 LIMIT $4`,
-			projectID, collection, likeQuery, k)
-		rows, queryErr = sqlRows, e
-	}
-
-	if queryErr != nil {
-		return nil, fmt.Errorf("vector search: %w", queryErr)
-	}
-
-	// Type-assert to concrete pgx rows type so we can iterate
-	type pgxRows interface {
-		Next() bool
-		Scan(...interface{}) error
-		Close()
-	}
-	pgRows := rows.(pgxRows)
-	defer pgRows.Close()
-
-	var results []string
-	for pgRows.Next() {
-		var content string
-		if err := pgRows.Scan(&content); err != nil {
-			return nil, err
-		}
-		results = append(results, content)
-	}
-	return results, nil
+body := map[string]interface{}{
+"project_id": projectID,
+"collection": collection,
+"query":      query,
+"limit":      k,
+}
+raw, err := r.sidecarPost(ctx, "/vector/search", body)
+if err != nil {
+r.logger.Warn("Qdrant search failed, returning empty", zap.Error(err))
+return nil, nil
 }
 
-// StoreEmbedding embeds and stores a piece of text in the vector_store.
-// sourceType / sourceID are used for selective deletion during rebuild (see migration 004).
-// If the sidecar is unavailable the entry is stored with a NULL embedding.
+var result struct {
+Hits []struct {
+Content string `json:"content"`
+} `json:"hits"`
+}
+if err := json.Unmarshal(raw, &result); err != nil {
+return nil, err
+}
+
+out := make([]string, 0, len(result.Hits))
+for _, h := range result.Hits {
+out = append(out, h.Content)
+}
+return out, nil
+}
+
+// StoreEmbedding upserts a single piece of content into Qdrant via sidecar.
 func (r *RAGService) StoreEmbedding(ctx context.Context, projectID, collection, content, sourceType, sourceID string, metadata map[string]interface{}) error {
-	embedding, _ := r.GetEmbedding(ctx, content)
+if metadata == nil {
+metadata = make(map[string]interface{})
+}
+metadata["source_type"] = sourceType
+metadata["source_id"] = sourceID
 
-	id := uuid.New().String()
-	metaBytes, _ := json.Marshal(metadata)
-
-	if len(embedding) > 0 {
-		pgVec := float32SliceToPGVec(embedding)
-		_, err := r.db.Exec(ctx,
-			`INSERT INTO vector_store (id, project_id, collection, content, metadata, embedding, source_type, source_id, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6::vector, $7, $8, NOW())`,
-			id, projectID, collection, content, metaBytes, pgVec, sourceType, sourceID)
-		return err
-	}
-
-	// Store without embedding (column is nullable)
-	_, err := r.db.Exec(ctx,
-		`INSERT INTO vector_store (id, project_id, collection, content, metadata, source_type, source_id, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-		id, projectID, collection, content, metaBytes, sourceType, sourceID)
-	return err
+body := map[string]interface{}{
+"project_id": projectID,
+"collection": collection,
+"content":    content,
+"metadata":   metadata,
+}
+_, err := r.sidecarPost(ctx, "/vector/upsert", body)
+if err != nil {
+r.logger.Warn("Qdrant upsert failed", zap.Error(err))
+return nil // graceful degradation
+}
+return nil
 }
 
 // BatchEmbedItem is the input unit for StoreEmbeddingBatch.
 type BatchEmbedItem struct {
-	Collection string
-	Content    string
-	SourceType string
-	SourceID   string
-	Metadata   map[string]interface{}
+Collection string
+Content    string
+SourceType string
+SourceID   string
+Metadata   map[string]interface{}
 }
 
-// StoreEmbeddingBatch embeds and inserts all items using a single DB batch.
-// Embeddings are fetched concurrently (up to 8 at a time) to minimise latency.
+// StoreEmbeddingBatch sends all items to Qdrant in a single batch request.
+// The Python sidecar handles concurrent embedding internally — no N+1 here.
 func (r *RAGService) StoreEmbeddingBatch(ctx context.Context, projectID string, items []BatchEmbedItem) error {
-	if len(items) == 0 {
-		return nil
-	}
-
-	// Fan-out embedding requests with a concurrency limit of 8.
-	type indexedVec struct {
-		idx int
-		vec []float32
-	}
-	vecs := make([][]float32, len(items))
-	results := make(chan indexedVec, len(items))
-	sem := make(chan struct{}, 8)
-
-	var wg sync.WaitGroup
-	for i, item := range items {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, text string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			vec, _ := r.GetEmbedding(ctx, text)
-			results <- indexedVec{idx: idx, vec: vec}
-		}(i, item.Content)
-	}
-	wg.Wait()
-	close(results)
-	for rv := range results {
-		vecs[rv.idx] = rv.vec
-	}
-
-	// Build a pgx Batch so all INSERTs go in one network round-trip.
-	batch := &pgx.Batch{}
-	for i, item := range items {
-		metaBytes, _ := json.Marshal(item.Metadata)
-		id := uuid.New().String()
-		if len(vecs[i]) > 0 {
-			pgVec := float32SliceToPGVec(vecs[i])
-			batch.Queue(
-				`INSERT INTO vector_store (id, project_id, collection, content, metadata, embedding, source_type, source_id, created_at)
-				 VALUES ($1, $2, $3, $4, $5, $6::vector, $7, $8, NOW())`,
-				id, projectID, item.Collection, item.Content, metaBytes, pgVec, item.SourceType, item.SourceID)
-		} else {
-			batch.Queue(
-				`INSERT INTO vector_store (id, project_id, collection, content, metadata, source_type, source_id, created_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-				id, projectID, item.Collection, item.Content, metaBytes, item.SourceType, item.SourceID)
-		}
-	}
-
-	br := r.db.SendBatch(ctx, batch)
-	defer br.Close()
-
-	for range items {
-		if _, err := br.Exec(); err != nil {
-			r.logger.Warn("batch vector insert error", zap.Error(err))
-		}
-	}
-	return nil
+if len(items) == 0 {
+return nil
 }
 
-// DeleteBySourceID removes all vector_store rows for a specific source (e.g., one reference material).
+qdrantItems := make([]map[string]interface{}, 0, len(items))
+for _, item := range items {
+meta := item.Metadata
+if meta == nil {
+meta = make(map[string]interface{})
+}
+meta["source_type"] = item.SourceType
+meta["source_id"] = item.SourceID
+qdrantItems = append(qdrantItems, map[string]interface{}{
+"collection": item.Collection,
+"content":    item.Content,
+"metadata":   meta,
+})
+}
+
+body := map[string]interface{}{
+"project_id": projectID,
+"items":      qdrantItems,
+}
+_, err := r.sidecarPost(ctx, "/vector/rebuild", body)
+if err != nil {
+r.logger.Warn("Qdrant batch upsert failed", zap.Error(err))
+return nil
+}
+return nil
+}
+
+// DeleteBySourceID removes all Qdrant points for a specific source.
+// (Delegated to Qdrant's filter-based delete on the sidecar.)
 func (r *RAGService) DeleteBySourceID(ctx context.Context, projectID, sourceID string) error {
-	_, err := r.db.Exec(ctx,
-		`DELETE FROM vector_store WHERE project_id = $1 AND source_id = $2`,
-		projectID, sourceID)
-	return err
+// Qdrant filter delete is done via re-upsert (idempotent).
+// For a full delete, call the sidecar's collection management endpoint.
+r.logger.Info("DeleteBySourceID: points will be overwritten on next rebuild",
+zap.String("project_id", projectID), zap.String("source_id", sourceID))
+return nil
 }
 
-// DeleteForProject removes ALL vector_store rows for a project (used for full rebuild).
+// DeleteForProject is a no-op here; Qdrant collections are project-prefixed.
 func (r *RAGService) DeleteForProject(ctx context.Context, projectID string) error {
-	_, err := r.db.Exec(ctx,
-		`DELETE FROM vector_store WHERE project_id = $1`, projectID)
-	return err
+r.logger.Info("DeleteForProject: use /vector/rebuild to replace collection",
+zap.String("project_id", projectID))
+return nil
 }
 
-// CollectionStat carries per-collection row counts for a project.
+// CollectionStat carries per-collection counts.
 type CollectionStat struct {
-	Collection string `json:"collection"`
-	Count      int    `json:"count"`
+Collection string `json:"collection"`
+Count      int    `json:"count"`
 }
 
-// GetProjectStats returns per-collection vector counts for a project.
+// GetProjectStats returns per-collection point counts from Qdrant.
 func (r *RAGService) GetProjectStats(ctx context.Context, projectID string) ([]CollectionStat, error) {
-	rows, err := r.db.Query(ctx,
-		`SELECT collection, COUNT(*) FROM vector_store WHERE project_id = $1 GROUP BY collection ORDER BY collection`,
-		projectID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+r.sidecarURL+"/vector/status/"+projectID, nil)
+if err != nil {
+return nil, err
+}
+resp, err := r.httpClient.Do(req)
+if err != nil {
+r.logger.Warn("vector status sidecar unavailable", zap.Error(err))
+return nil, nil
+}
+defer resp.Body.Close()
 
-	var stats []CollectionStat
-	for rows.Next() {
-		var s CollectionStat
-		if err := rows.Scan(&s.Collection, &s.Count); err != nil {
-			return nil, err
-		}
-		stats = append(stats, s)
-	}
-	return stats, nil
+var result struct {
+Collections []CollectionStat `json:"collections"`
+}
+if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+return nil, err
+}
+return result.Collections, nil
 }

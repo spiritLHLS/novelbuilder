@@ -298,3 +298,93 @@ export const webhookApi = {
   update: (id: string, data: any) => api.put(`/webhooks/${id}`, data),
   delete: (id: string) => api.delete(`/webhooks/${id}`),
 }
+
+// ── LangGraph Agent ─────────────────────────────────────────────────────────
+export const agentApi = {
+  /** Start an agent session (returns { session_id }). */
+  run: (projectId: string, data: {
+    task_type: string
+    project_id: string
+    chapter_num?: number
+    outline?: string
+    style?: string
+    llm_profile_id?: string
+    [key: string]: any
+  }) => api.post(`/projects/${projectId}/agent/run`, data),
+
+  /** Poll session status. */
+  status: (sessionId: string) => api.get(`/agent/sessions/${sessionId}/status`),
+
+  /**
+   * Open an SSE stream for the agent session.
+   * Calls onChunk for each token/event, onDone when finished.
+   * Returns the EventSource so caller can close it.
+   */
+  stream: (
+    sessionId: string,
+    onChunk: (data: any) => void,
+    onDone: () => void,
+    signal?: AbortSignal,
+  ): EventSource => {
+    const url = `/api/agent/sessions/${sessionId}/stream`
+    const es = new EventSource(url)
+    es.onmessage = (ev) => {
+      try {
+        const payload = JSON.parse(ev.data)
+        if (payload.done || payload.error) {
+          es.close()
+          onDone()
+        } else {
+          onChunk(payload)
+        }
+      } catch { /* ignore non-JSON frames */ }
+    }
+    es.onerror = () => { es.close(); onDone() }
+    if (signal) signal.addEventListener('abort', () => { es.close(); onDone() })
+    return es
+  },
+}
+
+// ── Knowledge Graph (Neo4j via Python sidecar) ───────────────────────────────
+export const graphApi = {
+  /** Get all entities + relationships for a project as a graph. */
+  entities: (projectId: string) =>
+    api.get(`/projects/${projectId}/graph/entities`),
+
+  /** Execute a read-only Cypher query. */
+  query: (projectId: string, data: { cypher: string; params?: Record<string, any> }) =>
+    api.post(`/projects/${projectId}/graph/query`, data),
+
+  /** Upsert a single entity node. */
+  upsert: (projectId: string, data: {
+    entity_type: string
+    entity_id: string
+    properties: Record<string, any>
+  }) => api.post(`/projects/${projectId}/graph/upsert`, data),
+
+  /**
+   * Batch-sync all PG entities for this project into Neo4j.
+   * Safe: uses single SELECT per table + batch upsert (no N+1).
+   */
+  sync: (projectId: string) =>
+    api.post(`/projects/${projectId}/graph/sync`),
+}
+
+// ── Vector Store (Qdrant via Python sidecar) ─────────────────────────────────
+export const vectorApi = {
+  /** Get per-collection statistics for a project. */
+  status: (projectId: string) =>
+    api.get(`/projects/${projectId}/vector/status`),
+
+  /** Rebuild / re-index all vectors for a project. */
+  rebuild: (projectId: string, data?: { force?: boolean }) =>
+    api.post(`/projects/${projectId}/vector/rebuild`, data ?? {}),
+
+  /** Semantic search across one or more collections. */
+  search: (projectId: string, data: {
+    query: string
+    collections?: string[]
+    top_k?: number
+    score_threshold?: number
+  }) => api.post(`/projects/${projectId}/vector/search`, data),
+}
