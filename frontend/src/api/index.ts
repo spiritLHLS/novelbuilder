@@ -31,9 +31,9 @@ export const projectApi = {
 export const blueprintApi = {
   generate: (projectId: string, data: any) => api.post(`/projects/${projectId}/blueprint/generate`, data),
   get: (projectId: string) => api.get(`/projects/${projectId}/blueprint`),
-  submitReview: (projectId: string, id: string) => api.post(`/projects/${projectId}/blueprints/${id}/submit-review`),
-  approve: (projectId: string, id: string, comment?: string) => api.post(`/projects/${projectId}/blueprints/${id}/approve`, { review_comment: comment }),
-  reject: (projectId: string, id: string, comment?: string) => api.post(`/projects/${projectId}/blueprints/${id}/reject`, { review_comment: comment }),
+  submitReview: (_projectId: string, id: string) => api.post(`/blueprints/${id}/submit-review`),
+  approve: (_projectId: string, id: string, comment?: string) => api.post(`/blueprints/${id}/approve`, { review_comment: comment }),
+  reject: (_projectId: string, id: string, comment?: string) => api.post(`/blueprints/${id}/reject`, { review_comment: comment }),
 }
 
 // World Bible
@@ -47,44 +47,51 @@ export const worldBibleApi = {
 // Characters
 export const characterApi = {
   list: (projectId: string) => api.get(`/projects/${projectId}/characters`),
-  get: (projectId: string, id: string) => api.get(`/projects/${projectId}/characters/${id}`),
+  get: (_projectId: string, id: string) => api.get(`/characters/${id}`),
   create: (projectId: string, data: any) => api.post(`/projects/${projectId}/characters`, data),
-  update: (projectId: string, id: string, data: any) => api.put(`/projects/${projectId}/characters/${id}`, data),
-  delete: (projectId: string, id: string) => api.delete(`/projects/${projectId}/characters/${id}`),
+  update: (_projectId: string, id: string, data: any) => api.put(`/characters/${id}`, data),
+  delete: (_projectId: string, id: string) => api.delete(`/characters/${id}`),
 }
 
 // Outlines
 export const outlineApi = {
   list: (projectId: string) => api.get(`/projects/${projectId}/outlines`),
   create: (projectId: string, data: any) => api.post(`/projects/${projectId}/outlines`, data),
-  update: (projectId: string, id: string, data: any) => api.put(`/projects/${projectId}/outlines/${id}`, data),
-  delete: (projectId: string, id: string) => api.delete(`/projects/${projectId}/outlines/${id}`),
+  update: (_projectId: string, id: string, data: any) => api.put(`/outlines/${id}`, data),
+  delete: (_projectId: string, id: string) => api.delete(`/outlines/${id}`),
 }
 
 // Foreshadowings
 export const foreshadowingApi = {
   list: (projectId: string) => api.get(`/projects/${projectId}/foreshadowings`),
   create: (projectId: string, data: any) => api.post(`/projects/${projectId}/foreshadowings`, data),
-  updateStatus: (projectId: string, id: string, status: string) => api.put(`/projects/${projectId}/foreshadowings/${id}/status`, { status }),
-  delete: (projectId: string, id: string) => api.delete(`/projects/${projectId}/foreshadowings/${id}`),
+  updateStatus: (_projectId: string, id: string, status: string) => api.put(`/foreshadowings/${id}/status`, { status }),
+  delete: (_projectId: string, id: string) => api.delete(`/foreshadowings/${id}`),
 }
 
 // Volumes
 export const volumeApi = {
   list: (projectId: string) => api.get(`/projects/${projectId}/volumes`),
-  submitReview: (projectId: string, id: string) => api.post(`/projects/${projectId}/volumes/${id}/submit-review`),
-  approve: (projectId: string, id: string, comment?: string) => api.post(`/projects/${projectId}/volumes/${id}/approve`, { review_comment: comment }),
-  reject: (projectId: string, id: string, comment?: string) => api.post(`/projects/${projectId}/volumes/${id}/reject`, { review_comment: comment }),
+  submitReview: (_projectId: string, id: string) => api.post(`/volumes/${id}/submit-review`),
+  approve: (_projectId: string, id: string, comment?: string) => api.post(`/volumes/${id}/approve`, { review_comment: comment }),
+  reject: (_projectId: string, id: string, comment?: string) => api.post(`/volumes/${id}/reject`, { review_comment: comment }),
 }
 
 // Chapters
 export const chapterApi = {
   list: (projectId: string) => api.get(`/projects/${projectId}/chapters`),
-  get: (projectId: string, id: string) => api.get(`/projects/${projectId}/chapters/${id}`),
+  get: (_projectId: string, id: string) => api.get(`/chapters/${id}`),
   generate: (projectId: string, data: any) =>
     api.post(`/projects/${projectId}/chapters/generate`, data),
   continueGenerate: (projectId: string) =>
     api.post(`/projects/${projectId}/chapters/continue`),
+  submitReview: (_projectId: string, id: string) => api.post(`/chapters/${id}/submit-review`),
+  approve: (_projectId: string, id: string, comment?: string, version?: number) =>
+    api.post(`/chapters/${id}/approve`, { review_comment: comment, version }),
+  reject: (_projectId: string, id: string, comment?: string, version?: number) =>
+    api.post(`/chapters/${id}/reject`, { review_comment: comment, version }),
+  regenerate: (_projectId: string, id: string, data?: any) =>
+    api.post(`/chapters/${id}/regenerate`, data),
   qualityCheck: (chapterId: string) =>
     api.post(`/chapters/${chapterId}/quality-check`),
   streamGenerate: async (
@@ -126,16 +133,15 @@ export const chapterApi = {
 
 // Quality
 export const qualityApi = {
-  runCheck: (projectId: string, chapterId: string) =>
-    api.post(`/projects/${projectId}/chapters/${chapterId}/quality-check`),
+  runCheck: (_projectId: string, chapterId: string) =>
+    api.post(`/chapters/${chapterId}/quality-check`),
 }
 
 // Workflow
 export const workflowApi = {
   start: (projectId: string) => api.post(`/projects/${projectId}/workflow/start`),
-  getHistory: (projectId: string) => api.get(`/projects/${projectId}/workflow/history`),
-  rollback: (projectId: string, data: any) =>
-    api.post(`/projects/${projectId}/workflow/rollback`, data),
+  getHistory: (runId: string) => api.get(`/workflows/${runId}/history`),
+  rollback: (runId: string, data: any) => api.post(`/workflows/${runId}/rollback`, data),
   getDiff: (runId: string, fromStep: string, toStep: string) =>
     api.get(`/workflows/${runId}/diff`, { params: { fromStep, toStep } }),
 }
@@ -203,3 +209,13 @@ export const agentReviewApi = {
 }
 
 export default api
+
+// LLM Profiles
+export const llmProfileApi = {
+  list: () => api.get('/llm-profiles'),
+  get: (id: string) => api.get(`/llm-profiles/${id}`),
+  create: (data: any) => api.post('/llm-profiles', data),
+  update: (id: string, data: any) => api.put(`/llm-profiles/${id}`, data),
+  delete: (id: string) => api.delete(`/llm-profiles/${id}`),
+  setDefault: (id: string) => api.post(`/llm-profiles/${id}/set-default`),
+}

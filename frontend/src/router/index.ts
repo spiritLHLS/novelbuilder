@@ -77,6 +77,11 @@ const router = createRouter({
       name: 'workflow-diff',
       component: () => import('@/views/Diff.vue'),
     },
+    {
+      path: '/settings/llm',
+      name: 'llm-settings',
+      component: () => import('@/views/LLMSettings.vue'),
+    },
   ],
 })
 

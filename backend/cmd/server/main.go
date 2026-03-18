@@ -50,8 +50,9 @@ func main() {
 	}
 	defer rdb.Close()
 
-	// Initialize AI Gateway
-	aiGateway := gateway.NewAIGateway(cfg.AIGateway, logger)
+	// Initialize AI Gateway (DB profiles take priority over config-file models)
+	llmProfileService := services.NewLLMProfileService(db, logger)
+	aiGateway := gateway.NewAIGateway(cfg.AIGateway, llmProfileService, logger)
 
 	// Initialize Workflow Engine
 	wfEngine := workflow.NewEngine(db, logger)
@@ -87,6 +88,7 @@ func main() {
 		wfEngine,
 		agentReviewService,
 		exportService,
+		llmProfileService,
 		logger,
 	)
 

@@ -68,6 +68,12 @@
               </el-menu-item>
             </el-menu-item-group>
           </template>
+          <el-menu-item-group title="系统">
+            <el-menu-item index="/settings/llm">
+              <el-icon><Setting /></el-icon>
+              <span>AI 模型配置</span>
+            </el-menu-item>
+          </el-menu-item-group>
         </el-menu>
       </el-aside>
       <el-main class="app-main">
@@ -85,7 +91,7 @@ import { useProjectStore } from '@/stores/project'
 const route = useRoute()
 const projectStore = useProjectStore()
 
-const showSidebar = computed(() => route.path !== '/')
+const showSidebar = computed(() => true)
 const activeMenu = computed(() => route.path)
 const currentProjectId = computed(() => projectStore.currentProjectId)
 </script>

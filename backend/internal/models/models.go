@@ -15,6 +15,51 @@ type Project struct {
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
 
+// LLMProfile represents a user-configured AI model profile stored in the database.
+// API keys are stored encrypted at rest; the API response returns only HasAPIKey and MaskedAPIKey.
+type LLMProfile struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Provider     string    `json:"provider"`
+	BaseURL      string    `json:"base_url"`
+	ModelName    string    `json:"model_name"`
+	MaxTokens    int       `json:"max_tokens"`
+	Temperature  float64   `json:"temperature"`
+	IsDefault    bool      `json:"is_default"`
+	HasAPIKey    bool      `json:"has_api_key"`
+	MaskedAPIKey string    `json:"masked_api_key"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// LLMProfileFull includes the raw API key, used internally only (never serialized in API responses).
+type LLMProfileFull struct {
+	LLMProfile
+	APIKey string `json:"-"`
+}
+
+type CreateLLMProfileRequest struct {
+	Name        string  `json:"name" binding:"required"`
+	Provider    string  `json:"provider" binding:"required"`
+	BaseURL     string  `json:"base_url" binding:"required"`
+	APIKey      string  `json:"api_key" binding:"required"`
+	ModelName   string  `json:"model_name" binding:"required"`
+	MaxTokens   int     `json:"max_tokens"`
+	Temperature float64 `json:"temperature"`
+	IsDefault   bool    `json:"is_default"`
+}
+
+type UpdateLLMProfileRequest struct {
+	Name        string  `json:"name"`
+	Provider    string  `json:"provider"`
+	BaseURL     string  `json:"base_url"`
+	APIKey      string  `json:"api_key"`
+	ModelName   string  `json:"model_name"`
+	MaxTokens   int     `json:"max_tokens"`
+	Temperature float64 `json:"temperature"`
+	IsDefault   bool    `json:"is_default"`
+}
+
 type ReferenceMaterial struct {
 	ID              string          `json:"id" db:"id"`
 	ProjectID       string          `json:"project_id" db:"project_id"`

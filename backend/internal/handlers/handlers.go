@@ -33,6 +33,7 @@ type Handler struct {
 	workflow       *workflow.Engine
 	agentReview    *services.AgentReviewService
 	export         *services.ExportService
+	llmProfiles    *services.LLMProfileService
 	logger         *zap.Logger
 }
 
@@ -50,6 +51,7 @@ func NewHandler(
 	wf *workflow.Engine,
 	agentReview *services.AgentReviewService,
 	export *services.ExportService,
+	llmProfiles *services.LLMProfileService,
 	logger *zap.Logger,
 ) *Handler {
 	return &Handler{
@@ -66,6 +68,7 @@ func NewHandler(
 		workflow:       wf,
 		agentReview:    agentReview,
 		export:         export,
+		llmProfiles:    llmProfiles,
 		logger:         logger,
 	}
 }
@@ -143,6 +146,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// Workflow diff
 	api.GET("/workflows/:id/diff", h.GetWorkflowDiff)
+
+	// LLM Profiles (database-driven model configuration)
+	api.GET("/llm-profiles", h.ListLLMProfiles)
+	api.POST("/llm-profiles", h.CreateLLMProfile)
+	api.GET("/llm-profiles/:id", h.GetLLMProfile)
+	api.PUT("/llm-profiles/:id", h.UpdateLLMProfile)
+	api.DELETE("/llm-profiles/:id", h.DeleteLLMProfile)
+	api.POST("/llm-profiles/:id/set-default", h.SetDefaultLLMProfile)
 
 	api.GET("/health", h.Health)
 }
@@ -1000,4 +1011,73 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// ---- LLM Profile Handlers ----
+
+func (h *Handler) ListLLMProfiles(c *gin.Context) {
+	profiles, err := h.llmProfiles.List(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if profiles == nil {
+		profiles = []models.LLMProfile{}
+	}
+	c.JSON(200, gin.H{"data": profiles})
+}
+
+func (h *Handler) CreateLLMProfile(c *gin.Context) {
+	var req models.CreateLLMProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	profile, err := h.llmProfiles.Create(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": profile})
+}
+
+func (h *Handler) GetLLMProfile(c *gin.Context) {
+	profile, err := h.llmProfiles.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": "profile not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": profile})
+}
+
+func (h *Handler) UpdateLLMProfile(c *gin.Context) {
+	var req models.UpdateLLMProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	profile, err := h.llmProfiles.Update(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": profile})
+}
+
+func (h *Handler) DeleteLLMProfile(c *gin.Context) {
+	if err := h.llmProfiles.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
+}
+
+func (h *Handler) SetDefaultLLMProfile(c *gin.Context) {
+	req := models.UpdateLLMProfileRequest{IsDefault: true}
+	profile, err := h.llmProfiles.Update(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": profile})
 }
