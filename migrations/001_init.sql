@@ -31,6 +31,7 @@ CREATE TABLE reference_materials (
     migration_config JSONB,
     style_collection VARCHAR(100),
     vector_fingerprint VECTOR(1024),
+    sample_texts    JSONB,
     status          VARCHAR(20) DEFAULT 'processing',
     created_at      TIMESTAMP DEFAULT NOW()
 );
@@ -260,10 +261,13 @@ CREATE TABLE vector_store (
     content         TEXT NOT NULL,
     metadata        JSONB DEFAULT '{}',
     embedding       VECTOR(1024),
+    source_type     VARCHAR(50) NOT NULL DEFAULT 'reference',
+    source_id       VARCHAR(100),
     created_at      TIMESTAMP DEFAULT NOW()
 );
 
 CREATE INDEX idx_vector_store_collection ON vector_store(collection);
+CREATE INDEX idx_vector_store_source_id ON vector_store(project_id, source_id);
 CREATE INDEX idx_vector_store_embedding ON vector_store USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- ============================================================
@@ -340,3 +344,57 @@ CREATE TRIGGER trg_characters_updated_at BEFORE UPDATE ON characters FOR EACH RO
 CREATE TRIGGER trg_chapters_updated_at BEFORE UPDATE ON chapters FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER trg_volumes_updated_at BEFORE UPDATE ON volumes FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER trg_foreshadowings_updated_at BEFORE UPDATE ON foreshadowings FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================
+-- Agent Review Tables
+-- ============================================================
+
+CREATE TABLE agent_review_sessions (
+    id           UUID PRIMARY KEY,
+    project_id   UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    review_scope VARCHAR(50) NOT NULL DEFAULT 'full',
+    target_id    VARCHAR(255),
+    status       VARCHAR(50) NOT NULL DEFAULT 'running',
+    rounds       INTEGER NOT NULL DEFAULT 3,
+    consensus    TEXT NOT NULL DEFAULT '',
+    issues       JSONB NOT NULL DEFAULT '[]',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_agent_review_sessions_project_id ON agent_review_sessions(project_id);
+CREATE INDEX idx_agent_review_sessions_status ON agent_review_sessions(status);
+
+CREATE TABLE agent_review_messages (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID NOT NULL REFERENCES agent_review_sessions(id) ON DELETE CASCADE,
+    round      INTEGER NOT NULL,
+    agent_role VARCHAR(100) NOT NULL,
+    agent_name VARCHAR(100) NOT NULL,
+    content    TEXT NOT NULL,
+    tags       JSONB NOT NULL DEFAULT '[]',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_agent_review_messages_session_id ON agent_review_messages(session_id);
+
+-- ============================================================
+-- LLM Profiles
+-- ============================================================
+
+CREATE TABLE llm_profiles (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        VARCHAR(100) NOT NULL UNIQUE,
+    provider    VARCHAR(50)  NOT NULL DEFAULT 'openai',
+    base_url    VARCHAR(500) NOT NULL DEFAULT 'https://api.openai.com/v1',
+    api_key     TEXT         NOT NULL,
+    model_name  VARCHAR(200) NOT NULL,
+    max_tokens  INT          NOT NULL DEFAULT 8192,
+    temperature FLOAT        NOT NULL DEFAULT 0.7,
+    is_default  BOOLEAN      NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX idx_llm_profiles_single_default ON llm_profiles (is_default) WHERE (is_default = TRUE);
+CREATE INDEX idx_llm_profiles_is_default ON llm_profiles (is_default);

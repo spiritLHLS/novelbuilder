@@ -684,20 +684,27 @@ func (s *ReferenceService) IngestSamples(ctx context.Context, projectID, refID s
 
 	meta := map[string]interface{}{"ref_id": refID}
 
-	var lastErr error
+	// Build batch items for all samples (one DB round-trip + bounded concurrent embedding calls)
+	items := make([]BatchEmbedItem, 0, len(styleSamples)+len(sensorySamples))
 	for _, sample := range styleSamples {
-		if err := s.rag.StoreEmbedding(ctx, projectID, "style_samples", sample, "reference", refID, meta); err != nil {
-			s.logger.Warn("store style sample failed", zap.Error(err))
-			lastErr = err
-		}
+		items = append(items, BatchEmbedItem{
+			Collection: "style_samples",
+			Content:    sample,
+			SourceType: "reference",
+			SourceID:   refID,
+			Metadata:   meta,
+		})
 	}
 	for _, sample := range sensorySamples {
-		if err := s.rag.StoreEmbedding(ctx, projectID, "sensory_samples", sample, "reference", refID, meta); err != nil {
-			s.logger.Warn("store sensory sample failed", zap.Error(err))
-			lastErr = err
-		}
+		items = append(items, BatchEmbedItem{
+			Collection: "sensory_samples",
+			Content:    sample,
+			SourceType: "reference",
+			SourceID:   refID,
+			Metadata:   meta,
+		})
 	}
-	return lastErr
+	return s.rag.StoreEmbeddingBatch(ctx, projectID, items)
 }
 
 // RebuildProject re-ingests all cached samples for every completed reference in a project.
@@ -712,7 +719,7 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		return 0, fmt.Errorf("clear project vectors: %w", err)
 	}
 
-	// Fetch all completed references that have cached samples
+	// Fetch all completed references that have cached samples (single query)
 	rows, err := s.db.Query(ctx,
 		`SELECT id, sample_texts FROM reference_materials
 		 WHERE project_id = $1 AND status = 'completed' AND sample_texts IS NOT NULL`,
@@ -727,6 +734,8 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		Sensory []string `json:"sensory"`
 	}
 
+	// Collect all batch items across all references before hitting the DB again
+	var allItems []BatchEmbedItem
 	rebuilt := 0
 	for rows.Next() {
 		var refID string
@@ -740,12 +749,29 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		}
 		meta := map[string]interface{}{"ref_id": refID}
 		for _, sample := range cache.Style {
-			s.rag.StoreEmbedding(ctx, projectID, "style_samples", sample, "reference", refID, meta)
+			allItems = append(allItems, BatchEmbedItem{
+				Collection: "style_samples",
+				Content:    sample,
+				SourceType: "reference",
+				SourceID:   refID,
+				Metadata:   meta,
+			})
 		}
 		for _, sample := range cache.Sensory {
-			s.rag.StoreEmbedding(ctx, projectID, "sensory_samples", sample, "reference", refID, meta)
+			allItems = append(allItems, BatchEmbedItem{
+				Collection: "sensory_samples",
+				Content:    sample,
+				SourceType: "reference",
+				SourceID:   refID,
+				Metadata:   meta,
+			})
 		}
 		rebuilt++
+	}
+	rows.Close()
+
+	if err := s.rag.StoreEmbeddingBatch(ctx, projectID, allItems); err != nil {
+		return rebuilt, err
 	}
 	return rebuilt, nil
 }

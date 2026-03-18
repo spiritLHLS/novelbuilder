@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
@@ -187,13 +188,7 @@ func (s *AgentReviewService) StreamReview(
 				content: fmt.Sprintf("[%s - 第%d轮] %s", agent.Name, round, content),
 			})
 
-			// Persist message
-			msgJSON, _ := json.Marshal(msg)
-			s.db.Exec(ctx,
-				`INSERT INTO agent_review_messages (id, session_id, round, agent_role, agent_name, content, tags, created_at)
-				 VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
-				uuid.New().String(), sessionID, round, string(agent.Role), msg.AgentName, content, msgJSON)
-
+			// Stream immediately; persist below via batch
 			onMessage(msg)
 		}
 	}
@@ -203,12 +198,28 @@ func (s *AgentReviewService) StreamReview(
 	allMessages = append(allMessages, synthesisMsg)
 	onMessage(synthesisMsg)
 
-	// Persist moderator message
-	msgJSON, _ := json.Marshal(synthesisMsg)
-	s.db.Exec(ctx,
-		`INSERT INTO agent_review_messages (id, session_id, round, agent_role, agent_name, content, tags, created_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
-		uuid.New().String(), sessionID, rounds+1, "moderator", "🎯 主持人", synthesisMsg.Content, msgJSON)
+	// Batch-insert all messages in one round-trip to avoid N+1
+	msgBatch := &pgx.Batch{}
+	for _, m := range allMessages {
+		tagsJSON, _ := json.Marshal(m.Tags)
+		agentRoleStr := string(m.Agent)
+		agentRound := m.Round
+		if agentRoleStr == "" {
+			agentRoleStr = "moderator"
+		}
+		if agentRound == 0 {
+			agentRound = rounds + 1
+		}
+		msgBatch.Queue(
+			`INSERT INTO agent_review_messages (id, session_id, round, agent_role, agent_name, content, tags, created_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
+			uuid.New().String(), sessionID, agentRound, agentRoleStr, m.AgentName, m.Content, tagsJSON)
+	}
+	br := s.db.SendBatch(ctx, msgBatch)
+	for range allMessages {
+		br.Exec() //nolint:errcheck
+	}
+	br.Close()
 
 	// Complete session
 	nowCompleted := time.Now()

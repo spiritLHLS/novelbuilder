@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
@@ -213,34 +214,48 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 			wbID, projectID, blueprint.WorldBible)
 	}
 
-	// Store characters
-	for _, ch := range blueprint.Characters {
-		chID := uuid.New().String()
-		profileJSON := ch.Profile
-		if profileJSON == nil {
-			profileJSON = json.RawMessage(`{}`)
+	// Store characters (batch insert)
+	if len(blueprint.Characters) > 0 {
+		chBatch := &pgx.Batch{}
+		for _, ch := range blueprint.Characters {
+			profileJSON := ch.Profile
+			if profileJSON == nil {
+				profileJSON = json.RawMessage(`{}`)
+			}
+			chBatch.Queue(
+				`INSERT INTO characters (id, project_id, name, role_type, profile, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+				uuid.New().String(), projectID, ch.Name, ch.RoleType, profileJSON)
 		}
-		s.db.Exec(ctx,
-			`INSERT INTO characters (id, project_id, name, role_type, profile, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
-			chID, projectID, ch.Name, ch.RoleType, profileJSON)
+		br := s.db.SendBatch(ctx, chBatch)
+		for range blueprint.Characters {
+			br.Exec() //nolint:errcheck
+		}
+		br.Close()
 	}
 
-	// Store foreshadowings
-	for _, fs := range blueprint.Foreshadowings {
-		fsID := uuid.New().String()
-		embedMethod := fs.EmbedMethod
-		if embedMethod == "" {
-			embedMethod = "implicit"
+	// Store foreshadowings (batch insert)
+	if len(blueprint.Foreshadowings) > 0 {
+		fsBatch := &pgx.Batch{}
+		for _, fs := range blueprint.Foreshadowings {
+			embedMethod := fs.EmbedMethod
+			if embedMethod == "" {
+				embedMethod = "implicit"
+			}
+			priority := fs.Priority
+			if priority == 0 {
+				priority = 5
+			}
+			fsBatch.Queue(
+				`INSERT INTO foreshadowings (id, project_id, content, embed_method, priority, status, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, 'planted', NOW(), NOW())`,
+				uuid.New().String(), projectID, fs.Content, embedMethod, priority)
 		}
-		priority := fs.Priority
-		if priority == 0 {
-			priority = 5
+		br := s.db.SendBatch(ctx, fsBatch)
+		for range blueprint.Foreshadowings {
+			br.Exec() //nolint:errcheck
 		}
-		s.db.Exec(ctx,
-			`INSERT INTO foreshadowings (id, project_id, content, embed_method, priority, status, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, 'planted', NOW(), NOW())`,
-			fsID, projectID, fs.Content, embedMethod, priority)
+		br.Close()
 	}
 
 	// Create book blueprint record
@@ -270,17 +285,24 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 		return nil, fmt.Errorf("store blueprint: %w", err)
 	}
 
-	// Store volumes
-	for i, vol := range blueprint.Volumes {
-		volID := uuid.New().String()
-		title := vol.Title
-		if title == "" {
-			title = fmt.Sprintf("第%d卷", i+1)
+	// Store volumes (batch insert)
+	if len(blueprint.Volumes) > 0 {
+		volBatch := &pgx.Batch{}
+		for i, vol := range blueprint.Volumes {
+			title := vol.Title
+			if title == "" {
+				title = fmt.Sprintf("第%d卷", i+1)
+			}
+			volBatch.Queue(
+				`INSERT INTO volumes (id, project_id, volume_num, title, blueprint_id, chapter_start, chapter_end, status, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', NOW(), NOW())`,
+				uuid.New().String(), projectID, i+1, title, bpID, vol.ChapterStart, vol.ChapterEnd)
 		}
-		s.db.Exec(ctx,
-			`INSERT INTO volumes (id, project_id, volume_num, title, blueprint_id, chapter_start, chapter_end, status, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', NOW(), NOW())`,
-			volID, projectID, i+1, title, bpID, vol.ChapterStart, vol.ChapterEnd)
+		br := s.db.SendBatch(ctx, volBatch)
+		for range blueprint.Volumes {
+			br.Exec() //nolint:errcheck
+		}
+		br.Close()
 	}
 
 	// Create workflow step for blueprint

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
@@ -165,6 +167,78 @@ func (r *RAGService) StoreEmbedding(ctx context.Context, projectID, collection, 
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
 		id, projectID, collection, content, metaBytes, sourceType, sourceID)
 	return err
+}
+
+// BatchEmbedItem is the input unit for StoreEmbeddingBatch.
+type BatchEmbedItem struct {
+	Collection string
+	Content    string
+	SourceType string
+	SourceID   string
+	Metadata   map[string]interface{}
+}
+
+// StoreEmbeddingBatch embeds and inserts all items using a single DB batch.
+// Embeddings are fetched concurrently (up to 8 at a time) to minimise latency.
+func (r *RAGService) StoreEmbeddingBatch(ctx context.Context, projectID string, items []BatchEmbedItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Fan-out embedding requests with a concurrency limit of 8.
+	type indexedVec struct {
+		idx int
+		vec []float32
+	}
+	vecs := make([][]float32, len(items))
+	results := make(chan indexedVec, len(items))
+	sem := make(chan struct{}, 8)
+
+	var wg sync.WaitGroup
+	for i, item := range items {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, text string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			vec, _ := r.GetEmbedding(ctx, text)
+			results <- indexedVec{idx: idx, vec: vec}
+		}(i, item.Content)
+	}
+	wg.Wait()
+	close(results)
+	for rv := range results {
+		vecs[rv.idx] = rv.vec
+	}
+
+	// Build a pgx Batch so all INSERTs go in one network round-trip.
+	batch := &pgx.Batch{}
+	for i, item := range items {
+		metaBytes, _ := json.Marshal(item.Metadata)
+		id := uuid.New().String()
+		if len(vecs[i]) > 0 {
+			pgVec := float32SliceToPGVec(vecs[i])
+			batch.Queue(
+				`INSERT INTO vector_store (id, project_id, collection, content, metadata, embedding, source_type, source_id, created_at)
+				 VALUES ($1, $2, $3, $4, $5, $6::vector, $7, $8, NOW())`,
+				id, projectID, item.Collection, item.Content, metaBytes, pgVec, item.SourceType, item.SourceID)
+		} else {
+			batch.Queue(
+				`INSERT INTO vector_store (id, project_id, collection, content, metadata, source_type, source_id, created_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+				id, projectID, item.Collection, item.Content, metaBytes, item.SourceType, item.SourceID)
+		}
+	}
+
+	br := r.db.SendBatch(ctx, batch)
+	defer br.Close()
+
+	for range items {
+		if _, err := br.Exec(); err != nil {
+			r.logger.Warn("batch vector insert error", zap.Error(err))
+		}
+	}
+	return nil
 }
 
 // DeleteBySourceID removes all vector_store rows for a specific source (e.g., one reference material).
