@@ -8,7 +8,7 @@
 - **Python 边车**: FastAPI — 参考书四层分析、八步拟人化管线、困惑度/突发度检测
 - **前端**: Vue 3 + Vite + Element Plus + ECharts + Cytoscape
 - **数据库**: PostgreSQL 16 (pgvector) + Redis 7
-- **AI**: OpenAI / Anthropic / DeepSeek 多模型网关
+- **AI**: 数据库驱动的 LLM 配置（支持 OpenAI / Anthropic / OpenAI-compatible，如 DeepSeek）
 
 ## 项目结构
 
@@ -42,21 +42,24 @@
 ### Docker 一键部署
 
 ```bash
-# 设置 AI API 密钥
-export OPENAI_API_KEY=your-key
-export ANTHROPIC_API_KEY=your-key
-export DEEPSEEK_API_KEY=your-key
-
 # 构建并运行
 docker build -t novelbuilder .
 docker run -d -p 8080:8080 \
-  -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-  -e DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY \
   --name novelbuilder novelbuilder
 ```
 
 访问 http://localhost:8080
+
+首次启动后，请在前端「AI 模型配置」页面新增至少一个模型并设为默认：
+
+- 路径：`/settings/llm`
+- 支持只配置一个模型/一个 API Key 处理全部任务
+- API Key 仅存数据库，接口返回脱敏信息（`has_api_key`、`masked_api_key`）
+
+说明：
+
+- 现已默认使用数据库中的默认模型配置
+- `configs/config.yaml` 中 `ai_gateway` 配置仅作为兜底（数据库无默认配置时才生效）
 
 ### 本地开发
 
@@ -85,3 +88,25 @@ cd frontend && npm install && npm run dev
 - 八步拟人化管线 + 困惑度/突发度检测
 - 工作流状态机 + 快照回滚
 - ECharts 质量监控仪表盘
+- LLM Profile 管理（数据库存储、默认模型切换、单模型全任务运行）
+
+## 模型配置与 API
+
+当前版本的模型配置方式：
+
+1. 模型配置持久化到 PostgreSQL（`llm_profiles`）
+2. 运行时优先读取数据库默认模型
+3. 若数据库未配置默认模型，才回退到 `config.yaml`
+
+相关迁移：
+
+- `migrations/003_llm_profiles.sql`
+
+相关接口：
+
+- `GET /api/llm-profiles`
+- `POST /api/llm-profiles`
+- `GET /api/llm-profiles/:id`
+- `PUT /api/llm-profiles/:id`
+- `DELETE /api/llm-profiles/:id`
+- `POST /api/llm-profiles/:id/set-default`
