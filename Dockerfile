@@ -76,7 +76,8 @@ RUN groupadd -r neo4j 2>/dev/null || true \
     && chown -R neo4j:neo4j ${NEO4J_HOME}
 
 # ---- Qdrant (copy binary + config) ----
-COPY --from=qdrant-source /qdrant/qdrant /usr/local/bin/qdrant
+# Official image places the executable at /qdrant
+COPY --from=qdrant-source /qdrant /usr/local/bin/qdrant
 RUN chmod +x /usr/local/bin/qdrant
 # Qdrant data directory
 RUN mkdir -p /var/lib/qdrant && chmod 755 /var/lib/qdrant

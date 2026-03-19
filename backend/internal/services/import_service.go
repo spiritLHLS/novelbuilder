@@ -324,11 +324,6 @@ func (s *ImportService) Process(ctx context.Context, importID string, llmCfg map
 		s.logger.Error("update import status", zap.Error(err))
 	}
 
-	// Update world_bible with reverse-engineered data if provided
-	if len(reJSON) > 2 { // not empty {}
-		s.updateProjectWorldBible(ctx, imp.ProjectID, result.ReverseEngineered)
-	}
-
 	return nil
 }
 
@@ -377,29 +372,6 @@ func (s *ImportService) bulkInsertChapters(ctx context.Context, projectID string
 	br.Close()
 
 	return tx.Commit(ctx)
-}
-
-func (s *ImportService) updateProjectWorldBible(ctx context.Context, projectID string, reJSON json.RawMessage) {
-	// Merge world_state into the project's world_bible field.
-	// reJSON is the entire reverse_engineered blob from the sidecar.
-	// If it contains a "world_state" string key, wrap it as {"description":"..."}
-	// so it can be safely stored in the JSONB content column.
-	var m map[string]interface{}
-	if err := json.Unmarshal(reJSON, &m); err != nil {
-		return
-	}
-	if worldState, ok := m["world_state"].(string); ok && worldState != "" {
-		// Build a valid JSONB payload from the plain text.
-		payload, err := json.Marshal(map[string]string{"description": worldState})
-		if err != nil {
-			return
-		}
-		s.db.Exec(ctx,
-			`INSERT INTO world_bibles (project_id, content, updated_at)
-			 VALUES ($1, $2, NOW())
-			 ON CONFLICT (project_id) DO UPDATE SET content = EXCLUDED.content, updated_at = EXCLUDED.updated_at`,
-			projectID, payload)
-	}
 }
 
 func (s *ImportService) markFailed(importID, errMsg string) {

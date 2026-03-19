@@ -1145,32 +1145,17 @@ async def generate_creative_brief(req: CreativeBriefRequest):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CHAPTER IMPORT + REVERSE ENGINEERING
+# CHAPTER IMPORT
 # ═══════════════════════════════════════════════════════════════════════════════
-
-_REVERSE_SYSTEM = """你是一位文学分析专家，擅长从已有小说文本中逆向工程出完整的创作知识库。
-
-分析给定的章节集合，提取以下7个真相文件：
-1. world_state: 世界状态（地点、时代背景、规则体系）
-2. character_matrix: 角色矩阵（主要角色、性格、当前状态、相互关系）
-3. resource_ledger: 资源账本（主角持有的物品、能力、货币、重要道具）
-4. foreshadowing_hooks: 伏笔清单（已埋下的伏笔及当前状态）
-5. plot_threads: 剧情线（已推进的情节线及当前进展）
-6. theme_analysis: 主题分析（核心主题、价值观、叙事风格）
-7. style_fingerprint: 文风指纹（句长分布、词汇特征、叙述视角、节奏模式）
-
-返回严格的JSON格式，7个顶层键对应7个真相文件。每个文件须详尽、具体。"""
 
 
 @app.post("/import-chapters/analyze")
 async def import_chapters_analyze(req: ImportChaptersRequest):
     """
-    Split source text into chapters and reverse-engineer 7 truth files.
-    Returns chapters list + reverse_engineered dict.
+    Split source text into chapters.
+    Returns chapters list + analysis dict.
     This is designed to be called as a background task.
     """
-    import json
-
     # Step 1: Split into chapters
     try:
         pattern = req.split_pattern or r"第.{1,4}[章节回]"
@@ -1198,50 +1183,9 @@ async def import_chapters_analyze(req: ImportChaptersRequest):
         # No chapter markers found — treat entire text as one chapter
         chapters = [{"title": "第1章", "content": req.source_text, "chapter_num": 1}]
 
-    # Step 2: Reverse-engineer using LLM (if configured)
+    # Keep the response shape stable for backend/frontend, but remove
+    # the seven-truth-files reverse-engineering output.
     reverse_engineered: dict = {}
-    if req.llm_config.get("api_key") and chapters:
-        try:
-            from langchain_openai import ChatOpenAI
-            from langchain.schema import SystemMessage, HumanMessage
-
-            llm = ChatOpenAI(
-                base_url=req.llm_config.get("base_url", "https://api.openai.com/v1"),
-                api_key=req.llm_config["api_key"],
-                model=req.llm_config.get("model", "gpt-4o"),
-                temperature=0.3,
-                max_tokens=int(req.llm_config.get("max_tokens", 8192)),
-            )
-
-            # Use representative sample: first 3 + last 2 chapters
-            sample_chapters = chapters[:3] + chapters[-2:] if len(chapters) > 5 else chapters
-            sample_text = "\n\n---\n\n".join(
-                f"【{c['title']}】\n{c['content'][:1500]}" for c in sample_chapters
-            )
-
-            fanfic_note = ""
-            if req.fanfic_mode:
-                mode_map = {
-                    "canon": "正典延续（canon）：保持原作设定完整性",
-                    "au": "架空世界（AU）：基于原作角色但世界设定不同",
-                    "ooc": "性格重塑（OOC）：角色性格可大幅改变",
-                    "cp": "CP向：侧重特定角色关系",
-                }
-                fanfic_note = f"\n\n【同人模式】这是{mode_map.get(req.fanfic_mode, req.fanfic_mode)}类型的创作，请相应标注同人专属分析。"
-
-            response = await llm.ainvoke([
-                SystemMessage(content=_REVERSE_SYSTEM + fanfic_note),
-                HumanMessage(content=f"请分析以下章节样本：\n\n{sample_text}"),
-            ])
-
-            raw = response.content.strip()
-            if raw.startswith("```"):
-                raw = re.sub(r"^```[a-z]*\n?", "", raw)
-                raw = re.sub(r"\n?```$", "", raw)
-            reverse_engineered = json.loads(raw)
-        except Exception as exc:
-            logger.warning("Reverse engineering LLM call failed: %s", exc)
-            reverse_engineered = {"error": str(exc)}
 
     return {
         "import_id": req.import_id,

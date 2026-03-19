@@ -3,7 +3,7 @@
     <div class="flex items-center justify-between mb-6">
       <div>
         <h1 class="text-2xl font-bold">导入章节</h1>
-        <p class="text-gray-500 mt-1">粘贴已有作品，自动分章并逆向还原世界设定</p>
+        <p class="text-gray-500 mt-1">粘贴已有作品，自动分章并生成导入分析结果</p>
       </div>
       <button @click="$router.back()" class="px-4 py-2 border rounded hover:bg-gray-50">返回</button>
     </div>
@@ -28,7 +28,7 @@
             </button>
             <button v-if="imp.status === 'completed'" @click="viewReverse(imp)"
               class="px-3 py-1 text-sm border rounded hover:bg-gray-50">
-              查看逆向结果
+              查看分析结果
             </button>
           </div>
         </div>
@@ -82,17 +82,17 @@
       {{ error }}
     </div>
 
-    <!-- Reverse-engineered results modal -->
+    <!-- Import analysis results modal -->
     <div v-if="selectedImport" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div class="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-y-auto">
         <div class="p-5 border-b flex items-center justify-between">
-          <h2 class="font-semibold text-lg">逆向还原结果</h2>
+          <h2 class="font-semibold text-lg">导入分析结果</h2>
           <button @click="selectedImport = null" class="text-gray-400 hover:text-gray-700 text-xl">×</button>
         </div>
         <div class="p-5 space-y-4">
           <div v-for="(val, key) in selectedImport.reverse_engineered" :key="key">
             <h3 class="font-medium text-sm text-gray-600 uppercase tracking-wide mb-1">
-              {{ reverseLabel(String(key)) }}
+              {{ String(key) }}
             </h3>
             <div v-if="typeof val === 'object'" class="bg-gray-50 border rounded p-3 text-sm font-mono">
               <pre class="whitespace-pre-wrap">{{ JSON.stringify(val, null, 2) }}</pre>
@@ -120,20 +120,6 @@ const fanficMode = ref('')
 const creating = ref(false)
 const error = ref('')
 const selectedImport = ref<any>(null)
-
-const REVERSE_LABELS: Record<string, string> = {
-  world_state: '世界状态',
-  character_matrix: '角色矩阵',
-  resource_ledger: '资源账本',
-  foreshadowing_hooks: '伏笔钩子',
-  plot_threads: '情节线索',
-  theme_analysis: '主题分析',
-  style_fingerprint: '文风指纹',
-}
-
-function reverseLabel(key: string) {
-  return REVERSE_LABELS[key] ?? key
-}
 
 function statusClass(status: string) {
   return {
