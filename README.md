@@ -136,20 +136,9 @@ novelbuilder/
 
 ---
 
-## N+1 防治 & 长事务防治
-
-- 所有列表查询使用单次批量 SQL，无嵌套循环查询
-- Neo4j 查询使用单条 Cypher MATCH + OPTIONAL MATCH
-- LLM 调用不在数据库事务内进行
-- 图记忆更新异步执行，不阻塞主写路径
-- 长耗时操作（章节生成 / 索引重建）通过任务队列异步执行
-
----
-
 ## 启动
 
 ```bash
-sudo -i
 git clone https://github.com/spiritLHLS/novelbuilder.git
 cd novelbuilder
 docker build -t novelbuilder .
@@ -160,7 +149,6 @@ docker run -d \
   -v novelbuilder-data:/var/lib/postgresql/data \
   novelbuilder
 docker logs -f nb
-cd ..
 ```
 
 打开 http://localhost:8080，进入 **设置 → AI 模型配置** 添加 LLM Profile（填写 API Key），
