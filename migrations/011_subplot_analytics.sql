@@ -1,5 +1,5 @@
--- Migration 002: New features
--- Subplot Board, Emotional Arcs, Character Interaction Matrix, Analytics
+-- NovelBuilder Database Schema - Part 11: Subplot & Analytics
+-- Subplot board, character emotional arcs, character interaction matrix, radar scan results
 
 -- ============================================================
 -- Subplot Board (A/B/C plot-line tracking)
