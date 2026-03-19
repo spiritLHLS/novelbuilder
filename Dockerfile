@@ -108,16 +108,24 @@ RUN mkdir -p /var/lib/qdrant && chmod 755 /var/lib/qdrant
 # ---- Python sidecar ----
 WORKDIR /app/python-sidecar
 COPY python-sidecar/requirements.txt ./
+# Copy novel-downloader submodule source (populated when cloned with --recurse-submodules)
+COPY python-sidecar/novel-downloader ./novel-downloader
 # Install CPU-only torch first (keeps image smaller)
 RUN pip install --no-cache-dir \
     torch==2.5.1+cpu \
     --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
-# Install novel-downloader from source archive (no git required)
-RUN curl -fsSL https://github.com/spiritLHLS/novel-downloader/archive/refs/heads/main.tar.gz \
-    | tar -xz -C /tmp \
-    && pip install --no-cache-dir /tmp/novel-downloader-main \
-    && rm -rf /tmp/novel-downloader-main
+# Install novel-downloader: prefer local submodule copy; fall back to GitHub if submodule
+# was not initialised (i.e. the directory is empty after a shallow clone).
+RUN if [ -f "./novel-downloader/pyproject.toml" ]; then \
+        pip install --no-cache-dir ./novel-downloader; \
+    else \
+        echo "WARNING: novel-downloader submodule is empty; downloading from GitHub..." \
+        && curl -fsSL https://github.com/spiritLHLS/novel-downloader/archive/refs/heads/main.tar.gz \
+           | tar -xz -C /tmp \
+        && pip install --no-cache-dir /tmp/novel-downloader-main \
+        && rm -rf /tmp/novel-downloader-main; \
+    fi
 COPY python-sidecar/ ./
 
 # ---- Go backend ----

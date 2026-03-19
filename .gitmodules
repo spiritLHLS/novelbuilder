@@ -1,0 +1,3 @@
+[submodule "python-sidecar/novel-downloader"]
+	path = python-sidecar/novel-downloader
+	url = https://github.com/spiritLHLS/novel-downloader.git

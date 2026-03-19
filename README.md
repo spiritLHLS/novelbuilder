@@ -122,7 +122,8 @@ novelbuilder/
 │   ├── graph_store/            # Neo4j 直接操作
 │   ├── vector_store/           # Qdrant 操作
 │   ├── analyzers/              # 参考书四层分析
-│   └── humanizer/              # 拟人化管线
+│   ├── humanizer/              # 拟人化管线
+│   └── novel-downloader/       # 小说下载库 (git submodule)
 ├── frontend/
 │   └── src/
 │       └── views/
@@ -145,7 +146,8 @@ docker system prune -a
 ```
 
 ```bash
-git clone https://github.com/spiritLHLS/novelbuilder.git
+# novel-downloader 是 git 子模块，克隆时需带 --recurse-submodules
+git clone --recurse-submodules https://github.com/spiritLHLS/novelbuilder.git
 cd novelbuilder
 docker build --no-cache -t novelbuilder .
 docker run -d \

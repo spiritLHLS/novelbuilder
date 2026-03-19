@@ -47,4 +47,6 @@ pdfminer.six==20221105
 aiohttp>=3.9.0
 
 # Novel download / search (multi-site: 笔趣阁, 起点 etc.)
-# Installed from source in Dockerfile (see RUN curl ... pip install below).
+# Installed from the git submodule at python-sidecar/novel-downloader/
+# (see Dockerfile).  For local dev: pip install python-sidecar/novel-downloader
+# After cloning: git submodule update --init --recursive
