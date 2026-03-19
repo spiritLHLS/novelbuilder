@@ -23,6 +23,9 @@ PG_BIN="/usr/lib/postgresql/16/bin"
 
 if [ ! -d "$PGDATA/base" ]; then
     echo "==> Initialising PostgreSQL 16..."
+    mkdir -p "$PGDATA"
+    chown -R postgres:postgres "$PGDATA"
+    chmod 700 "$PGDATA"
     su - postgres -c "$PG_BIN/initdb -D $PGDATA"
 
     # Trust local connections

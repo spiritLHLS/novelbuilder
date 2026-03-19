@@ -151,6 +151,7 @@ novelbuilder/
 ```bash
 docker build -t novelbuilder .
 docker run -d \
+  --name nb \
   -p 8080:8080 \
   -v novelbuilder-data:/var/lib/postgresql/data \
   novelbuilder
