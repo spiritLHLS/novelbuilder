@@ -72,9 +72,11 @@ COPY --from=neo4j-source /var/lib/neo4j ${NEO4J_HOME}
 ENV PATH="${NEO4J_HOME}/bin:${PATH}"
 
 # Create neo4j user and fix permissions
-RUN groupadd -r neo4j 2>/dev/null || true \
-    && useradd -r -g neo4j -d ${NEO4J_HOME} neo4j 2>/dev/null || true \
-    && mkdir -p ${NEO4J_HOME}/data ${NEO4J_HOME}/logs ${NEO4J_HOME}/run \
+RUN if ! getent group neo4j >/dev/null; then groupadd -r neo4j; fi \
+    && if ! id -u neo4j >/dev/null 2>&1; then useradd -r -g neo4j -d ${NEO4J_HOME} neo4j; fi \
+    && if [ -e ${NEO4J_HOME}/data ] && [ ! -d ${NEO4J_HOME}/data ] && [ ! -L ${NEO4J_HOME}/data ]; then rm -f ${NEO4J_HOME}/data; fi \
+    && if [ -e ${NEO4J_HOME}/logs ] && [ ! -d ${NEO4J_HOME}/logs ] && [ ! -L ${NEO4J_HOME}/logs ]; then rm -f ${NEO4J_HOME}/logs; fi \
+    && mkdir -p ${NEO4J_HOME}/run \
     && chown -R neo4j:neo4j ${NEO4J_HOME}
 
 # ---- Qdrant (copy binary + config) ----
