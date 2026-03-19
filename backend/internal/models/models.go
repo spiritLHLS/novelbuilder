@@ -776,7 +776,7 @@ type VectorSearchRequest struct {
 }
 
 type VectorRebuildRequest struct {
-	Items []map[string]interface{} `json:"items" binding:"required"`
+	Items []map[string]interface{} `json:"items"`
 }
 
 // ============================================================

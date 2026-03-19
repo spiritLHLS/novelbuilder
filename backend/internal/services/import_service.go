@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/crypto"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -19,12 +20,13 @@ import (
 // AgentRoutingService manages the agent_model_routes table.
 // It allows different agents to use different LLM profiles.
 type AgentRoutingService struct {
-	db     *pgxpool.Pool
-	logger *zap.Logger
+	db            *pgxpool.Pool
+	encryptionKey string
+	logger        *zap.Logger
 }
 
-func NewAgentRoutingService(db *pgxpool.Pool, logger *zap.Logger) *AgentRoutingService {
-	return &AgentRoutingService{db: db, logger: logger}
+func NewAgentRoutingService(db *pgxpool.Pool, encryptionKey string, logger *zap.Logger) *AgentRoutingService {
+	return &AgentRoutingService{db: db, encryptionKey: encryptionKey, logger: logger}
 }
 
 // List returns all agent routes for a given project (plus global routes if project routes are absent).
@@ -159,7 +161,12 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 
 	cfg := map[string]interface{}{}
 	if apiKey != nil {
-		cfg["api_key"] = *apiKey
+		decrypted, err := crypto.Decrypt(*apiKey, s.encryptionKey)
+		if err != nil {
+			s.logger.Warn("ResolveForAgent: failed to decrypt api key", zap.Error(err))
+		} else {
+			cfg["api_key"] = decrypted
+		}
 	}
 	if model != nil {
 		cfg["model"] = *model

@@ -2104,10 +2104,8 @@ func (h *Handler) GetVectorStatus(c *gin.Context) {
 
 func (h *Handler) RebuildVectorIndex(c *gin.Context) {
 	var req models.VectorRebuildRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
+	// Body is optional — ignore bind errors (empty body is valid)
+	_ = c.ShouldBindJSON(&req)
 	if err := h.sidecar.RebuildVectorIndex(c.Request.Context(), c.Param("id"), req.Items); err != nil {
 		c.JSON(502, gin.H{"error": err.Error()})
 		return

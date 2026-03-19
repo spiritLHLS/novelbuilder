@@ -95,7 +95,7 @@ func main() {
 	auditService := services.NewAuditService(db, cfg.PythonSidecar.URL, logger)
 	bookRulesService := services.NewBookRulesService(db, cfg.PythonSidecar.URL, logger)
 	importService := services.NewImportService(db, cfg.PythonSidecar.URL, logger)
-	agentRoutingService := services.NewAgentRoutingService(db, logger)
+	agentRoutingService := services.NewAgentRoutingService(db, encryptionKey, logger)
 
 	// ── Phase-2 feature services ──────────────────────────────────────────────
 	analyticsService := services.NewAnalyticsService(db, logger)
