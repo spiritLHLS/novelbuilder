@@ -39,7 +39,12 @@ FROM qdrant/qdrant:v1.12.0 AS qdrant-source
 FROM neo4j:5.24-community AS neo4j-source
 
 # ── Stage 5: Runtime ─────────────────────────────────────
-FROM python:3.11-slim
+# Pin to a specific Python 3.11 patch release so the build is fully
+# reproducible across hosts.  Python 3.11 ships MultiplexedPath.joinpath
+# as a variadic (*descendants) method; Python 3.12+ narrowed it to a
+# single argument which would break novel-downloader.  Do NOT bump to
+# 3.12+ without also testing novel-downloader compatibility.
+FROM python:3.11.11-slim
 
 # ---- System packages ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
