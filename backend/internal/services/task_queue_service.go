@@ -163,6 +163,48 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 }
 
 // Enqueue inserts a new task into the queue.
+// EnqueueBatch inserts all tasks in a single pgx batch (one round-trip).
+// Returns the generated task IDs in the same order as reqs.
+func (s *TaskQueueService) EnqueueBatch(ctx context.Context, reqs []models.CreateTaskRequest) ([]string, error) {
+	if len(reqs) == 0 {
+		return nil, nil
+	}
+	now := time.Now()
+	ids := make([]string, len(reqs))
+	batch := &pgx.Batch{}
+	for i, req := range reqs {
+		id := uuid.New().String()
+		ids[i] = id
+		payload := req.Payload
+		if payload == nil {
+			payload = json.RawMessage("{}")
+		}
+		maxAttempts := req.MaxAttempts
+		if maxAttempts == 0 {
+			maxAttempts = s.maxRetries
+		}
+		var projectID *string
+		if req.ProjectID != "" {
+			pid := req.ProjectID
+			projectID = &pid
+		}
+		batch.Queue(
+			`INSERT INTO task_queue
+			    (id, project_id, task_type, payload, status, priority, attempts, max_attempts, scheduled_at, created_at, updated_at)
+			 VALUES ($1,$2,$3,$4,'pending',$5,0,$6,NOW(),$7,$7)`,
+			id, projectID, req.TaskType, payload, req.Priority, maxAttempts, now)
+	}
+	br := s.db.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := range reqs {
+		if _, err := br.Exec(); err != nil {
+			return nil, fmt.Errorf("enqueue batch task %d: %w", i+1, err)
+		}
+	}
+	return ids, nil
+}
+
+// Enqueue inserts a single task. For bulk insertion use EnqueueBatch.
 func (s *TaskQueueService) Enqueue(ctx context.Context, req models.CreateTaskRequest) (*models.TaskQueueItem, error) {
 	id := uuid.New().String()
 	now := time.Now()

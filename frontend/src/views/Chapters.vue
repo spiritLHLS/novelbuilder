@@ -165,14 +165,14 @@ const renderedStream = computed(() =>
 
 function chapterStatusType(s: string) {
   const m: Record<string, string> = {
-    draft: 'info', generated: '', pending_review: 'warning', approved: 'success', rejected: 'danger',
+    draft: 'info', pending_review: 'warning', approved: 'success', rejected: 'danger', needs_recheck: 'warning',
   }
   return (m[s] || 'info') as any
 }
 
 function chapterStatusLabel(s: string) {
   const m: Record<string, string> = {
-    draft: '草稿', generated: '已生成', pending_review: '待审核', approved: '已通过', rejected: '已驳回',
+    draft: '草稿', pending_review: '待审核', approved: '已通过', rejected: '已驳回', needs_recheck: '待重检',
   }
   return m[s] || s
 }

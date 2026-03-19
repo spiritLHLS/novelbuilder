@@ -157,15 +157,20 @@ func (s *AnalyticsService) GetProjectAnalytics(ctx context.Context, projectID st
 		 ORDER BY cnt DESC
 		 LIMIT 10`, projectID)
 	if err != nil {
-		// Older postgres or no audit data – not fatal
+		// No audit data or older schema version – not fatal
 		s.logger.Warn("top issues query failed", zap.Error(err))
 	} else {
 		defer dimRows.Close()
 		for dimRows.Next() {
 			var is AuditIssueStat
-			if err := dimRows.Scan(&is.Dimension, &is.Count); err == nil {
-				out.TopIssues = append(out.TopIssues, is)
+			if err := dimRows.Scan(&is.Dimension, &is.Count); err != nil {
+				s.logger.Warn("top issues scan failed", zap.Error(err))
+				break
 			}
+			out.TopIssues = append(out.TopIssues, is)
+		}
+		if err := dimRows.Err(); err != nil {
+			s.logger.Warn("top issues rows iteration failed", zap.Error(err))
 		}
 	}
 
@@ -187,9 +192,14 @@ func (s *AnalyticsService) GetProjectAnalytics(ctx context.Context, projectID st
 		for bucketRows.Next() {
 			var bucket string
 			var cnt int
-			if err := bucketRows.Scan(&bucket, &cnt); err == nil {
-				out.AIGCBuckets[bucket] = cnt
+			if err := bucketRows.Scan(&bucket, &cnt); err != nil {
+				s.logger.Warn("aigc bucket scan failed", zap.Error(err))
+				break
 			}
+			out.AIGCBuckets[bucket] = cnt
+		}
+		if err := bucketRows.Err(); err != nil {
+			s.logger.Warn("aigc bucket rows iteration failed", zap.Error(err))
 		}
 	}
 

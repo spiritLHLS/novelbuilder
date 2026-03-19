@@ -308,6 +308,11 @@ DECLARE
     prev_status VARCHAR(20);
     bp_status VARCHAR(20);
 BEGIN
+    -- Allow bulk-import / data-migration operations to bypass this guard
+    IF current_setting('app.bypass_sequence_guard', true) = 'true' THEN
+        RETURN NEW;
+    END IF;
+
     -- Check blueprint is approved
     SELECT bb.status INTO bp_status
     FROM book_blueprints bb

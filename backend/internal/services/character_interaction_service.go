@@ -121,14 +121,15 @@ func (s *CharacterInteractionService) Upsert(ctx context.Context, projectID stri
 		   info_known_by_a       = CASE WHEN $7::text <> '[]' THEN $7 ELSE character_interactions.info_known_by_a END,
 		   info_known_by_b       = CASE WHEN $8::text <> '[]' THEN $8 ELSE character_interactions.info_known_by_b END,
 		   notes                 = CASE WHEN $9 <> '' THEN $9 ELSE character_interactions.notes END,
-		   interaction_count     = character_interactions.interaction_count + 1,
+		   interaction_count     = CASE WHEN $10 THEN character_interactions.interaction_count + 1
+		                               ELSE character_interactions.interaction_count END,
 		   updated_at            = NOW()
 		 RETURNING id, project_id, char_a_id, char_b_id,
 		           first_meet_chapter, last_interact_chapter, relationship,
 		           info_known_by_a, info_known_by_b, interaction_count,
 		           notes, created_at, updated_at`,
 		projectID, charA, charB, req.FirstMeetChapter, req.LastInteractChapter,
-		rel, infoA, infoB, req.Notes).
+		rel, infoA, infoB, req.Notes, req.BumpCount).
 		Scan(&ci.ID, &ci.ProjectID, &ci.CharAID, &ci.CharBID,
 			&ci.FirstMeetChapter, &ci.LastInteractChapter, &ci.Relationship,
 			&ci.InfoKnownByA, &ci.InfoKnownByB, &ci.InteractionCount,

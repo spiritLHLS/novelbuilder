@@ -2408,22 +2408,21 @@ func (h *Handler) BatchGenerateChapters(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	// Enqueue N chapter-generation tasks; each worker picks them up sequentially.
-	var taskIDs []string
-	for i := 0; i < req.Count; i++ {
-		task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+	reqs := make([]models.CreateTaskRequest, req.Count)
+	for i := range reqs {
+		reqs[i] = models.CreateTaskRequest{
 			ProjectID: projectID,
 			TaskType:  "generate_next_chapter",
 			Payload:   json.RawMessage(`{}`),
 			Priority:  5,
-		})
-		if err != nil {
-			c.JSON(500, gin.H{"error": fmt.Sprintf("enqueue task %d: %s", i+1, err.Error())})
-			return
 		}
-		taskIDs = append(taskIDs, task.ID)
 	}
-	c.JSON(200, gin.H{"data": gin.H{"count": req.Count, "task_ids": taskIDs}})
+	ids, err := h.taskQueue.EnqueueBatch(c.Request.Context(), reqs)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": gin.H{"count": req.Count, "task_ids": ids}})
 }
 
 // ── Subplot Board ─────────────────────────────────────────────────────────────

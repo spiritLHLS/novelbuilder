@@ -265,12 +265,3 @@ func (s *ExportService) ExportEPUB(ctx context.Context, projectID string) ([]byt
 	}
 	return buf.Bytes(), nil
 }
-
-// epubSizeHint returns rough UTF-8 char count across chapters (for logging).
-func epubSizeHint(chapters []chapterExportRow) int {
-	total := 0
-	for _, ch := range chapters {
-		total += utf8.RuneCountInString(ch.content)
-	}
-	return total
-}

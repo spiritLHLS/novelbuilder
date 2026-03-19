@@ -101,8 +101,8 @@ func (s *EmotionalArcService) ListForCharacter(ctx context.Context, characterID 
 func (s *EmotionalArcService) Upsert(ctx context.Context, projectID string, req UpsertEmotionalArcRequest) (*EmotionalArcEntry, error) {
 	id := uuid.New().String()
 	intensity := req.Intensity
-	if intensity <= 0 {
-		intensity = 0.5
+	if intensity < 0 {
+		intensity = 0
 	}
 	var e EmotionalArcEntry
 	err := s.db.QueryRow(ctx,

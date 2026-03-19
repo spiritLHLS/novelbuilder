@@ -33,7 +33,7 @@ func (s *AgentRoutingService) List(ctx context.Context, projectID *string) ([]mo
 	var args []interface{}
 	if projectID != nil && *projectID != "" {
 		query = `SELECT r.id, r.agent_type, r.llm_profile_id, r.project_id,
-		                p.name AS profile_name, p.provider AS profile_provider, p.model AS profile_model,
+		                p.name AS profile_name, p.provider AS profile_provider, p.model_name AS profile_model,
 		                r.created_at, r.updated_at
 		         FROM agent_model_routes r
 		         LEFT JOIN llm_profiles p ON p.id = r.llm_profile_id
@@ -42,7 +42,7 @@ func (s *AgentRoutingService) List(ctx context.Context, projectID *string) ([]mo
 		args = []interface{}{*projectID}
 	} else {
 		query = `SELECT r.id, r.agent_type, r.llm_profile_id, r.project_id,
-		                p.name AS profile_name, p.provider AS profile_provider, p.model AS profile_model,
+		                p.name AS profile_name, p.provider AS profile_provider, p.model_name AS profile_model,
 		                r.created_at, r.updated_at
 		         FROM agent_model_routes r
 		         LEFT JOIN llm_profiles p ON p.id = r.llm_profile_id
@@ -99,7 +99,7 @@ func (s *AgentRoutingService) Upsert(ctx context.Context, req models.UpsertAgent
 	}
 	// Fetch profile metadata
 	if r.LLMProfileID != nil {
-		s.db.QueryRow(ctx, `SELECT name, provider, model FROM llm_profiles WHERE id = $1`, r.LLMProfileID).
+		s.db.QueryRow(ctx, `SELECT name, provider, model_name FROM llm_profiles WHERE id = $1`, r.LLMProfileID).
 			Scan(&r.ProfileName, &r.ProfileProvider, &r.ProfileModel)
 	}
 	return &r, nil
@@ -143,13 +143,13 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 
 	var apiKey, model, baseURL *string
 	if profileID != nil {
-		s.db.QueryRow(ctx, `SELECT api_key, model, base_url FROM llm_profiles WHERE id = $1`, profileID).
+		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url FROM llm_profiles WHERE id = $1`, profileID).
 			Scan(&apiKey, &model, &baseURL)
 	}
 	if apiKey == nil {
 		// Fall back to default profile
 		err2 := s.db.QueryRow(ctx,
-			`SELECT api_key, model, base_url FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
+			`SELECT api_key, model_name, base_url FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
 		).Scan(&apiKey, &model, &baseURL)
 		if err2 != nil {
 			return nil, nil // No profile at all; caller handles
@@ -333,10 +333,24 @@ func (s *ImportService) Process(ctx context.Context, importID string, llmCfg map
 }
 
 func (s *ImportService) bulkInsertChapters(ctx context.Context, projectID string, chapters []map[string]interface{}) error {
-	// Get current max sequence
+	// Run inside a transaction so SET LOCAL is scoped to this operation only.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Bypass the guard_chapter_sequence trigger: imported chapters skip the
+	// blueprint-approval / previous-chapter-approved invariants since the
+	// workflow hasn't been run for imported content.
+	if _, err := tx.Exec(ctx, "SET LOCAL app.bypass_sequence_guard = 'true'"); err != nil {
+		return fmt.Errorf("set bypass: %w", err)
+	}
+
+	// Get current max chapter number (inside the transaction for consistency)
 	var maxSeq int
-	s.db.QueryRow(ctx,
-		`SELECT COALESCE(MAX(sequence_number), 0) FROM chapters WHERE project_id = $1`, projectID).
+	tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(chapter_num), 0) FROM chapters WHERE project_id = $1`, projectID).
 		Scan(&maxSeq)
 
 	// Build batch insert
@@ -348,37 +362,43 @@ func (s *ImportService) bulkInsertChapters(ctx context.Context, projectID string
 			title = fmt.Sprintf("第%d章", maxSeq+i+1)
 		}
 		b.Queue(
-			`INSERT INTO chapters (project_id, title, content, sequence_number, word_count, status, created_at, updated_at)
+			`INSERT INTO chapters (project_id, title, content, chapter_num, word_count, status, created_at, updated_at)
 			 VALUES ($1, $2, $3, $4, $5, 'draft', NOW(), NOW())
-			 ON CONFLICT DO NOTHING`,
+			 ON CONFLICT (project_id, chapter_num) DO NOTHING`,
 			projectID, title, content, maxSeq+i+1, len([]rune(content)),
 		)
 	}
-	br := s.db.SendBatch(ctx, b)
-	defer br.Close()
+	br := tx.SendBatch(ctx, b)
 	for i := 0; i < len(chapters); i++ {
 		if _, err := br.Exec(); err != nil {
 			s.logger.Warn("insert chapter batch row", zap.Error(err))
 		}
 	}
-	return nil
+	br.Close()
+
+	return tx.Commit(ctx)
 }
 
 func (s *ImportService) updateProjectWorldBible(ctx context.Context, projectID string, reJSON json.RawMessage) {
-	// Merge world_state into the project's world_bible field (if table exists and has world_bible)
+	// Merge world_state into the project's world_bible field.
+	// reJSON is the entire reverse_engineered blob from the sidecar.
+	// If it contains a "world_state" string key, wrap it as {"description":"..."}
+	// so it can be safely stored in the JSONB content column.
 	var m map[string]interface{}
 	if err := json.Unmarshal(reJSON, &m); err != nil {
 		return
 	}
 	if worldState, ok := m["world_state"].(string); ok && worldState != "" {
+		// Build a valid JSONB payload from the plain text.
+		payload, err := json.Marshal(map[string]string{"description": worldState})
+		if err != nil {
+			return
+		}
 		s.db.Exec(ctx,
-			`UPDATE projects SET updated_at = NOW() WHERE id = $1`, projectID)
-		// Upsert into world_bible concept table if it exists
-		s.db.Exec(ctx,
-			`INSERT INTO world_bible (project_id, content, updated_at)
+			`INSERT INTO world_bibles (project_id, content, updated_at)
 			 VALUES ($1, $2, NOW())
 			 ON CONFLICT (project_id) DO UPDATE SET content = EXCLUDED.content, updated_at = EXCLUDED.updated_at`,
-			projectID, worldState)
+			projectID, payload)
 	}
 }
 
