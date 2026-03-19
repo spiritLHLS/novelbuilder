@@ -21,16 +21,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-# ─── Python 3.12 importlib.resources compatibility patch ─────────────────────
-# MultiplexedPath.joinpath() in Python 3.12 only accepts a single argument;
-# novel-downloader passes multiple. Chain the calls instead.
+# ─── importlib.resources compatibility patch ────────────────────────────────
+# Python 3.12 narrowed MultiplexedPath.joinpath() to a single child argument.
+# Python 3.13 removed MultiplexedPath from the public importlib.resources API.
+# We patch the class to accept *args and chain calls one segment at a time.
 try:
-    from importlib.resources import MultiplexedPath as _MPath
+    try:
+        from importlib.resources import MultiplexedPath as _MPath  # Py ≤ 3.12
+    except ImportError:
+        from importlib.resources._adapters import MultiplexedPath as _MPath  # Py 3.13
     _orig_mp_jp = _MPath.joinpath
     def _patched_mp_jp(self, *args):
-        result = self
-        for a in args:
-            result = _orig_mp_jp(result, a)
+        """Accept multiple path segments by chaining one-at-a-time calls."""
+        if not args:
+            return self
+        result = _orig_mp_jp(self, args[0])
+        for a in args[1:]:
+            # Use polymorphic .joinpath so the correct method is dispatched
+            # regardless of whether result is still a MultiplexedPath or a
+            # Plain Path / Traversable returned after entering a real directory.
+            result = result.joinpath(a)
         return result
     _MPath.joinpath = _patched_mp_jp
 except Exception:
@@ -1343,6 +1353,7 @@ class NovelSearchReq(BaseModel):
     keyword: str
     sites: Optional[list[str]] = None
     limit: int = 100
+    per_site_limit: int = 20
 
 class NovelBookInfoReq(BaseModel):
     site: str
@@ -1383,7 +1394,8 @@ async def novels_search(req: NovelSearchReq):
         raw = await nd_search(
             req.keyword,
             sites=req.sites or None,
-            limit=req.limit,
+            limit=req.limit if req.limit > 0 else None,
+            per_site_limit=req.per_site_limit,
             timeout=8.0,
         )
     except Exception as exc:
