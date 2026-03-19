@@ -38,7 +38,13 @@ FROM qdrant/qdrant:v1.12.0 AS qdrant-source
 # ── Stage 4: Pull Neo4j distribution ────────────────────
 FROM neo4j:5.24-community AS neo4j-source
 
-# ── Stage 5: Runtime ─────────────────────────────────────
+# ── Stage 5: Pull Java 21 JRE ─────────────────────────────
+# eclipse-temurin:21-jre is glibc-based (Ubuntu Jammy) and compatible with
+# Debian bookworm.  Copying the JRE avoids depending on openjdk-21 being
+# present in the Debian apt repos of the runtime base image.
+FROM eclipse-temurin:21-jre AS jre-source
+
+# ── Stage 6: Runtime ─────────────────────────────────────
 # Pin to a specific Python 3.11 patch release so the build is fully
 # reproducible across hosts.  Python 3.11 ships MultiplexedPath.joinpath
 # as a variadic (*descendants) method; Python 3.12+ narrowed it to a
@@ -60,9 +66,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        postgresql-16 postgresql-16-pgvector postgresql-client-16 \
        redis-server \
        supervisor \
-       # OpenJDK 21 for Neo4j
-       openjdk-21-jre-headless \
-       # Qdrant runtime deps (binary is glibc/Debian-based)
+       # Qdrant runtime deps (binary is glibc-based)
        libunwind8 libgcc-s1 \
        # libgomp needed by Qdrant HNSW index builds
        libgomp1 \
@@ -71,6 +75,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        # gosu for privilege dropping
        gosu \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ---- Java 21 (for Neo4j) ----
+# Copied from eclipse-temurin:21-jre to avoid relying on Debian apt repos
+# that may not carry openjdk-21 for every bookworm mirror.
+COPY --from=jre-source /opt/java/openjdk /opt/java/openjdk
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # ---- Neo4j (copy from neo4j-source image) ----
 ENV NEO4J_HOME=/opt/neo4j
