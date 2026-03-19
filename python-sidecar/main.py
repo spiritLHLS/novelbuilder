@@ -21,6 +21,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+# ─── Python 3.12 importlib.resources compatibility patch ─────────────────────
+# MultiplexedPath.joinpath() in Python 3.12 only accepts a single argument;
+# novel-downloader passes multiple. Chain the calls instead.
+try:
+    from importlib.resources import MultiplexedPath as _MPath
+    _orig_mp_jp = _MPath.joinpath
+    def _patched_mp_jp(self, *args):
+        result = self
+        for a in args:
+            result = _orig_mp_jp(result, a)
+        return result
+    _MPath.joinpath = _patched_mp_jp
+except Exception:
+    pass
+# ─────────────────────────────────────────────────────────────────────────────
+
 from analyzers.style_analyzer import StyleAnalyzer
 from analyzers.narrative_analyzer import NarrativeAnalyzer
 from analyzers.atmosphere_analyzer import AtmosphereAnalyzer
@@ -1326,7 +1342,7 @@ async def import_chapters_analyze(req: ImportChaptersRequest):
 class NovelSearchReq(BaseModel):
     keyword: str
     sites: Optional[list[str]] = None
-    limit: int = 20
+    limit: int = 100
 
 class NovelBookInfoReq(BaseModel):
     site: str

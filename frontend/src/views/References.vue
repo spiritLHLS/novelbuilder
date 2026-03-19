@@ -81,12 +81,15 @@
       <!-- STEP 2: results -->
       <div v-else-if="fetchStep === 'results'" class="fetch-step">
         <div class="results-header">
-          <span class="results-count">共找到 {{ searchResults.length }} 条结果</span>
+          <span class="results-count">
+            共 {{ searchResults.length }} 条结果
+            <span v-if="totalPages > 1">（第 {{ searchPage + 1 }} / {{ totalPages }} 页）</span>
+          </span>
           <el-button link @click="fetchStep = 'search'">重新搜索</el-button>
         </div>
         <div class="results-list">
           <div
-            v-for="(r, i) in searchResults"
+            v-for="(r, i) in pagedResults"
             :key="`${r.site}-${r.book_id}-${i}`"
             class="result-item"
             @click="selectBook(r)"
@@ -102,6 +105,12 @@
             </div>
           </div>
           <el-empty v-if="searchResults.length === 0" description="未找到相关结果，请换个关键字" />
+        </div>
+        <!-- Pagination -->
+        <div v-if="totalPages > 1" class="results-pagination">
+          <el-button size="small" :disabled="searchPage === 0" @click="searchPage--">上一页</el-button>
+          <span class="page-indicator">{{ searchPage + 1 }} / {{ totalPages }}</span>
+          <el-button size="small" :disabled="searchPage >= totalPages - 1" @click="searchPage++">下一页</el-button>
         </div>
       </div>
 
@@ -313,9 +322,16 @@ const migrationForm = ref({
 const showFetchDialog = ref(false)
 const fetchStep = ref<'search' | 'results' | 'chapters' | 'importing'>('search')
 
+const PAGE_SIZE = 10
 const searchKeyword = ref('')
 const searchLoading = ref(false)
 const searchResults = ref<NovelSearchResult[]>([])
+const searchPage = ref(0)
+
+const totalPages = computed(() => Math.ceil(searchResults.value.length / PAGE_SIZE))
+const pagedResults = computed(() =>
+  searchResults.value.slice(searchPage.value * PAGE_SIZE, (searchPage.value + 1) * PAGE_SIZE)
+)
 
 const selectedBook = ref<NovelSearchResult | null>(null)
 const bookInfo = ref<FetchBookInfo | null>(null)
@@ -384,6 +400,7 @@ async function doSearch() {
   try {
     const res = await referenceApi.searchNovels(projectId, kw)
     searchResults.value = (res.data as any).results ?? []
+    searchPage.value = 0
     fetchStep.value = 'results'
   } catch (e: any) {
     const msg = e?.response?.data?.error || e?.response?.data?.detail || '搜索失败，请稍后重试'
@@ -618,7 +635,9 @@ async function deleteReference(id: string) {
 /* Results */
 .results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .results-count { font-size: 13px; color: var(--nb-text-secondary); }
-.results-list { max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.results-list { max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.results-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--nb-card-border, #333); }
+.page-indicator { font-size: 13px; color: var(--nb-text-secondary); min-width: 48px; text-align: center; }
 .result-item {
   padding: 12px 16px; border-radius: 8px;
   border: 1px solid var(--nb-card-border, #333);
