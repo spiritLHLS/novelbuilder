@@ -57,6 +57,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        supervisor \
        # OpenJDK 21 for Neo4j
        openjdk-21-jre-headless \
+    # musl loader for qdrant binaries built against musl
+    musl \
        # libgomp needed by Qdrant binary
        libgomp1 \
        # gosu for privilege dropping
@@ -107,6 +109,9 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 # ---- Helper scripts ----
 COPY docker/wait-for-pg.sh /app/docker/wait-for-pg.sh
 RUN chmod +x /app/docker/wait-for-pg.sh
+
+COPY docker/wait-for-port.sh /app/docker/wait-for-port.sh
+RUN chmod +x /app/docker/wait-for-port.sh
 
 # ---- Entrypoint ----
 COPY docker/docker-entrypoint.sh /app/docker-entrypoint.sh

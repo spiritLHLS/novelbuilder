@@ -17,6 +17,10 @@ export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
 export NEO4J_USER="${NEO4J_USER:-neo4j}"
 export NEO4J_PASSWORD="${NEO4J_PASSWORD:-novelbuilder}"
 
+# Ensure runtime directories are writable even when volumes are reused.
+mkdir -p "${NEO4J_HOME}/data" "${NEO4J_HOME}/logs" "${NEO4J_HOME}/run" "${NEO4J_HOME}/import"
+chown -R neo4j:neo4j "${NEO4J_HOME}/data" "${NEO4J_HOME}/logs" "${NEO4J_HOME}/run" "${NEO4J_HOME}/import" 2>/dev/null || true
+
 # ── PostgreSQL init ──────────────────────────────────────
 PGDATA="/var/lib/postgresql/data"
 PG_BIN="/usr/lib/postgresql/16/bin"
@@ -59,8 +63,7 @@ NEO4J_DATA="${NEO4J_HOME}/data"
 
 if [ ! -d "$NEO4J_DATA/databases/neo4j" ]; then
     echo "==> Initialising Neo4j 5..."
-    mkdir -p "${NEO4J_HOME}/data" "${NEO4J_HOME}/logs" "${NEO4J_HOME}/run" "${NEO4J_HOME}/import"
-    chown -R neo4j:neo4j "${NEO4J_HOME}"
+    chown -R neo4j:neo4j "${NEO4J_HOME}" 2>/dev/null || true
 
     # Set initial password via neo4j-admin (Neo4j 5.x syntax)
     su - neo4j -s /bin/bash -c "/opt/neo4j/bin/neo4j-admin dbms set-initial-password '${NEO4J_PASSWORD}'" 2>/dev/null || \
@@ -75,6 +78,16 @@ if [ ! -d "$QDRANT_STORAGE" ]; then
     echo "==> Creating Qdrant storage directory..."
     mkdir -p "$QDRANT_STORAGE"
     chmod 755 /var/lib/qdrant "$QDRANT_STORAGE"
+fi
+
+# Ensure qdrant binary is available at the path used by supervisord.
+if [ ! -x /usr/local/bin/qdrant ] && [ -x /qdrant ]; then
+    ln -sf /qdrant /usr/local/bin/qdrant
+fi
+
+if ! /usr/local/bin/qdrant --version >/dev/null 2>&1; then
+    echo "WARNING: qdrant binary is not runnable at /usr/local/bin/qdrant" >&2
+    echo "         Check architecture and runtime deps, then rebuild image." >&2
 fi
 
 # ── Redis data dir ────────────────────────────────────────
