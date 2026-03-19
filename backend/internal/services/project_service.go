@@ -604,13 +604,13 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel)
 
-	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
+	resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_generation",
 		Messages: []gateway.ChatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-	})
+	}, req.LLMConfig)
 	if err != nil {
 		return nil, fmt.Errorf("AI generation failed: %w", err)
 	}
@@ -704,13 +704,13 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 		chapterNum, req.NarrativeOrder, req.POVCharacter, req.TargetPace, req.TensionLevel)
 
 	var fullContent strings.Builder
-	err := s.ai.ChatStream(ctx, gateway.ChatRequest{
+	err := s.ai.ChatStreamWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_generation",
 		Messages: []gateway.ChatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-	}, func(chunk string) error {
+	}, req.LLMConfig, func(chunk string) error {
 		fullContent.WriteString(chunk)
 		handler(gateway.StreamChunk{Content: chunk, Done: false})
 		return nil
@@ -990,13 +990,13 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel)
 
-	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
+	resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_regeneration",
 		Messages: []gateway.ChatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-	})
+	}, req.LLMConfig)
 	if err != nil {
 		return nil, fmt.Errorf("AI regeneration failed: %w", err)
 	}
@@ -1053,6 +1053,34 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		sb.WriteString("\n可变规则：")
 		sb.WriteString(string(mutableRules))
 		sb.WriteString("\n\n")
+	}
+
+	// ===== Genre-specific rules (injected after constitution) =====
+	var genreRules, langConstraints, rhythmRules string
+	s.db.QueryRow(ctx,
+		`SELECT gt.rules_content, gt.language_constraints, gt.rhythm_rules
+		 FROM genre_templates gt
+		 JOIN projects p ON p.genre = gt.genre
+		 WHERE p.id = $1
+		 LIMIT 1`, projectID).
+		Scan(&genreRules, &langConstraints, &rhythmRules)
+	if genreRules != "" || langConstraints != "" || rhythmRules != "" {
+		sb.WriteString("=== 题材专属规则 ===\n")
+		if genreRules != "" {
+			sb.WriteString(genreRules)
+			sb.WriteString("\n")
+		}
+		if langConstraints != "" {
+			sb.WriteString("【语言约束】")
+			sb.WriteString(langConstraints)
+			sb.WriteString("\n")
+		}
+		if rhythmRules != "" {
+			sb.WriteString("【节奏规范】")
+			sb.WriteString(rhythmRules)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
 	}
 
 	// Character states

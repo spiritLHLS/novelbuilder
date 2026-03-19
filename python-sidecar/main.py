@@ -198,6 +198,13 @@ class ImportChaptersRequest(BaseModel):
     fanfic_mode: Optional[str] = None  # canon|au|ooc|cp
     llm_config: dict = {}
 
+class NarrativeReviseRequest(BaseModel):
+    chapter_id: str
+    chapter_text: str
+    failing_dimensions: list[str] = []
+    top_issues: list[str] = []
+    llm_config: dict = {}
+
 # ── Sensory words ─────────────────────────────────────────────────────────────
 _SENSORY_WORDS = [
     "看到","望见","瞥见","注视","凝望","金色","银色","血红","漆黑",
@@ -227,6 +234,29 @@ def _extract_sensory_samples(sentences: list, max_samples: int = 15) -> list:
             scored.append((score, sent))
     scored.sort(key=lambda x: x[0], reverse=True)
     return [s for _, s in scored[:max_samples]]
+
+
+def _repair_json(raw: str) -> dict:
+    """Strip markdown fences and attempt basic repair of truncated/malformed LLM JSON output."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-z]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw)
+    raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # Try to close unclosed braces/brackets from truncated output
+        open_b = raw.count("{") - raw.count("}")
+        open_sq = raw.count("[") - raw.count("]")
+        if open_sq > 0:
+            raw += "]" * open_sq
+        if open_b > 0:
+            raw += "}" * open_b
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
 
 def _read_file(file_path: str) -> str:
     if not os.path.exists(file_path):
@@ -1075,6 +1105,74 @@ async def anti_detect_rewrite(req: AntiDetectRequest):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# NARRATIVE REVISE (叙事修复)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_NARRATIVE_REVISE_SYSTEM = """你是一位专业的网文编辑，擅长根据审核报告精准修复章节中的叙事问题。
+
+修改原则：
+1. 只修改审核报告指出的具体问题，不过度改写
+2. 保持情节连贯性，修复逻辑漏洞
+3. 保持人物性格一致，根据人设调整对话和行为
+4. 修正时间线矛盾，不改变核心情节走向
+5. 保持原有文风
+
+输出严格JSON格式：{"rewritten_text": "...修改后全文...", "changes_made": ["修改说明1", "修改说明2"]}"""
+
+
+@app.post("/narrative-revise")
+async def narrative_revise(req: NarrativeReviseRequest):
+    """Targeted narrative revision based on audit report failing dimensions."""
+    if not req.llm_config.get("api_key"):
+        raise HTTPException(status_code=400, detail="llm_config.api_key is required for narrative revision")
+
+    try:
+        from langchain_openai import ChatOpenAI
+        from langchain.schema import SystemMessage, HumanMessage
+
+        dims_note = ""
+        if req.failing_dimensions:
+            dims_note = f"\n\n《审核失败维度》: {', '.join(req.failing_dimensions)}"
+        issues_note = ""
+        if req.top_issues:
+            issues_note = "\n《具体问题》:\n" + "\n".join(f"- {issue}" for issue in req.top_issues[:10])
+
+        llm = ChatOpenAI(
+            base_url=req.llm_config.get("base_url", "https://api.openai.com/v1"),
+            api_key=req.llm_config["api_key"],
+            model=req.llm_config.get("model", "gpt-4o"),
+            temperature=0.5,
+            max_tokens=int(req.llm_config.get("max_tokens", 8192)),
+        )
+
+        user_content = (
+            f"请根据以下审核问题修改章节内容："
+            f"{dims_note}{issues_note}"
+            f"\n\n《章节内容》:\n{req.chapter_text[:8000]}"
+        )
+
+        response = await llm.ainvoke([
+            SystemMessage(content=_NARRATIVE_REVISE_SYSTEM),
+            HumanMessage(content=user_content),
+        ])
+
+        data = _repair_json(response.content)
+        rewritten = data.get("rewritten_text") or req.chapter_text
+        changes = data.get("changes_made", [])
+        if not isinstance(changes, list):
+            changes = [str(changes)]
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Narrative revision failed: {exc}")
+
+    return {
+        "original_text": req.chapter_text,
+        "rewritten_text": rewritten,
+        "changes_made": changes,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CREATIVE BRIEF → STORY BIBLE + BOOK RULES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1183,9 +1281,35 @@ async def import_chapters_analyze(req: ImportChaptersRequest):
         # No chapter markers found — treat entire text as one chapter
         chapters = [{"title": "第1章", "content": req.source_text, "chapter_num": 1}]
 
-    # Keep the response shape stable for backend/frontend, but remove
-    # the seven-truth-files reverse-engineering output.
+    # LLM-based reverse engineering (only when llm_config.api_key is provided)
     reverse_engineered: dict = {}
+    if req.llm_config.get("api_key") and chapters:
+        try:
+            from langchain_openai import ChatOpenAI
+            from langchain.schema import SystemMessage, HumanMessage
+
+            sample_text = "\n\n".join(
+                ch["content"][:2000] for ch in chapters[:3]
+            )
+            _RE_SYSTEM = """从以下网文章节中提取世界构建元素，返回严格JSON（不要Markdown代码块）：
+{"characters":[{"name":"","role_type":"protagonist|antagonist|supporting","profile":{"description":"","traits":[]}}],
+"foreshadowings":[{"content":"","embed_method":"explicit|implicit","priority":5}],
+"glossary":[{"term":"","definition":"","category":"place|item|concept|power"}]}
+只提取明确出现的元素，不要推测。"""
+            llm = ChatOpenAI(
+                base_url=req.llm_config.get("base_url", "https://api.openai.com/v1"),
+                api_key=req.llm_config["api_key"],
+                model=req.llm_config.get("model", "gpt-4o"),
+                temperature=0.2,
+                max_tokens=4096,
+            )
+            response = await llm.ainvoke([
+                SystemMessage(content=_RE_SYSTEM),
+                HumanMessage(content=f"分析以下章节：\n\n{sample_text}"),
+            ])
+            reverse_engineered = _repair_json(response.content)
+        except Exception as exc:
+            logger.warning("reverse engineering LLM call failed: %s", exc)
 
     return {
         "import_id": req.import_id,

@@ -103,10 +103,66 @@ func main() {
 	emotionalArcService := services.NewEmotionalArcService(db, logger)
 	characterInteractionService := services.NewCharacterInteractionService(db, logger)
 	radarService := services.NewRadarService(db, aiGateway, logger)
-
+	genreTemplateService := services.NewGenreTemplateService(db, logger)
 	// Start background task worker pool
 	taskQueueService.Start()
 	defer taskQueueService.Stop()
+
+	// ── Auto-Write background daemon ──────────────────────────────────────────────
+	// Every minute, enqueue generate_next_chapter for each project with auto_write_enabled.
+	serverCtx, serverCancel := context.WithCancel(context.Background())
+	defer serverCancel()
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				rows, qErr := db.Query(serverCtx,
+					`SELECT id, auto_write_interval FROM projects WHERE auto_write_enabled = TRUE AND status = 'active'`)
+				if qErr != nil {
+					logger.Warn("auto_write query failed", zap.Error(qErr))
+					continue
+				}
+				for rows.Next() {
+					var pid string
+					var intervalMins int
+					if err := rows.Scan(&pid, &intervalMins); err != nil {
+						continue
+					}
+					if intervalMins <= 0 {
+						intervalMins = 60
+					}
+					// Check Redis to see when last auto-write ran for this project.
+					lastKey := fmt.Sprintf("auto_write_last:%s", pid)
+					var shouldEnqueue bool
+					lastVal, rErr := rdb.Get(serverCtx, lastKey).Int64()
+					if rErr != nil {
+						shouldEnqueue = true // never ran
+					} else {
+						elapsed := time.Now().Unix() - lastVal
+						shouldEnqueue = elapsed >= int64(intervalMins)*60
+					}
+					if !shouldEnqueue {
+						continue
+					}
+					rdb.Set(serverCtx, lastKey, time.Now().Unix(), time.Duration(intervalMins*2)*time.Minute)
+					if _, enqErr := taskQueueService.Enqueue(serverCtx, models.CreateTaskRequest{
+						TaskType:  "generate_next_chapter",
+						ProjectID: pid,
+					}); enqErr != nil {
+						logger.Warn("auto_write enqueue failed",
+							zap.String("project_id", pid), zap.Error(enqErr))
+					} else {
+						logger.Info("auto_write task enqueued", zap.String("project_id", pid))
+					}
+				}
+				rows.Close()
+			case <-serverCtx.Done():
+				return
+			}
+		}
+	}()
 
 	// Initialize Handler
 	h := handlers.NewHandler(
@@ -137,6 +193,7 @@ func main() {
 		bookRulesService,
 		importService,
 		agentRoutingService,
+		genreTemplateService,
 		analyticsService,
 		subplotService,
 		emotionalArcService,
@@ -162,6 +219,11 @@ func main() {
 		}
 		if len(task.Payload) > 0 {
 			_ = json.Unmarshal(task.Payload, &payload)
+		}
+
+		// Resolve writer-agent routing config for the auto-write task.
+		if writerCfg, wErr := agentRoutingService.ResolveForAgent(ctx, "writer", projectID); wErr == nil && writerCfg != nil {
+			payload.Generate.LLMConfig = writerCfg
 		}
 
 		lastNum, err := chapterService.MaxChapterNum(ctx, projectID)

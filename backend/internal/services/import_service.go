@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/models"
@@ -141,16 +142,16 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 		return nil, err
 	}
 
-	var apiKey, model, baseURL *string
+	var apiKey, model, baseURL, provider *string
 	if profileID != nil {
-		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url FROM llm_profiles WHERE id = $1`, profileID).
-			Scan(&apiKey, &model, &baseURL)
+		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url, provider FROM llm_profiles WHERE id = $1`, profileID).
+			Scan(&apiKey, &model, &baseURL, &provider)
 	}
 	if apiKey == nil {
 		// Fall back to default profile
 		err2 := s.db.QueryRow(ctx,
-			`SELECT api_key, model_name, base_url FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
-		).Scan(&apiKey, &model, &baseURL)
+			`SELECT api_key, model_name, base_url, provider FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
+		).Scan(&apiKey, &model, &baseURL, &provider)
 		if err2 != nil {
 			return nil, nil // No profile at all; caller handles
 		}
@@ -165,6 +166,9 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 	}
 	if baseURL != nil {
 		cfg["base_url"] = *baseURL
+	}
+	if provider != nil {
+		cfg["provider"] = *provider
 	}
 	return cfg, nil
 }
@@ -322,6 +326,127 @@ func (s *ImportService) Process(ctx context.Context, importID string, llmCfg map
 	)
 	if err != nil {
 		s.logger.Error("update import status", zap.Error(err))
+	}
+
+	// Ingest reverse-engineered entities (characters, world notes, foreshadowings, etc.)
+	// into the project's entity tables so the writer agent can reference them immediately.
+	if len(reJSON) > 2 { // not just "{}"
+		if ingErr := s.ingestReverseEngineered(ctx, imp.ProjectID, reJSON); ingErr != nil {
+			s.logger.Warn("ingestReverseEngineered partial failure", zap.Error(ingErr))
+			// Non-fatal: chapters were already saved successfully.
+		}
+	}
+
+	return nil
+}
+
+// ingestReverseEngineered parses the LLM-extracted entity JSON returned by the
+// sidecar /import-chapters/analyze endpoint and batch-inserts any discovered
+// characters, glossary terms, foreshadowings, and resources into the relevant
+// project tables.  Duplicate handling uses ON CONFLICT DO NOTHING to stay safe.
+func (s *ImportService) ingestReverseEngineered(ctx context.Context, projectID string, reJSON json.RawMessage) error {
+	var re struct {
+		Characters []struct {
+			Name     string                 `json:"name"`
+			RoleType string                 `json:"role_type"`
+			Profile  map[string]interface{} `json:"profile"`
+		} `json:"characters"`
+		Foreshadowings []struct {
+			Content     string `json:"content"`
+			EmbedMethod string `json:"embed_method"`
+			Priority    int    `json:"priority"`
+		} `json:"foreshadowings"`
+		Glossary []struct {
+			Term       string `json:"term"`
+			Definition string `json:"definition"`
+			Category   string `json:"category"`
+		} `json:"glossary"`
+	}
+
+	if err := json.Unmarshal(reJSON, &re); err != nil {
+		return fmt.Errorf("parse reverse_engineered: %w", err)
+	}
+
+	now := time.Now()
+
+	// Characters
+	if len(re.Characters) > 0 {
+		b := &pgx.Batch{}
+		for _, ch := range re.Characters {
+			roleType := ch.RoleType
+			if roleType == "" {
+				roleType = "supporting"
+			}
+			profileJSON, _ := json.Marshal(ch.Profile)
+			if profileJSON == nil {
+				profileJSON = []byte(`{}`)
+			}
+			b.Queue(
+				`INSERT INTO characters (id, project_id, name, role_type, profile, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $6)
+				 ON CONFLICT (project_id, name) DO NOTHING`,
+				uuid.New().String(), projectID, ch.Name, roleType, profileJSON, now,
+			)
+		}
+		br := s.db.SendBatch(ctx, b)
+		for range re.Characters {
+			if _, err := br.Exec(); err != nil {
+				s.logger.Warn("insert re character", zap.Error(err))
+			}
+		}
+		br.Close()
+	}
+
+	// Foreshadowings
+	if len(re.Foreshadowings) > 0 {
+		b := &pgx.Batch{}
+		for _, fs := range re.Foreshadowings {
+			method := fs.EmbedMethod
+			if method == "" {
+				method = "implicit"
+			}
+			priority := fs.Priority
+			if priority == 0 {
+				priority = 5
+			}
+			b.Queue(
+				`INSERT INTO foreshadowings (id, project_id, content, embed_method, priority, status, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, 'planted', $6, $6)
+				 ON CONFLICT DO NOTHING`,
+				uuid.New().String(), projectID, fs.Content, method, priority, now,
+			)
+		}
+		br := s.db.SendBatch(ctx, b)
+		for range re.Foreshadowings {
+			if _, err := br.Exec(); err != nil {
+				s.logger.Warn("insert re foreshadowing", zap.Error(err))
+			}
+		}
+		br.Close()
+	}
+
+	// Glossary
+	if len(re.Glossary) > 0 {
+		b := &pgx.Batch{}
+		for _, g := range re.Glossary {
+			cat := g.Category
+			if cat == "" {
+				cat = "general"
+			}
+			b.Queue(
+				`INSERT INTO glossary_terms (id, project_id, term, definition, category, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $6)
+				 ON CONFLICT (project_id, term) DO NOTHING`,
+				uuid.New().String(), projectID, g.Term, g.Definition, cat, now,
+			)
+		}
+		br := s.db.SendBatch(ctx, b)
+		for range re.Glossary {
+			if _, err := br.Exec(); err != nil {
+				s.logger.Warn("insert re glossary", zap.Error(err))
+			}
+		}
+		br.Close()
 	}
 
 	return nil

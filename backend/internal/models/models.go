@@ -311,6 +311,8 @@ type GenerateChapterRequest struct {
 	EndHookType     string  `json:"end_hook_type"`
 	EndHookStrength int     `json:"end_hook_strength"`
 	TensionLevel    float64 `json:"tension_level"`
+	// LLMConfig is populated internally by the handler via agent routing; not sent from the frontend.
+	LLMConfig map[string]interface{} `json:"llm_config,omitempty"`
 }
 
 type UploadReferenceRequest struct {
@@ -946,4 +948,26 @@ type UpdateProjectFanficRequest struct {
 type AutoWriteRequest struct {
 	IntervalMinutes int    `json:"interval_minutes"`
 	LLMProfileID    string `json:"llm_profile_id"`
+}
+
+// ============================================================
+// Genre Templates
+// ============================================================
+
+type GenreTemplate struct {
+	ID                   string          `json:"id"`
+	Genre                string          `json:"genre"`
+	RulesContent         string          `json:"rules_content"`
+	LanguageConstraints  string          `json:"language_constraints"`
+	RhythmRules          string          `json:"rhythm_rules"`
+	AuditDimensionsExtra json.RawMessage `json:"audit_dimensions_extra"`
+	CreatedAt            time.Time       `json:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
+}
+
+type UpsertGenreTemplateRequest struct {
+	RulesContent         string          `json:"rules_content"`
+	LanguageConstraints  string          `json:"language_constraints"`
+	RhythmRules          string          `json:"rhythm_rules"`
+	AuditDimensionsExtra json.RawMessage `json:"audit_dimensions_extra"`
 }

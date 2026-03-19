@@ -529,3 +529,16 @@ export const radarApi = {
     api.post(`/projects/${projectId}/radar/scan`, data),
   history: (projectId: string) => api.get(`/projects/${projectId}/radar/history`),
 }
+
+// ── Genre Templates (题材专属规则) ─────────────────────────────────────────────
+export const genreTemplateApi = {
+  list: () => api.get('/genre-templates'),
+  get: (genre: string) => api.get(`/genre-templates/${encodeURIComponent(genre)}`),
+  upsert: (genre: string, data: {
+    rules_content?: string
+    language_constraints?: string
+    rhythm_rules?: string
+    audit_dimensions_extra?: Record<string, any>
+  }) => api.put(`/genre-templates/${encodeURIComponent(genre)}`, data),
+  delete: (genre: string) => api.delete(`/genre-templates/${encodeURIComponent(genre)}`),
+}

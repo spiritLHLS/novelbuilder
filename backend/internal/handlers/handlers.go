@@ -50,6 +50,7 @@ type Handler struct {
 	bookRules             *services.BookRulesService
 	imports               *services.ImportService
 	agentRouting          *services.AgentRoutingService
+	genreTemplates        *services.GenreTemplateService
 	analytics             *services.AnalyticsService
 	subplots              *services.SubplotService
 	emotionalArcs         *services.EmotionalArcService
@@ -86,6 +87,7 @@ func NewHandler(
 	bookRules *services.BookRulesService,
 	imports *services.ImportService,
 	agentRouting *services.AgentRoutingService,
+	genreTemplates *services.GenreTemplateService,
 	analytics *services.AnalyticsService,
 	subplots *services.SubplotService,
 	emotionalArcs *services.EmotionalArcService,
@@ -121,6 +123,7 @@ func NewHandler(
 		bookRules:             bookRules,
 		imports:               imports,
 		agentRouting:          agentRouting,
+		genreTemplates:        genreTemplates,
 		analytics:             analytics,
 		subplots:              subplots,
 		emotionalArcs:         emotionalArcs,
@@ -351,6 +354,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// ── Radar Market Scan ─────────────────────────────────────────────────────
 	api.POST("/projects/:id/radar/scan", h.RadarScan)
 	api.GET("/projects/:id/radar/history", h.ListRadarHistory)
+
+	// ── Genre Templates ──────────────────────────────────────────────────────────
+	api.GET("/genre-templates", h.ListGenreTemplates)
+	api.GET("/genre-templates/:genre", h.GetGenreTemplate)
+	api.PUT("/genre-templates/:genre", h.UpsertGenreTemplate)
+	api.DELETE("/genre-templates/:genre", h.DeleteGenreTemplate)
 
 	// ── Runtime Diagnostics ───────────────────────────────────────────────────
 	api.GET("/doctor", h.Doctor)
@@ -751,6 +760,11 @@ func (h *Handler) GenerateChapter(c *gin.Context) {
 	var req models.GenerateChapterRequest
 	c.ShouldBindJSON(&req)
 
+	// Resolve writer-agent LLM config (falls back to default if no route set)
+	if writerCfg, err := h.resolveAgentLLMConfig(c.Request.Context(), "writer", c.Param("id")); err == nil {
+		req.LLMConfig = writerCfg
+	}
+
 	// chapter_num: prefer JSON body field, fall back to query param
 	chapterNum := req.ChapterNum
 	if chapterNum == 0 {
@@ -821,6 +835,10 @@ func (h *Handler) ContinueGenerate(c *gin.Context) {
 	var req models.GenerateChapterRequest
 	c.ShouldBindJSON(&req)
 
+	if writerCfg, wErr := h.resolveAgentLLMConfig(c.Request.Context(), "writer", projectID); wErr == nil {
+		req.LLMConfig = writerCfg
+	}
+
 	ch, genErr := h.chapters.Generate(c.Request.Context(), projectID, nextNum, req)
 	if genErr != nil {
 		c.JSON(500, gin.H{"error": genErr.Error()})
@@ -838,6 +856,10 @@ func (h *Handler) StreamChapter(c *gin.Context) {
 
 	var req models.GenerateChapterRequest
 	c.ShouldBindJSON(&req)
+
+	if writerCfg, wErr := h.resolveAgentLLMConfig(c.Request.Context(), "writer", projectID); wErr == nil {
+		req.LLMConfig = writerCfg
+	}
 
 	// chapter_num: prefer JSON body field, fall back to query param
 	chapterNum := req.ChapterNum
@@ -934,6 +956,14 @@ func (h *Handler) RejectChapter(c *gin.Context) {
 func (h *Handler) RegenerateChapter(c *gin.Context) {
 	var req models.GenerateChapterRequest
 	c.ShouldBindJSON(&req)
+	// Resolve writer-agent config for regeneration
+	if chID := c.Param("id"); chID != "" {
+		if ch, err := h.chapters.Get(c.Request.Context(), chID); err == nil && ch != nil {
+			if writerCfg, wErr := h.resolveAgentLLMConfig(c.Request.Context(), "writer", ch.ProjectID); wErr == nil {
+				req.LLMConfig = writerCfg
+			}
+		}
+	}
 	ch, err := h.chapters.Regenerate(c.Request.Context(), c.Param("id"), req)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -2116,9 +2146,36 @@ func (h *Handler) resolveLLMConfig(ctx context.Context) (map[string]interface{},
 		"api_key":     profile.APIKey,
 		"model":       profile.ModelName,
 		"base_url":    profile.BaseURL,
+		"provider":    profile.Provider,
 		"max_tokens":  profile.MaxTokens,
 		"temperature": profile.Temperature,
 	}, nil
+}
+
+// resolveAgentLLMConfig returns an LLM config map for a given agent type,
+// respecting project-level → global-level → default-profile priority order.
+// It always enriches the result with temperature/max_tokens from the default
+// profile so callers always have a complete config map.
+func (h *Handler) resolveAgentLLMConfig(ctx context.Context, agentType, projectID string) (map[string]interface{}, error) {
+	cfg, err := h.agentRouting.ResolveForAgent(ctx, agentType, projectID)
+	if err != nil {
+		return h.resolveLLMConfig(ctx)
+	}
+	if cfg == nil {
+		return h.resolveLLMConfig(ctx)
+	}
+	apiKey, _ := cfg["api_key"].(string)
+	if apiKey == "" {
+		return h.resolveLLMConfig(ctx)
+	}
+	// Enrich with temperature / max_tokens from the default profile if missing.
+	if _, hasTemp := cfg["temperature"]; !hasTemp {
+		if defCfg, defErr := h.resolveLLMConfig(ctx); defErr == nil && defCfg != nil {
+			cfg["temperature"] = defCfg["temperature"]
+			cfg["max_tokens"] = defCfg["max_tokens"]
+		}
+	}
+	return cfg, nil
 }
 
 func (h *Handler) buildAuditContext(ctx context.Context, chapter *models.Chapter) map[string]interface{} {
@@ -2235,7 +2292,8 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 		return nil, fmt.Errorf("chapter not found")
 	}
 
-	llmCfg := map[string]interface{}{}
+	// ── Resolve auditor config (used for RunAudit) ─────────────────────────
+	var auditorCfg map[string]interface{}
 	if req.LLMProfileID != "" {
 		profile, pErr := h.llmProfiles.GetFull(ctx, req.LLMProfileID)
 		if pErr != nil {
@@ -2244,18 +2302,25 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 		if profile == nil {
 			return nil, fmt.Errorf("llm profile not found")
 		}
-		llmCfg = map[string]interface{}{
+		auditorCfg = map[string]interface{}{
 			"api_key":     profile.APIKey,
 			"model":       profile.ModelName,
 			"base_url":    profile.BaseURL,
+			"provider":    profile.Provider,
 			"max_tokens":  profile.MaxTokens,
 			"temperature": profile.Temperature,
 		}
 	} else {
-		llmCfg, err = h.resolveLLMConfig(ctx)
+		auditorCfg, err = h.resolveAgentLLMConfig(ctx, "auditor", chapter.ProjectID)
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	// ── Resolve reviser config (used for NarrativeRevise + AntiDetectRewrite) ─
+	reviserCfg, rErr := h.resolveAgentLLMConfig(ctx, "reviser", chapter.ProjectID)
+	if rErr != nil {
+		reviserCfg = auditorCfg // fall back to same config
 	}
 
 	maxRounds := req.MaxRounds
@@ -2275,7 +2340,7 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 	var latest *models.AuditReport
 	for i := 1; i <= maxRounds; i++ {
 		auditContext := h.buildAuditContext(ctx, chapter)
-		report, aErr := h.audit.RunAudit(ctx, chapter, chapter.ProjectID, llmCfg, auditContext)
+		report, aErr := h.audit.RunAudit(ctx, chapter, chapter.ProjectID, auditorCfg, auditContext)
 		if aErr != nil {
 			return nil, aErr
 		}
@@ -2292,29 +2357,59 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 			break
 		}
 
-		rewrite, rwErr := h.bookRules.AntiDetectRewrite(ctx, chapter.ID, chapter.Content, intensity, rules, llmCfg)
-		if rwErr != nil {
-			round["rewrite_error"] = rwErr.Error()
-			rounds = append(rounds, round)
-			break
+		rewritten := false
+
+		// ── Step 1: Narrative revision for story-level issues ─────────────────
+		// Only run if the audit found failing dimensions beyond AI-probability alone.
+		if !report.Passed {
+			narrativeRewrite, nrErr := h.bookRules.NarrativeRevise(ctx, chapter.ID, chapter.Content, report, reviserCfg)
+			if nrErr == nil && narrativeRewrite != nil && narrativeRewrite.RewrittenText != "" &&
+				narrativeRewrite.RewrittenText != chapter.Content {
+				_ = h.chapters.CreateSnapshot(ctx, chapter.ID, "before_narrative_revise", fmt.Sprintf("narrative revise round %d", i))
+				updated, upErr := h.chapters.UpdateContent(ctx, chapter.ID, narrativeRewrite.RewrittenText, "needs_recheck")
+				if upErr == nil {
+					_ = h.chapters.CreateSnapshot(ctx, chapter.ID, "after_narrative_revise", fmt.Sprintf("narrative revise round %d", i))
+					chapter = updated
+					rewritten = true
+					round["narrative_rewrite"] = narrativeRewrite
+				}
+			} else if nrErr != nil {
+				round["narrative_rewrite_error"] = nrErr.Error()
+			}
 		}
-		if rewrite == nil || rewrite.RewrittenText == "" || rewrite.RewrittenText == chapter.Content {
-			round["rewrite_error"] = "rewrite produced no effective changes"
+
+		// ── Step 2: Anti-detect rewrite for AI-flavor removal ─────────────────
+		if report.AIProbability > 0.67 {
+			antiRewrite, rwErr := h.bookRules.AntiDetectRewrite(ctx, chapter.ID, chapter.Content, intensity, rules, reviserCfg)
+			if rwErr != nil {
+				round["rewrite_error"] = rwErr.Error()
+				rounds = append(rounds, round)
+				break
+			}
+			if antiRewrite == nil || antiRewrite.RewrittenText == "" || antiRewrite.RewrittenText == chapter.Content {
+				round["rewrite_error"] = "rewrite produced no effective changes"
+				rounds = append(rounds, round)
+				break
+			}
+			_ = h.chapters.CreateSnapshot(ctx, chapter.ID, "before_auto_revise", fmt.Sprintf("auto revise round %d", i))
+			updated, upErr := h.chapters.UpdateContent(ctx, chapter.ID, antiRewrite.RewrittenText, "needs_recheck")
+			if upErr != nil {
+				round["rewrite_error"] = upErr.Error()
+				rounds = append(rounds, round)
+				break
+			}
+			_ = h.chapters.CreateSnapshot(ctx, chapter.ID, "after_auto_revise", fmt.Sprintf("auto revise round %d", i))
+			chapter = updated
+			rewritten = true
+			round["rewrite_result"] = antiRewrite
+		}
+
+		if !rewritten {
 			rounds = append(rounds, round)
 			break
 		}
 
-		_ = h.chapters.CreateSnapshot(ctx, chapter.ID, "before_auto_revise", fmt.Sprintf("auto revise round %d", i))
-		updated, upErr := h.chapters.UpdateContent(ctx, chapter.ID, rewrite.RewrittenText, "needs_recheck")
-		if upErr != nil {
-			round["rewrite_error"] = upErr.Error()
-			rounds = append(rounds, round)
-			break
-		}
-		_ = h.chapters.CreateSnapshot(ctx, chapter.ID, "after_auto_revise", fmt.Sprintf("auto revise round %d", i))
-		chapter = updated
 		round["rewritten"] = true
-		round["rewrite_result"] = rewrite
 		rounds = append(rounds, round)
 	}
 
@@ -2864,4 +2959,53 @@ func (h *Handler) ListRadarHistory(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"data": list})
+}
+
+// ── Genre Templates ───────────────────────────────────────────────────────────
+
+func (h *Handler) ListGenreTemplates(c *gin.Context) {
+	list, err := h.genreTemplates.List(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": list})
+}
+
+func (h *Handler) GetGenreTemplate(c *gin.Context) {
+	genre := c.Param("genre")
+	t, err := h.genreTemplates.Get(c.Request.Context(), genre)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if t == nil {
+		c.JSON(404, gin.H{"error": "genre template not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": t})
+}
+
+func (h *Handler) UpsertGenreTemplate(c *gin.Context) {
+	genre := c.Param("genre")
+	var req models.UpsertGenreTemplateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	t, err := h.genreTemplates.Upsert(c.Request.Context(), genre, req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": t})
+}
+
+func (h *Handler) DeleteGenreTemplate(c *gin.Context) {
+	genre := c.Param("genre")
+	if err := h.genreTemplates.Delete(c.Request.Context(), genre); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "deleted"})
 }

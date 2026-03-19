@@ -175,6 +175,11 @@ const router = createRouter({
       name: 'radar',
       component: () => import('@/views/Radar.vue'),
     },
+    {
+      path: '/settings/genre-templates',
+      name: 'genre-templates',
+      component: () => import('@/views/GenreTemplates.vue'),
+    },
   ],
 })
 

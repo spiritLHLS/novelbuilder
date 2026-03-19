@@ -175,3 +175,65 @@ func (s *BookRulesService) AntiDetectRewrite(
 	}
 	return &result, nil
 }
+
+// NarrativeRevise calls the sidecar /narrative-revise endpoint.
+// It passes the audit report's failing dimensions and top issues so the LLM
+// can make targeted narrative fixes (plot holes, character inconsistencies,
+// timeline errors) independently of the anti-detect rewrite step.
+func (s *BookRulesService) NarrativeRevise(
+	ctx context.Context,
+	chapterID string,
+	content string,
+	auditReport *models.AuditReport,
+	llmCfg map[string]interface{},
+) (*models.AntiDetectResult, error) {
+	// Collect failing dimension names and top issues from the audit report.
+	var failingDims []string
+	if auditReport != nil {
+		for dimName, dim := range auditReport.Dimensions {
+			if !dim.Passed {
+				failingDims = append(failingDims, dimName)
+			}
+		}
+	}
+
+	var topIssues []string
+	if auditReport != nil {
+		topIssues = auditReport.Issues
+		if len(topIssues) > 10 {
+			topIssues = topIssues[:10]
+		}
+	}
+
+	body := map[string]interface{}{
+		"chapter_id":         chapterID,
+		"chapter_text":       content,
+		"failing_dimensions": failingDims,
+		"top_issues":         topIssues,
+		"llm_config":         llmCfg,
+	}
+	data, _ := json.Marshal(body)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		s.sidecarURL+"/narrative-revise", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("narrative-revise sidecar: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("narrative-revise sidecar %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var result models.AntiDetectResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("parse narrative-revise result: %w", err)
+	}
+	return &result, nil
+}
