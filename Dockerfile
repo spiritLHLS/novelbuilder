@@ -56,7 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        redis-server \
        supervisor \
        # OpenJDK 21 for Neo4j
-       openjdk-17-jre-headless \
+       openjdk-21-jre-headless \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---- Neo4j (copy from neo4j-source image) ----
