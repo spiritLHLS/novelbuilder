@@ -47,5 +47,4 @@ pdfminer.six==20221105
 aiohttp>=3.9.0
 
 # Novel download / search (multi-site: 笔趣阁, 起点 etc.)
-# Using a fork that fixes MultiplexedPath.joinpath() on Python 3.11+.
-novel-downloader @ git+https://github.com/spiritLHLS/novel-downloader.git
+# Installed from source in Dockerfile (see RUN curl ... pip install below).

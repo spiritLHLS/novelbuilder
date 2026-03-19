@@ -113,6 +113,11 @@ RUN pip install --no-cache-dir \
     torch==2.5.1+cpu \
     --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
+# Install novel-downloader from source archive (no git required)
+RUN curl -fsSL https://github.com/spiritLHLS/novel-downloader/archive/refs/heads/main.tar.gz \
+    | tar -xz -C /tmp \
+    && pip install --no-cache-dir /tmp/novel-downloader-main \
+    && rm -rf /tmp/novel-downloader-main
 COPY python-sidecar/ ./
 
 # ---- Go backend ----
