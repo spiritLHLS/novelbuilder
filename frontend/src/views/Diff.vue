@@ -220,8 +220,9 @@ onMounted(() => {
 }
 
 .json-view {
-  background: #1e1e2e;
-  color: #cdd6f4;
+  background: var(--nb-table-header-bg);
+  border: 1px solid var(--nb-card-border);
+  color: var(--nb-text-secondary);
   padding: 16px;
   border-radius: 6px;
   overflow-x: auto;
@@ -236,7 +237,8 @@ onMounted(() => {
   font-family: 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.8;
-  background: #1e1e2e;
+  background: var(--nb-table-header-bg);
+  border: 1px solid var(--nb-card-border);
   padding: 16px;
   border-radius: 6px;
   max-height: 400px;

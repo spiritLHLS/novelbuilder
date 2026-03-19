@@ -258,7 +258,7 @@ async function deleteSetting(key: string) {
 }
 .page-header h1 {
   font-size: 24px;
-  color: #e0e0e0;
+  color: var(--nb-text-primary);
 }
 .info-alert {
   margin-bottom: 24px;
@@ -267,17 +267,17 @@ async function deleteSetting(key: string) {
   margin-bottom: 32px;
 }
 .preset-card {
-  background-color: #1a1a2e;
-  border: 1px solid #2a2a3e;
+  background-color: var(--nb-card-bg);
+  border: 1px solid var(--nb-card-border);
 }
 .section-title {
   font-size: 16px;
-  color: #a0a0b0;
+  color: var(--nb-text-secondary);
   margin-bottom: 12px;
   font-weight: 600;
 }
 .settings-table {
-  background-color: #1a1a2e;
+  background-color: var(--nb-card-bg);
 }
 .hint {
   font-size: 12px;

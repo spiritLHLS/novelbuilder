@@ -1,0 +1,379 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── CSS Variables: Light Theme (default) ──────────────────────────────────── */
+:root {
+  --nb-bg-primary: #f5f7fa;
+  --nb-bg-secondary: #ffffff;
+  --nb-bg-sidebar: #1d2b45;
+  --nb-bg-sidebar-hover: #263650;
+  --nb-text-primary: #1a1a2e;
+  --nb-text-secondary: #4a5568;
+  --nb-text-sidebar: #c8d6e5;
+  --nb-text-sidebar-active: #ffffff;
+  --nb-border: #e2e8f0;
+  --nb-border-sidebar: #2d3f58;
+  --nb-accent: #409eff;
+  --nb-accent-hover: #2d8cf0;
+  --nb-card-bg: #ffffff;
+  --nb-card-border: #e2e8f0;
+  --nb-card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --nb-tag-bg: #f0f4ff;
+  --nb-logo-text: #409eff;
+  --nb-logo-subtitle: #8899aa;
+  --nb-menu-group-title: #8899aa;
+  --nb-main-bg: #f5f7fa;
+  --nb-input-bg: #ffffff;
+  --nb-input-border: #dcdfe6;
+  --nb-table-header-bg: #f5f7fa;
+  --nb-divider: #ebeef5;
+  --nb-success: #67c23a;
+  --nb-warning: #e6a23c;
+  --nb-danger: #f56c6c;
+  --nb-info: #909399;
+  --nb-scrollbar-thumb: rgba(0,0,0,0.15);
+  --nb-scrollbar-track: rgba(0,0,0,0.04);
+  --nb-page-padding: 24px;
+  --nb-sidebar-width: 240px;
+}
+
+/* ─── CSS Variables: Dark Theme ─────────────────────────────────────────────── */
+.dark {
+  --nb-bg-primary: #0f0f1a;
+  --nb-bg-secondary: #161625;
+  --nb-bg-sidebar: #1a1a2e;
+  --nb-bg-sidebar-hover: #22223a;
+  --nb-text-primary: #e0e0f0;
+  --nb-text-secondary: #a0a0b8;
+  --nb-text-sidebar: #a0a0b0;
+  --nb-text-sidebar-active: #409eff;
+  --nb-border: #2a2a42;
+  --nb-border-sidebar: #2a2a3e;
+  --nb-accent: #409eff;
+  --nb-accent-hover: #66b3ff;
+  --nb-card-bg: #1e1e30;
+  --nb-card-border: #2a2a42;
+  --nb-card-shadow: 0 1px 6px rgba(0,0,0,0.4);
+  --nb-tag-bg: #2a2a42;
+  --nb-logo-text: #409eff;
+  --nb-logo-subtitle: #666688;
+  --nb-menu-group-title: #555570;
+  --nb-main-bg: #0f0f1a;
+  --nb-input-bg: #1e1e30;
+  --nb-input-border: #3a3a55;
+  --nb-table-header-bg: #1a1a2e;
+  --nb-divider: #2a2a3e;
+  --nb-success: #67c23a;
+  --nb-warning: #e6a23c;
+  --nb-danger: #f56c6c;
+  --nb-info: #8a8a9a;
+  --nb-scrollbar-thumb: rgba(255,255,255,0.12);
+  --nb-scrollbar-track: rgba(255,255,255,0.04);
+  --nb-page-padding: 24px;
+  --nb-sidebar-width: 240px;
+}
+
+/* ─── Global base ────────────────────────────────────────────────────────────── */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--nb-scrollbar-track); }
+::-webkit-scrollbar-thumb { background: var(--nb-scrollbar-thumb); border-radius: 3px; }
+
+body {
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Source Han Sans CN', sans-serif;
+  background-color: var(--nb-bg-primary);
+  color: var(--nb-text-primary);
+  transition: background-color 0.2s, color 0.2s;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Element Plus overrides: Light ─────────────────────────────────────────── */
+.el-table {
+  --el-table-bg-color: var(--nb-card-bg);
+  --el-table-tr-bg-color: var(--nb-card-bg);
+  --el-table-header-bg-color: var(--nb-table-header-bg);
+  --el-table-border-color: var(--nb-card-border);
+  --el-table-text-color: var(--nb-text-primary);
+  --el-table-header-text-color: var(--nb-text-secondary);
+}
+
+.el-card {
+  --el-card-bg-color: var(--nb-card-bg);
+  --el-card-border-color: var(--nb-card-border);
+}
+
+.el-dialog {
+  --el-dialog-bg-color: var(--nb-card-bg);
+}
+
+.el-input__wrapper,
+.el-textarea__inner {
+  background-color: var(--nb-input-bg) !important;
+}
+
+.el-form-item__label {
+  color: var(--nb-text-secondary);
+}
+
+.el-divider {
+  border-color: var(--nb-divider);
+}
+
+/* ─── Element Plus overrides: Dark ──────────────────────────────────────────── */
+.dark .el-table {
+  --el-table-bg-color: #1e1e30;
+  --el-table-tr-bg-color: #1e1e30;
+  --el-table-header-bg-color: #1a1a2e;
+  --el-table-border-color: #2a2a42;
+  --el-table-text-color: #e0e0f0;
+  --el-table-header-text-color: #a0a0b0;
+  --el-table-row-hover-bg-color: #252540;
+}
+
+.dark .el-card {
+  --el-card-bg-color: #1e1e30;
+  --el-card-border-color: #2a2a42;
+}
+
+.dark .el-dialog {
+  --el-bg-color: #1e1e30;
+  --el-dialog-bg-color: #1e1e30;
+  --el-text-color-primary: #e0e0f0;
+  --el-text-color-regular: #c0c0d0;
+  --el-border-color: #3a3a55;
+  --el-border-color-lighter: #2a2a42;
+}
+
+.dark .el-form-item__label {
+  color: #a0a0b8;
+}
+
+.dark .el-input__wrapper {
+  background-color: #1a1a2e !important;
+  box-shadow: 0 0 0 1px #3a3a55 inset;
+}
+
+.dark .el-input__inner,
+.dark .el-textarea__inner {
+  background-color: #1a1a2e;
+  color: #e0e0f0;
+}
+
+.dark .el-textarea__inner {
+  background-color: #1a1a2e !important;
+  color: #e0e0f0;
+  box-shadow: 0 0 0 1px #3a3a55 inset;
+}
+
+.dark .el-select__wrapper {
+  background-color: #1a1a2e;
+  box-shadow: 0 0 0 1px #3a3a55 inset;
+}
+
+.dark .el-popper {
+  --el-bg-color-overlay: #1e1e30;
+  --el-border-color-light: #2a2a42;
+}
+
+.dark .el-select-dropdown {
+  background-color: #1e1e30;
+  border-color: #2a2a42;
+}
+
+.dark .el-select-dropdown__item {
+  color: #e0e0f0;
+}
+
+.dark .el-select-dropdown__item:hover,
+.dark .el-select-dropdown__item.hover {
+  background-color: #252540;
+}
+
+.dark .el-alert {
+  --el-alert-bg-color: #1e1e30;
+}
+
+.dark .el-alert--info {
+  background-color: #1a1e30;
+  border-color: #2a3050;
+}
+
+.dark .el-menu {
+  --el-menu-bg-color: var(--nb-bg-sidebar);
+  --el-menu-hover-bg-color: var(--nb-bg-sidebar-hover);
+  --el-menu-text-color: var(--nb-text-sidebar);
+  --el-menu-active-color: var(--nb-text-sidebar-active);
+}
+
+.dark .el-slider__runway {
+  background-color: #3a3a55;
+}
+
+.dark .el-input-number__wrapper {
+  background-color: #1a1a2e;
+}
+
+.dark .el-message-box {
+  --el-dialog-bg-color: #1e1e30;
+  --el-text-color-primary: #e0e0f0;
+  --el-text-color-regular: #c0c0d0;
+}
+
+/* ─── Tailwind dark mode overrides ──────────────────────────────────────────── */
+/* When body has .dark, Tailwind dark: classes are activated via darkMode: 'class' */
+/* Map common Tailwind color references to theme-aware equivalents */
+
+/* Light mode Tailwind neutrals map to default light colors */
+.bg-white { background-color: var(--nb-card-bg) !important; }
+.bg-gray-50 { background-color: var(--nb-table-header-bg) !important; }
+.bg-gray-100 { background-color: var(--nb-table-header-bg) !important; }
+.text-gray-900 { color: var(--nb-text-primary) !important; }
+.text-gray-800 { color: var(--nb-text-primary) !important; }
+.text-gray-700 { color: var(--nb-text-secondary) !important; }
+.text-gray-600 { color: var(--nb-text-secondary) !important; }
+.text-gray-500 { color: var(--nb-info) !important; }
+.text-gray-400 { color: var(--nb-menu-group-title) !important; }
+.border-gray-200 { border-color: var(--nb-card-border) !important; }
+.border-gray-300 { border-color: var(--nb-border) !important; }
+.border-b { border-bottom-color: var(--nb-divider) !important; }
+.divide-gray-200 > * + * { border-color: var(--nb-divider) !important; }
+
+/* Tailwind utilities that reference Tailwind variables */
+.hover\:bg-gray-50:hover { background-color: var(--nb-table-header-bg) !important; }
+.hover\:bg-gray-100:hover { background-color: var(--nb-tag-bg) !important; }
+
+/* Input/select base styles for Tailwind-styled inputs */
+input, select, textarea {
+  color: var(--nb-text-primary);
+}
+.dark input:not([type="range"]),
+.dark select,
+.dark textarea {
+  background-color: var(--nb-input-bg);
+  border-color: var(--nb-input-border);
+  color: var(--nb-text-primary);
+}
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: var(--nb-info);
+}
+
+/* ─── Common page component styles ──────────────────────────────────────────── */
+/* These override the hardcoded dark colors in scoped view styles */
+.page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.page-header h1,
+.page-header h2,
+.page-header h3 { color: var(--nb-text-primary) !important; }
+.page-header h1 { font-size: 24px; }
+.page-header h2 { font-size: 22px; font-weight: 600; }
+
+/* Views that use dark cards */
+.el-card { background-color: var(--nb-card-bg) !important; border-color: var(--nb-card-border) !important; }
+.el-card__header { border-bottom-color: var(--nb-divider) !important; color: var(--nb-text-primary); }
+.el-card__body .el-form-item__label { color: var(--nb-text-secondary); }
+
+/* Tags/chips in dark theme (Element Plus) */
+.dark .el-tag { background-color: rgba(64,158,255,0.15); border-color: rgba(64,158,255,0.3); color: #409eff; }
+.dark .el-tag--success { background-color: rgba(103,194,58,0.15); border-color: rgba(103,194,58,0.3); color: #67c23a; }
+.dark .el-tag--warning { background-color: rgba(230,162,60,0.15); border-color: rgba(230,162,60,0.3); color: #e6a23c; }
+.dark .el-tag--danger { background-color: rgba(245,108,108,0.15); border-color: rgba(245,108,108,0.3); color: #f56c6c; }
+.dark .el-tag--info { background-color: rgba(144,147,153,0.15); border-color: rgba(144,147,153,0.3); color: #909399; }
+
+/* Table in dark mode */
+.dark .el-table__empty-text { color: var(--nb-text-secondary); }
+.dark .el-table__row td { border-bottom-color: var(--nb-divider); }
+
+/* Menu item dark mode */
+.dark .el-menu-item:hover { background-color: var(--nb-bg-sidebar-hover) !important; }
+.dark .el-empty__description { color: var(--nb-text-secondary); }
+.dark .el-descriptions__label { color: var(--nb-text-secondary); }
+.dark .el-descriptions__content { color: var(--nb-text-primary); }
+.dark .el-descriptions { border-color: var(--nb-divider); }
+.dark .el-descriptions__cell { border-color: var(--nb-divider); }
+.dark .el-button { border-color: var(--nb-border); }
+.dark .el-button--default { background-color: var(--nb-card-bg); color: var(--nb-text-primary); border-color: var(--nb-border); }
+.dark .el-button--default:hover { background-color: var(--nb-bg-sidebar-hover); border-color: var(--nb-accent); color: var(--nb-accent); }
+.dark .el-pagination { color: var(--nb-text-secondary); }
+.dark .el-pagination button { background-color: var(--nb-card-bg); color: var(--nb-text-secondary); border-color: var(--nb-border); }
+.dark .el-pagination .el-pager li { background-color: var(--nb-card-bg); color: var(--nb-text-secondary); }
+.dark .el-pagination .el-pager li.is-active { color: var(--nb-accent); }
+.dark .el-loading-mask { background-color: rgba(15,15,26,0.7); }
+.dark .el-tabs__nav-wrap::after { background-color: var(--nb-divider); }
+.dark .el-tabs__item { color: var(--nb-text-secondary); }
+.dark .el-tabs__item.is-active { color: var(--nb-accent); }
+.dark .el-tabs__active-bar { background-color: var(--nb-accent); }
+.dark .el-divider__text { background-color: var(--nb-main-bg); color: var(--nb-text-secondary); }
+.dark .el-timeline-item__tail { border-left-color: var(--nb-divider); }
+.dark .el-timeline-item__node { background-color: var(--nb-accent); }
+.dark .el-collapse { border-color: var(--nb-divider); }
+.dark .el-collapse-item__header { background-color: var(--nb-card-bg); color: var(--nb-text-primary); border-color: var(--nb-divider); }
+.dark .el-collapse-item__wrap { background-color: var(--nb-card-bg); border-color: var(--nb-divider); }
+.dark .el-radio-button__inner { background-color: var(--nb-card-bg); border-color: var(--nb-border); color: var(--nb-text-secondary); }
+.dark .el-radio-button__original-radio:checked+.el-radio-button__inner { background-color: var(--nb-accent); border-color: var(--nb-accent); color: #fff; }
+.dark .el-checkbox__label { color: var(--nb-text-primary); }
+.dark .el-slider__runway { background-color: var(--nb-border); }
+.dark .el-switch__label { color: var(--nb-text-secondary); }
+
+/* Common text color util classes */
+.text-primary { color: var(--nb-text-primary); }
+.text-secondary { color: var(--nb-text-secondary); }
+
+/* Tailwind utility classes that need dark mode awareness */
+.dark .bg-white { background-color: var(--nb-card-bg) !important; }
+.dark .bg-gray-50 { background-color: var(--nb-bg-secondary) !important; }
+.dark .bg-gray-100 { background-color: var(--nb-table-header-bg) !important; }
+.dark .text-gray-900 { color: var(--nb-text-primary) !important; }
+.dark .text-gray-800 { color: var(--nb-text-primary) !important; }
+.dark .text-gray-700 { color: var(--nb-text-secondary) !important; }
+.dark .text-gray-600 { color: var(--nb-text-secondary) !important; }
+.dark .text-gray-500 { color: var(--nb-info) !important; }
+.dark .text-gray-400 { color: var(--nb-menu-group-title) !important; }
+.dark .border-gray-200 { border-color: var(--nb-card-border) !important; }
+.dark .border-gray-300 { border-color: var(--nb-border) !important; }
+.dark .border-b { border-bottom-color: var(--nb-divider) !important; }
+.dark .bg-blue-50 { background-color: rgba(64,158,255,0.08) !important; }
+.dark .border-blue-200 { border-color: rgba(64,158,255,0.3) !important; }
+.dark .text-blue-800 { color: #66b3ff !important; }
+.dark .bg-red-50 { background-color: rgba(245,108,108,0.08) !important; }
+.dark .border-red-200 { border-color: rgba(245,108,108,0.3) !important; }
+.dark .text-red-700 { color: #f56c6c !important; }
+.dark .hover\:bg-gray-50:hover { background-color: var(--nb-bg-sidebar-hover) !important; }
+.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.dark select,
+.dark textarea {
+  background-color: var(--nb-input-bg) !important;
+  border-color: var(--nb-input-border) !important;
+  color: var(--nb-text-primary) !important;
+}
+.dark .bg-gray-900 { background-color: #1a1a2e !important; }
+
+/* ─── Page layout ────────────────────────────────────────────────────────────── */
+.app-container {
+  height: 100vh;
+  display: flex;
+}
+
+.app-sidebar {
+  width: var(--nb-sidebar-width);
+  min-width: var(--nb-sidebar-width);
+  background-color: var(--nb-bg-sidebar);
+  border-right: 1px solid var(--nb-border-sidebar);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+.app-main {
+  flex: 1;
+  overflow-y: auto;
+  background-color: var(--nb-main-bg);
+  padding: var(--nb-page-padding);
+  transition: background-color 0.2s;
+}

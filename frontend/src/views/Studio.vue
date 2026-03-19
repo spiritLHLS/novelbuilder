@@ -223,8 +223,8 @@ function statusText(status: string) {
 .studio { max-width: 1200px; margin: 0 auto; }
 .page-header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
-.stat-card { background: #1e1e2e; border: 1px solid #2a2a3e; margin-bottom: 20px; }
-.section-card { background: #1e1e2e; border: 1px solid #2a2a3e; margin-bottom: 20px; }
+.stat-card { background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); margin-bottom: 20px; }
+.section-card { background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); margin-bottom: 20px; }
 .quick-btn { width: 100%; height: 60px; font-size: 15px; }
 .progress-info { display: flex; justify-content: space-between; margin-bottom: 12px; color: #999; }
 </style>

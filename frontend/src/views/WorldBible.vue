@@ -189,7 +189,7 @@ function removeForbiddenAnchor(idx: number) {
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
-.constitution-item { background: #1a1a2e; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
+.constitution-item { background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); padding: 12px; border-radius: 8px; margin-bottom: 12px; }
 .constitution-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .constitution-card :deep(.el-card__body) { max-height: 70vh; overflow-y: auto; }
 .forbidden-anchors { margin-top: 12px; }

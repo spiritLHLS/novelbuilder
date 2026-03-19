@@ -218,14 +218,14 @@ function statusLabel(status: string) {
 
 .page-header h1 {
   font-size: 24px;
-  color: #e0e0e0;
+  color: var(--nb-text-primary);
 }
 
 .project-card {
   margin-bottom: 20px;
   cursor: pointer;
-  background: #1e1e2e;
-  border: 1px solid #2a2a3e;
+  background: var(--nb-card-bg);
+  border: 1px solid var(--nb-card-border);
   transition: transform 0.2s, box-shadow 0.2s;
 }
 
@@ -243,7 +243,7 @@ function statusLabel(status: string) {
 .card-header .title {
   font-size: 16px;
   font-weight: 600;
-  color: #e0e0e0;
+  color: var(--nb-text-primary);
 }
 
 .more-btn {

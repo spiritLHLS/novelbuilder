@@ -325,7 +325,7 @@ async function runFullCheck() {
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .stat-card { text-align: center; }
 .issues-list { max-height: 300px; overflow-y: auto; }
-.issue-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.issue-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--nb-divider); }
 .issue-chapter { color: #409eff; font-size: 13px; white-space: nowrap; }
-.issue-desc { color: #b0b0c0; font-size: 13px; flex: 1; }
+.issue-desc { color: var(--nb-text-secondary); font-size: 13px; flex: 1; }
 </style>

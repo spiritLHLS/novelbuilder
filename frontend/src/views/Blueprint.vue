@@ -21,7 +21,7 @@
     <!-- Generating Progress -->
     <el-card v-if="generating" shadow="hover" style="text-align: center; padding: 40px 0;">
       <el-icon :size="48" class="is-loading" style="color: #409eff;"><Loading /></el-icon>
-      <h3 style="color: #e0e0e0; margin-top: 16px;">正在生成蓝图...</h3>
+      <h3 :style="{ color: 'var(--nb-text-primary)', marginTop: '16px' }">正在生成蓝图...</h3>
       <p style="color: #888;">AI正在构建世界设定、角色体系、故事大纲和卷册结构</p>
     </el-card>
 
@@ -248,7 +248,7 @@ async function rejectVolume(id: string) {
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
 .status-bar { }
 .status-label { color: #888; font-size: 13px; margin-bottom: 4px; }
-.status-value { color: #e0e0e0; font-size: 14px; }
+.status-value { color: var(--nb-text-primary); font-size: 14px; }
 .asset-card { text-align: center; }
-.blueprint-content { background: #1a1a2e; padding: 16px; border-radius: 8px; font-size: 12px; color: #a0a0b0; max-height: 500px; overflow: auto; white-space: pre-wrap; }
+.blueprint-content { background: var(--nb-table-header-bg); border: 1px solid var(--nb-card-border); padding: 16px; border-radius: 8px; font-size: 12px; color: var(--nb-text-secondary); max-height: 500px; overflow: auto; white-space: pre-wrap; }
 </style>

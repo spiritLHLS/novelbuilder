@@ -233,8 +233,8 @@ async function handleCommand(cmd: string, f: any) {
 .fs-card.triggered { border-left: 3px solid #e6a23c; }
 .fs-card.resolved { border-left: 3px solid #67c23a; }
 .fs-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
-.fs-header h3 { font-size: 16px; color: #e0e0e0; margin: 0; }
-.fs-desc { color: #b0b0c0; margin: 12px 0; line-height: 1.6; font-size: 14px; }
+.fs-header h3 { font-size: 16px; color: var(--nb-text-primary); margin: 0; }
+.fs-desc { color: var(--nb-text-secondary); margin: 12px 0; line-height: 1.6; font-size: 14px; }
 .fs-meta { font-size: 13px; color: #888; }
 .meta-label { color: #666; }
 .fs-chars { margin-top: 8px; }

@@ -280,7 +280,7 @@ async function deleteNode() {
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .tree-node { display: flex; align-items: center; gap: 8px; }
-.node-title { color: #e0e0e0; }
+.node-title { color: var(--nb-text-primary); }
 .tension { color: #e6a23c; font-size: 12px; }
-.text-content { color: #b0b0c0; line-height: 1.8; white-space: pre-wrap; }
+.text-content { color: var(--nb-text-secondary); line-height: 1.8; white-space: pre-wrap; }
 </style>

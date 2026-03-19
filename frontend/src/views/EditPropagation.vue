@@ -440,7 +440,7 @@ function resultPreview(snap: Record<string, string> | null) {
 <style scoped>
 .propagation-page {
   padding: 20px;
-  color: #e0e0e0;
+  color: var(--nb-text-primary);
 }
 
 .page-header {
@@ -453,7 +453,7 @@ function resultPreview(snap: Record<string, string> | null) {
 }
 
 .subtitle {
-  color: #a0a0b0;
+  color: var(--nb-text-secondary);
   font-size: 0.85rem;
 }
 
@@ -464,8 +464,8 @@ function resultPreview(snap: Record<string, string> | null) {
 }
 
 .panel {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
+  background: var(--nb-card-bg);
+  border: 1px solid var(--nb-card-border);
 }
 
 .main-layout {
@@ -493,12 +493,12 @@ function resultPreview(snap: Record<string, string> | null) {
 }
 
 .event-item:hover {
-  background: #252540;
+  background: var(--nb-table-header-bg);
 }
 
 .event-item.active {
   border-color: #409eff;
-  background: #1e2a3a;
+  background: var(--nb-tag-bg);
 }
 
 .event-type {

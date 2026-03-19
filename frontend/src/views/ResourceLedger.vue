@@ -353,7 +353,7 @@ onMounted(loadResources)
 .page-header h2 {
   font-size: 22px;
   font-weight: 600;
-  color: #e0e0e0;
+  color: var(--nb-text-primary);
   margin: 0;
 }
 
@@ -377,14 +377,14 @@ onMounted(loadResources)
 
 .history-panel {
   flex: 1;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--nb-card-bg);
   border-radius: 8px;
   padding: 20px;
 }
 
 .resource-card {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--nb-card-bg);
+  border: 1px solid var(--nb-card-border);
   border-radius: 8px;
   padding: 12px 14px;
   margin-bottom: 10px;
@@ -411,7 +411,7 @@ onMounted(loadResources)
 
 .resource-name {
   font-weight: 600;
-  color: #e0e0e0;
+  color: var(--nb-text-primary);
 }
 
 .card-meta {
@@ -443,7 +443,7 @@ onMounted(loadResources)
 
 .history-title {
   font-size: 16px;
-  color: #ccc;
+  color: var(--nb-text-secondary);
   margin-bottom: 16px;
 }
 

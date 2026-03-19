@@ -272,7 +272,7 @@ function providerTagType(provider: string) {
   justify-content: space-between;
   margin-bottom: 20px;
 }
-.page-header h1 { font-size: 24px; color: #e0e0e0; }
+.page-header h1 { font-size: 24px; color: var(--nb-text-primary); }
 .info-alert { margin-bottom: 20px; }
 .profiles-table { background: transparent; }
 .masked-key { font-family: monospace; color: #8a8a9a; font-size: 12px; }

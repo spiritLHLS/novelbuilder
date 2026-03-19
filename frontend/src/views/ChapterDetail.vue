@@ -226,12 +226,12 @@ async function runQualityCheck() {
 .page-header h1 { font-size: 22px; color: #e0e0e0; margin-top: 8px; }
 .header-actions { display: flex; align-items: center; gap: 8px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
-.chapter-content { color: #d0d0e0; line-height: 2; font-size: 15px; max-height: 70vh; overflow-y: auto; }
+.chapter-content { color: var(--nb-text-primary); line-height: 2; font-size: 15px; max-height: 70vh; overflow-y: auto; }
 .chapter-content p { margin-bottom: 16px; text-indent: 2em; }
 .score-grid { display: grid; gap: 12px; }
 .score-item { }
-.score-label { color: #b0b0c0; font-size: 13px; margin-bottom: 4px; }
-.issue-item { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; color: #b0b0c0; font-size: 13px; }
+.score-label { color: var(--nb-text-secondary); font-size: 13px; margin-bottom: 4px; }
+.issue-item { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; color: var(--nb-text-secondary); font-size: 13px; }
 .review-item { display: flex; align-items: center; gap: 8px; }
 .review-comment { color: #888; font-size: 13px; margin-top: 4px; }
 </style>

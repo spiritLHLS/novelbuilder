@@ -321,7 +321,7 @@ onMounted(loadPresets)
 .page-header h2 {
   font-size: 22px;
   font-weight: 600;
-  color: #e0e0e0;
+  color: var(--nb-text-primary);
   margin: 0;
 }
 
@@ -345,8 +345,8 @@ onMounted(loadPresets)
 }
 
 .preset-card {
-  background: rgba(255, 255, 255, 0.04) !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  background: var(--nb-card-bg) !important;
+  border: 1px solid var(--nb-card-border) !important;
   transition: border-color 0.2s;
 }
 
@@ -369,7 +369,7 @@ onMounted(loadPresets)
 
 .name {
   font-weight: 600;
-  color: #e0e0e0;
+  color: var(--nb-text-primary);
   font-size: 15px;
 }
 
@@ -396,7 +396,7 @@ onMounted(loadPresets)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--nb-divider);
   padding-top: 8px;
 }
 

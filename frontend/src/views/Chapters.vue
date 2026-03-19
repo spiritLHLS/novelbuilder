@@ -334,6 +334,6 @@ function finishGenerate() {
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
 .stream-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .stream-word-count { color: #888; font-size: 13px; }
-.stream-content { background: #1a1a2e; border-radius: 8px; padding: 20px; max-height: 500px; overflow-y: auto; }
-.stream-text { color: #d0d0e0; line-height: 2; font-size: 15px; }
+.stream-content { background: var(--nb-table-header-bg); border: 1px solid var(--nb-card-border); border-radius: 8px; padding: 20px; max-height: 500px; overflow-y: auto; }
+.stream-text { color: var(--nb-text-primary); line-height: 2; font-size: 15px; }
 </style>

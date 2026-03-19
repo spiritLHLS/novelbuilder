@@ -245,7 +245,9 @@ onUnmounted(() => {
 code {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--nb-table-header-bg);
+  border: 1px solid var(--nb-card-border);
+  color: var(--nb-text-secondary);
   padding: 2px 6px;
   border-radius: 4px;
 }

@@ -323,22 +323,22 @@ async function rollbackTo(snapshotId: string) {
 <style scoped>
 .workflow { max-width: 1400px; margin: 0 auto; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-.page-header h1 { font-size: 24px; color: #e0e0e0; }
+.page-header h1 { font-size: 24px; color: var(--nb-text-primary); }
 .run-status { }
-.stat-label { color: #888; font-size: 13px; margin-bottom: 4px; }
-.stat-value { color: #e0e0e0; font-size: 16px; font-weight: 500; }
+.stat-label { color: var(--nb-text-secondary); font-size: 13px; margin-bottom: 4px; }
+.stat-value { color: var(--nb-text-primary); font-size: 16px; font-weight: 500; }
 .steps-container { max-height: 70vh; overflow-y: auto; }
 .step-card { background: transparent; }
 .step-card.approved { border-left: 3px solid #67c23a; }
 .step-card.rejected { border-left: 3px solid #f56c6c; }
 .step-card.pending_review { border-left: 3px solid #e6a23c; }
 .step-header { display: flex; justify-content: space-between; align-items: center; }
-.step-name { color: #e0e0e0; font-weight: 500; }
-.step-desc { color: #888; font-size: 13px; margin-top: 8px; }
+.step-name { color: var(--nb-text-primary); font-weight: 500; }
+.step-desc { color: var(--nb-text-secondary); font-size: 13px; margin-top: 8px; }
 .step-actions { margin-top: 12px; }
 .step-reviews { margin-top: 8px; }
 .review-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .review-score { color: #e6a23c; font-size: 12px; }
 .rule-list { }
-.rule-item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); color: #b0b0c0; font-size: 13px; }
+.rule-item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--nb-divider); color: var(--nb-text-secondary); font-size: 13px; }
 </style>

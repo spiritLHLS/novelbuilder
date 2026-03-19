@@ -254,6 +254,6 @@ async function saveMigration() {
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
 .analysis-section { padding: 16px 0; }
 .analysis-section h3 { margin-bottom: 16px; color: #409eff; }
-.json-view { background: #1a1a2e; padding: 16px; border-radius: 8px; font-size: 12px; color: #a0a0b0; max-height: 400px; overflow: auto; margin-top: 16px; }
-.chart-container { background: #1a1a2e; border-radius: 8px; padding: 16px; }
+.json-view { background: var(--nb-table-header-bg); border: 1px solid var(--nb-card-border); padding: 16px; border-radius: 8px; font-size: 12px; color: var(--nb-text-secondary); max-height: 400px; overflow: auto; margin-top: 16px; }
+.chart-container { background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); border-radius: 8px; padding: 16px; }
 </style>

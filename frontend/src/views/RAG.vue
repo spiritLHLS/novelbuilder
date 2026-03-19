@@ -261,8 +261,8 @@ onMounted(async () => {
 
 .action-card {
   margin-bottom: 20px;
-  background: #1a1a2e;
-  border-color: #2a2a3e;
+  background: var(--nb-card-bg);
+  border-color: var(--nb-card-border);
 }
 
 .card-header {
@@ -280,7 +280,7 @@ onMounted(async () => {
 }
 
 .action-desc h4 {
-  color: #e0e0e0;
+  color: var(--nb-text-primary);
   margin-bottom: 6px;
 }
 
@@ -291,15 +291,15 @@ onMounted(async () => {
 }
 
 .tips-card {
-  background: #1a1a2e;
-  border-color: #2a2a3e;
+  background: var(--nb-card-bg);
+  border-color: var(--nb-card-border);
 }
 
 code {
-  background: #0f0f1a;
+  background: var(--nb-table-header-bg);
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 12px;
-  color: #67c23a;
+  color: var(--nb-success);
 }
 </style>

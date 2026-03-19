@@ -320,8 +320,8 @@ watch(() => characters.value, buildGraph, { deep: true })
 .char-item { padding: 12px; cursor: pointer; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }
 .char-item:hover { background: rgba(64,158,255,0.1); }
 .char-item.active { background: rgba(64,158,255,0.2); }
-.char-name { font-weight: 500; color: #e0e0e0; }
-.text-content { color: #b0b0c0; line-height: 1.8; white-space: pre-wrap; }
-.rel-item { padding: 4px 0; color: #b0b0c0; }
-.cy-container { width: 100%; height: 400px; background: #1a1a2e; border-radius: 8px; }
+.char-name { font-weight: 500; color: var(--nb-text-primary); }
+.text-content { color: var(--nb-text-secondary); line-height: 1.8; white-space: pre-wrap; }
+.rel-item { padding: 4px 0; color: var(--nb-text-secondary); }
+.cy-container { width: 100%; height: 400px; background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); border-radius: 8px; }
 </style>
