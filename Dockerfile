@@ -80,9 +80,9 @@ RUN if ! getent group neo4j >/dev/null; then groupadd -r neo4j; fi \
     && mkdir -p ${NEO4J_HOME}/data ${NEO4J_HOME}/logs ${NEO4J_HOME}/run ${NEO4J_HOME}/import \
     && chown -R neo4j:neo4j ${NEO4J_HOME}
 
-# ---- Qdrant (copy binary + config) ----
-# Official image places the executable at /qdrant
-COPY --from=qdrant-source /qdrant /usr/local/bin/qdrant
+# ---- Qdrant (copy binary) ----
+# In the official qdrant image the executable is /qdrant/qdrant (inside a /qdrant dir)
+COPY --from=qdrant-source /qdrant/qdrant /usr/local/bin/qdrant
 RUN chmod +x /usr/local/bin/qdrant
 # Qdrant data directory
 RUN mkdir -p /var/lib/qdrant && chmod 755 /var/lib/qdrant

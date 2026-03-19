@@ -86,14 +86,11 @@ if [ ! -d "$QDRANT_STORAGE" ]; then
     chmod 755 /var/lib/qdrant "$QDRANT_STORAGE"
 fi
 
-# Ensure qdrant binary is available at the path used by supervisord.
-if [ ! -x /usr/local/bin/qdrant ] && [ -x /qdrant ]; then
-    ln -sf /qdrant /usr/local/bin/qdrant
-fi
-
-if ! /usr/local/bin/qdrant --version >/dev/null 2>&1; then
-    echo "WARNING: qdrant binary is not runnable at /usr/local/bin/qdrant" >&2
-    echo "         Check architecture and runtime deps, then rebuild image." >&2
+# Preflight: verify qdrant binary is executable.
+if [ ! -x /usr/local/bin/qdrant ] || [ -d /usr/local/bin/qdrant ]; then
+    echo "ERROR: /usr/local/bin/qdrant is missing or not executable. Rebuild the image." >&2
+elif ! /usr/local/bin/qdrant --version >/dev/null 2>&1; then
+    echo "WARNING: qdrant binary exists but failed --version (runtime dep missing?)." >&2
 fi
 
 # ── Redis data dir ────────────────────────────────────────
