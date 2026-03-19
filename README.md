@@ -149,6 +149,9 @@ novelbuilder/
 ## 启动
 
 ```bash
+sudo -i
+git clone https://github.com/spiritLHLS/novelbuilder.git
+cd novelbuilder
 docker build -t novelbuilder .
 docker rm -f nb 2>/dev/null || true
 docker run -d \
@@ -157,6 +160,7 @@ docker run -d \
   -v novelbuilder-data:/var/lib/postgresql/data \
   novelbuilder
 docker logs -f nb
+cd ..
 ```
 
 打开 http://localhost:8080，进入 **设置 → AI 模型配置** 添加 LLM Profile（填写 API Key），
