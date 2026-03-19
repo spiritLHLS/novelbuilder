@@ -6,6 +6,7 @@
         <el-button type="primary" @click="showGenerate" :disabled="!canGenerate">
           <el-icon><EditPen /></el-icon>生成新章节
         </el-button>
+        <el-button style="margin-left: 8px" @click="showBatchDialog = true">批量生成</el-button>
         <el-dropdown @command="handleExport" style="margin-left: 8px">
           <el-button>
             导出<el-icon class="el-icon--right"><ArrowDown /></el-icon>
@@ -14,6 +15,7 @@
             <el-dropdown-menu>
               <el-dropdown-item command="txt">导出 TXT</el-dropdown-item>
               <el-dropdown-item command="markdown">导出 Markdown</el-dropdown-item>
+              <el-dropdown-item command="epub">导出 EPUB</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -107,6 +109,22 @@
         </template>
       </template>
     </el-dialog>
+
+    <!-- Batch Generate Dialog -->
+    <el-dialog v-model="showBatchDialog" title="批量生成章节" width="400px">
+      <div class="space-y-4">
+        <p class="text-sm text-gray-500">从当前最大章节号之后，连续生成多个章节并加入任务队列。</p>
+        <el-form label-position="top">
+          <el-form-item label="生成章节数量">
+            <el-input-number v-model="batchCount" :min="1" :max="20" style="width: 100%;" />
+          </el-form-item>
+        </el-form>
+      </div>
+      <template #footer>
+        <el-button @click="showBatchDialog = false">取消</el-button>
+        <el-button type="primary" @click="startBatchGenerate" :loading="batching">提交生成</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -115,7 +133,7 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
-import { chapterApi, exportApi } from '@/api'
+import { chapterApi, exportApi, exportExtApi, batchWriteApi } from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -136,6 +154,10 @@ let abortController: AbortController | null = null
 const genForm = ref({
   chapter_num: 1, target_words: 3000, title: '', direction: '', stream: true,
 })
+
+const showBatchDialog = ref(false)
+const batchCount = ref(3)
+const batching = ref(false)
 
 const renderedStream = computed(() =>
   streamContent.value.replace(/\n/g, '<br>')
@@ -179,12 +201,20 @@ function viewChapter(ch: any) {
   router.push({ name: 'chapter-detail', params: { projectId, chapterId: ch.id } })
 }
 
-async function handleExport(format: 'txt' | 'markdown') {
+async function handleExport(format: 'txt' | 'markdown' | 'epub') {
   try {
-    const res = format === 'txt'
-      ? await exportApi.txt(projectId)
-      : await exportApi.markdown(projectId)
-    const ext = format === 'txt' ? 'txt' : 'md'
+    let res: any
+    let ext: string
+    if (format === 'epub') {
+      res = await exportExtApi.epub(projectId)
+      ext = 'epub'
+    } else if (format === 'txt') {
+      res = await exportApi.txt(projectId)
+      ext = 'txt'
+    } else {
+      res = await exportApi.markdown(projectId)
+      ext = 'md'
+    }
     const url = URL.createObjectURL(new Blob([res.data]))
     const a = document.createElement('a')
     a.href = url
@@ -194,6 +224,20 @@ async function handleExport(format: 'txt' | 'markdown') {
     ElMessage.success('导出成功')
   } catch (e: any) {
     ElMessage.error(e.response?.data?.error || '导出失败')
+  }
+}
+
+async function startBatchGenerate() {
+  batching.value = true
+  try {
+    const maxNum = chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0)
+    await batchWriteApi.generate(projectId, batchCount.value)
+    ElMessage.success(`已将 ${batchCount.value} 个章节加入生成队列`)
+    showBatchDialog.value = false
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '批量生成失败')
+  } finally {
+    batching.value = false
   }
 }
 

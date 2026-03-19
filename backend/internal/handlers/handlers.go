@@ -23,34 +23,39 @@ import (
 )
 
 type Handler struct {
-	projects       *services.ProjectService
-	blueprints     *services.BlueprintService
-	chapters       *services.ChapterService
-	worldBibles    *services.WorldBibleService
-	characters     *services.CharacterService
-	outlines       *services.OutlineService
-	foreshadowings *services.ForeshadowingService
-	volumes        *services.VolumeService
-	quality        *services.QualityService
-	references     *services.ReferenceService
-	rag            *services.RAGService
-	workflow       *workflow.Engine
-	agentReview    *services.AgentReviewService
-	export         *services.ExportService
-	llmProfiles    *services.LLMProfileService
-	propagation    *services.EditPropagationService
-	promptPresets  *services.PromptPresetService
-	glossary       *services.GlossaryService
-	taskQueue      *services.TaskQueueService
-	resourceLedger *services.ResourceLedgerService
-	webhooks       *services.WebhookService
-	sidecar        *services.SidecarService
-	systemSettings *services.SystemSettingsService
-	audit          *services.AuditService
-	bookRules      *services.BookRulesService
-	imports        *services.ImportService
-	agentRouting   *services.AgentRoutingService
-	logger         *zap.Logger
+	projects              *services.ProjectService
+	blueprints            *services.BlueprintService
+	chapters              *services.ChapterService
+	worldBibles           *services.WorldBibleService
+	characters            *services.CharacterService
+	outlines              *services.OutlineService
+	foreshadowings        *services.ForeshadowingService
+	volumes               *services.VolumeService
+	quality               *services.QualityService
+	references            *services.ReferenceService
+	rag                   *services.RAGService
+	workflow              *workflow.Engine
+	agentReview           *services.AgentReviewService
+	export                *services.ExportService
+	llmProfiles           *services.LLMProfileService
+	propagation           *services.EditPropagationService
+	promptPresets         *services.PromptPresetService
+	glossary              *services.GlossaryService
+	taskQueue             *services.TaskQueueService
+	resourceLedger        *services.ResourceLedgerService
+	webhooks              *services.WebhookService
+	sidecar               *services.SidecarService
+	systemSettings        *services.SystemSettingsService
+	audit                 *services.AuditService
+	bookRules             *services.BookRulesService
+	imports               *services.ImportService
+	agentRouting          *services.AgentRoutingService
+	analytics             *services.AnalyticsService
+	subplots              *services.SubplotService
+	emotionalArcs         *services.EmotionalArcService
+	characterInteractions *services.CharacterInteractionService
+	radar                 *services.RadarService
+	logger                *zap.Logger
 }
 
 func NewHandler(
@@ -81,37 +86,47 @@ func NewHandler(
 	bookRules *services.BookRulesService,
 	imports *services.ImportService,
 	agentRouting *services.AgentRoutingService,
+	analytics *services.AnalyticsService,
+	subplots *services.SubplotService,
+	emotionalArcs *services.EmotionalArcService,
+	characterInteractions *services.CharacterInteractionService,
+	radar *services.RadarService,
 	logger *zap.Logger,
 ) *Handler {
 	return &Handler{
-		projects:       projects,
-		blueprints:     blueprints,
-		chapters:       chapters,
-		worldBibles:    worldBibles,
-		characters:     characters,
-		outlines:       outlines,
-		foreshadowings: foreshadowings,
-		volumes:        volumes,
-		quality:        quality,
-		references:     references,
-		rag:            rag,
-		workflow:       wf,
-		agentReview:    agentReview,
-		export:         export,
-		llmProfiles:    llmProfiles,
-		propagation:    propagation,
-		promptPresets:  promptPresets,
-		glossary:       glossary,
-		taskQueue:      taskQueue,
-		resourceLedger: resourceLedger,
-		webhooks:       webhooks,
-		sidecar:        sidecar,
-		systemSettings: systemSettings,
-		audit:          audit,
-		bookRules:      bookRules,
-		imports:        imports,
-		agentRouting:   agentRouting,
-		logger:         logger,
+		projects:              projects,
+		blueprints:            blueprints,
+		chapters:              chapters,
+		worldBibles:           worldBibles,
+		characters:            characters,
+		outlines:              outlines,
+		foreshadowings:        foreshadowings,
+		volumes:               volumes,
+		quality:               quality,
+		references:            references,
+		rag:                   rag,
+		workflow:              wf,
+		agentReview:           agentReview,
+		export:                export,
+		llmProfiles:           llmProfiles,
+		propagation:           propagation,
+		promptPresets:         promptPresets,
+		glossary:              glossary,
+		taskQueue:             taskQueue,
+		resourceLedger:        resourceLedger,
+		webhooks:              webhooks,
+		sidecar:               sidecar,
+		systemSettings:        systemSettings,
+		audit:                 audit,
+		bookRules:             bookRules,
+		imports:               imports,
+		agentRouting:          agentRouting,
+		analytics:             analytics,
+		subplots:              subplots,
+		emotionalArcs:         emotionalArcs,
+		characterInteractions: characterInteractions,
+		radar:                 radar,
+		logger:                logger,
 	}
 }
 
@@ -302,6 +317,37 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Auto-Write Daemon ─────────────────────────────────────────────────────
 	api.PUT("/projects/:id/auto-write", h.SetAutoWrite)
+
+	// ── Analytics Dashboard ───────────────────────────────────────────────────
+	api.GET("/projects/:id/analytics", h.GetProjectAnalytics)
+
+	// ── EPUB Export ───────────────────────────────────────────────────────────
+	api.GET("/projects/:id/export/epub", h.ExportEPUB)
+
+	// ── Batch Chapter Write ───────────────────────────────────────────────────
+	api.POST("/projects/:id/chapters/batch-generate", h.BatchGenerateChapters)
+
+	// ── Subplot Board ─────────────────────────────────────────────────────────
+	api.GET("/projects/:id/subplots", h.ListSubplots)
+	api.POST("/projects/:id/subplots", h.CreateSubplot)
+	api.PUT("/subplots/:id", h.UpdateSubplot)
+	api.DELETE("/subplots/:id", h.DeleteSubplot)
+	api.GET("/subplots/:id/checkpoints", h.ListSubplotCheckpoints)
+	api.POST("/subplots/:id/checkpoints", h.AddSubplotCheckpoint)
+
+	// ── Emotional Arcs ────────────────────────────────────────────────────────
+	api.GET("/projects/:id/emotional-arcs", h.ListEmotionalArcs)
+	api.POST("/projects/:id/emotional-arcs", h.UpsertEmotionalArc)
+	api.DELETE("/emotional-arcs/:id", h.DeleteEmotionalArc)
+
+	// ── Character Interaction Matrix ──────────────────────────────────────────
+	api.GET("/projects/:id/character-interactions", h.ListCharacterInteractions)
+	api.POST("/projects/:id/character-interactions", h.UpsertCharacterInteraction)
+	api.DELETE("/character-interactions/:id", h.DeleteCharacterInteraction)
+
+	// ── Radar Market Scan ─────────────────────────────────────────────────────
+	api.POST("/projects/:id/radar/scan", h.RadarScan)
+	api.GET("/projects/:id/radar/history", h.ListRadarHistory)
 }
 
 func (h *Handler) ListProjects(c *gin.Context) {
@@ -2323,4 +2369,222 @@ func (h *Handler) DeleteProjectAgentRoute(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"ok": true})
+}
+
+// ── Analytics Dashboard ───────────────────────────────────────────────────────
+
+func (h *Handler) GetProjectAnalytics(c *gin.Context) {
+	data, err := h.analytics.GetProjectAnalytics(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": data})
+}
+
+// ── EPUB Export ───────────────────────────────────────────────────────────────
+
+func (h *Handler) ExportEPUB(c *gin.Context) {
+	projectID := c.Param("id")
+	data, err := h.export.ExportEPUB(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="novel_%s.epub"`, projectID))
+	c.Data(200, "application/epub+zip", data)
+}
+
+// ── Batch Chapter Write ───────────────────────────────────────────────────────
+
+type BatchGenerateRequest struct {
+	Count int `json:"count" binding:"required,min=1,max=50"`
+}
+
+func (h *Handler) BatchGenerateChapters(c *gin.Context) {
+	projectID := c.Param("id")
+	var req BatchGenerateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	// Enqueue N chapter-generation tasks; each worker picks them up sequentially.
+	var taskIDs []string
+	for i := 0; i < req.Count; i++ {
+		task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+			ProjectID: projectID,
+			TaskType:  "generate_next_chapter",
+			Payload:   json.RawMessage(`{}`),
+			Priority:  5,
+		})
+		if err != nil {
+			c.JSON(500, gin.H{"error": fmt.Sprintf("enqueue task %d: %s", i+1, err.Error())})
+			return
+		}
+		taskIDs = append(taskIDs, task.ID)
+	}
+	c.JSON(200, gin.H{"data": gin.H{"count": req.Count, "task_ids": taskIDs}})
+}
+
+// ── Subplot Board ─────────────────────────────────────────────────────────────
+
+func (h *Handler) ListSubplots(c *gin.Context) {
+	list, err := h.subplots.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": list})
+}
+
+func (h *Handler) CreateSubplot(c *gin.Context) {
+	var req services.CreateSubplotRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	sp, err := h.subplots.Create(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": sp})
+}
+
+func (h *Handler) UpdateSubplot(c *gin.Context) {
+	var req services.UpdateSubplotRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	sp, err := h.subplots.Update(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": sp})
+}
+
+func (h *Handler) DeleteSubplot(c *gin.Context) {
+	if err := h.subplots.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func (h *Handler) ListSubplotCheckpoints(c *gin.Context) {
+	list, err := h.subplots.ListCheckpoints(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": list})
+}
+
+func (h *Handler) AddSubplotCheckpoint(c *gin.Context) {
+	var req services.CreateCheckpointRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	cp, err := h.subplots.AddCheckpoint(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": cp})
+}
+
+// ── Emotional Arcs ────────────────────────────────────────────────────────────
+
+func (h *Handler) ListEmotionalArcs(c *gin.Context) {
+	list, err := h.emotionalArcs.ListForProject(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": list})
+}
+
+func (h *Handler) UpsertEmotionalArc(c *gin.Context) {
+	var req services.UpsertEmotionalArcRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	entry, err := h.emotionalArcs.Upsert(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": entry})
+}
+
+func (h *Handler) DeleteEmotionalArc(c *gin.Context) {
+	if err := h.emotionalArcs.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// ── Character Interaction Matrix ──────────────────────────────────────────────
+
+func (h *Handler) ListCharacterInteractions(c *gin.Context) {
+	list, err := h.characterInteractions.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": list})
+}
+
+func (h *Handler) UpsertCharacterInteraction(c *gin.Context) {
+	var req services.UpsertInteractionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	ci, err := h.characterInteractions.Upsert(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": ci})
+}
+
+func (h *Handler) DeleteCharacterInteraction(c *gin.Context) {
+	if err := h.characterInteractions.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// ── Radar Market Scan ─────────────────────────────────────────────────────────
+
+func (h *Handler) RadarScan(c *gin.Context) {
+	projectID := c.Param("id")
+	var req services.RadarScanRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	result, err := h.radar.Scan(c.Request.Context(), &projectID, req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": result})
+}
+
+func (h *Handler) ListRadarHistory(c *gin.Context) {
+	projectID := c.Param("id")
+	list, err := h.radar.ListRecent(c.Request.Context(), &projectID, 20)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": list})
 }

@@ -149,6 +149,32 @@ const router = createRouter({
       name: 'agent-routing',
       component: () => import('@/views/AgentRouting.vue'),
     },
+    // ── Gap-fill features ──────────────────────────────────────────────────
+    {
+      path: '/projects/:projectId/analytics',
+      name: 'analytics',
+      component: () => import('@/views/Analytics.vue'),
+    },
+    {
+      path: '/projects/:projectId/subplots',
+      name: 'subplot-board',
+      component: () => import('@/views/SubplotBoard.vue'),
+    },
+    {
+      path: '/projects/:projectId/emotional-arcs',
+      name: 'emotional-arcs',
+      component: () => import('@/views/EmotionalArcs.vue'),
+    },
+    {
+      path: '/projects/:projectId/character-matrix',
+      name: 'character-matrix',
+      component: () => import('@/views/CharacterMatrix.vue'),
+    },
+    {
+      path: '/projects/:projectId/radar',
+      name: 'radar',
+      component: () => import('@/views/Radar.vue'),
+    },
   ],
 })
 

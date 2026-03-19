@@ -95,6 +95,13 @@ func main() {
 	importService := services.NewImportService(db, cfg.PythonSidecar.URL, logger)
 	agentRoutingService := services.NewAgentRoutingService(db, logger)
 
+	// ── Phase-2 feature services ──────────────────────────────────────────────
+	analyticsService := services.NewAnalyticsService(db, logger)
+	subplotService := services.NewSubplotService(db, logger)
+	emotionalArcService := services.NewEmotionalArcService(db, logger)
+	characterInteractionService := services.NewCharacterInteractionService(db, logger)
+	radarService := services.NewRadarService(db, aiGateway, logger)
+
 	// Start background task worker pool
 	taskQueueService.Start()
 	defer taskQueueService.Stop()
@@ -128,6 +135,11 @@ func main() {
 		bookRulesService,
 		importService,
 		agentRoutingService,
+		analyticsService,
+		subplotService,
+		emotionalArcService,
+		characterInteractionService,
+		radarService,
 		logger,
 	)
 

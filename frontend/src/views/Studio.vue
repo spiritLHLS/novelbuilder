@@ -57,6 +57,36 @@
           </el-button>
         </el-col>
       </el-row>
+      <el-divider />
+      <el-row :gutter="16">
+        <el-col :span="6">
+          <el-button size="large" class="quick-btn" @click="goTo('analytics')">
+            📊 数据分析
+          </el-button>
+        </el-col>
+        <el-col :span="6">
+          <el-button size="large" class="quick-btn" @click="goTo('subplots')">
+            🗂️ 副线看板
+          </el-button>
+        </el-col>
+        <el-col :span="6">
+          <el-button size="large" class="quick-btn" @click="goTo('emotional-arcs')">
+            💫 情感弧线
+          </el-button>
+        </el-col>
+        <el-col :span="6">
+          <el-button size="large" class="quick-btn" @click="goTo('character-matrix')">
+            🕸️ 关系矩阵
+          </el-button>
+        </el-col>
+      </el-row>
+      <el-row :gutter="16" style="margin-top: 16px">
+        <el-col :span="6">
+          <el-button size="large" class="quick-btn" @click="goTo('radar')">
+            📡 市场雷达
+          </el-button>
+        </el-col>
+      </el-row>
     </el-card>
 
     <!-- 最近章节 -->

@@ -481,3 +481,51 @@ export const autoWriteApi = {
   set: (projectId: string, intervalMinutes: number) =>
     api.put(`/projects/${projectId}/auto-write`, { interval_minutes: intervalMinutes }),
 }
+
+// ── Analytics Dashboard ───────────────────────────────────────────────────────
+export const analyticsApi = {
+  get: (projectId: string) => api.get(`/projects/${projectId}/analytics`),
+}
+
+// ── Export (extended with EPUB) ───────────────────────────────────────────────
+export const exportExtApi = {
+  epub: (projectId: string) =>
+    api.get(`/projects/${projectId}/export/epub`, { responseType: 'blob' }),
+}
+
+// ── Batch Chapter Write ───────────────────────────────────────────────────────
+export const batchWriteApi = {
+  generate: (projectId: string, count: number) =>
+    api.post(`/projects/${projectId}/chapters/batch-generate`, { count }),
+}
+
+// ── Subplot Board ─────────────────────────────────────────────────────────────
+export const subplotApi = {
+  list: (projectId: string) => api.get(`/projects/${projectId}/subplots`),
+  create: (projectId: string, data: any) => api.post(`/projects/${projectId}/subplots`, data),
+  update: (id: string, data: any) => api.put(`/subplots/${id}`, data),
+  delete: (id: string) => api.delete(`/subplots/${id}`),
+  listCheckpoints: (subplotId: string) => api.get(`/subplots/${subplotId}/checkpoints`),
+  addCheckpoint: (subplotId: string, data: any) => api.post(`/subplots/${subplotId}/checkpoints`, data),
+}
+
+// ── Emotional Arcs ────────────────────────────────────────────────────────────
+export const emotionalArcApi = {
+  list: (projectId: string) => api.get(`/projects/${projectId}/emotional-arcs`),
+  upsert: (projectId: string, data: any) => api.post(`/projects/${projectId}/emotional-arcs`, data),
+  delete: (id: string) => api.delete(`/emotional-arcs/${id}`),
+}
+
+// ── Character Interaction Matrix ──────────────────────────────────────────────
+export const charInteractionApi = {
+  list: (projectId: string) => api.get(`/projects/${projectId}/character-interactions`),
+  upsert: (projectId: string, data: any) => api.post(`/projects/${projectId}/character-interactions`, data),
+  delete: (id: string) => api.delete(`/character-interactions/${id}`),
+}
+
+// ── Radar Market Scan ─────────────────────────────────────────────────────────
+export const radarApi = {
+  scan: (projectId: string, data: { genre?: string; platform?: string; focus?: string }) =>
+    api.post(`/projects/${projectId}/radar/scan`, data),
+  history: (projectId: string) => api.get(`/projects/${projectId}/radar/history`),
+}
