@@ -52,11 +52,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
        > /etc/apt/sources.list.d/pgdg.list \
     && apt-get update && apt-get install -y --no-install-recommends \
-       postgresql-16 postgresql-16-pgvector \
+       postgresql-16 postgresql-16-pgvector postgresql-client-16 \
        redis-server \
        supervisor \
        # OpenJDK 21 for Neo4j
        openjdk-21-jre-headless \
+       # libgomp needed by Qdrant binary
+       libgomp1 \
+       # gosu for privilege dropping
+       gosu \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---- Neo4j (copy from neo4j-source image) ----
@@ -65,8 +69,10 @@ COPY --from=neo4j-source /var/lib/neo4j ${NEO4J_HOME}
 # Neo4j needs its bin dir on PATH
 ENV PATH="${NEO4J_HOME}/bin:${PATH}"
 
-# Create neo4j user
-RUN groupadd -r neo4j && useradd -r -g neo4j -d ${NEO4J_HOME} neo4j \
+# Create neo4j user and fix permissions
+RUN groupadd -r neo4j 2>/dev/null || true \
+    && useradd -r -g neo4j -d ${NEO4J_HOME} neo4j 2>/dev/null || true \
+    && mkdir -p ${NEO4J_HOME}/data ${NEO4J_HOME}/logs ${NEO4J_HOME}/run \
     && chown -R neo4j:neo4j ${NEO4J_HOME}
 
 # ---- Qdrant (copy binary + config) ----
@@ -96,6 +102,10 @@ COPY migrations/ /app/migrations/
 
 # ---- Supervisord ----
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# ---- Helper scripts ----
+COPY docker/wait-for-pg.sh /app/docker/wait-for-pg.sh
+RUN chmod +x /app/docker/wait-for-pg.sh
 
 # ---- Entrypoint ----
 COPY docker/docker-entrypoint.sh /app/docker-entrypoint.sh

@@ -59,9 +59,12 @@ NEO4J_DATA="${NEO4J_HOME}/data"
 
 if [ ! -d "$NEO4J_DATA/databases/neo4j" ]; then
     echo "==> Initialising Neo4j 5..."
+    mkdir -p "${NEO4J_HOME}/data" "${NEO4J_HOME}/logs" "${NEO4J_HOME}/run" "${NEO4J_HOME}/import"
+    chown -R neo4j:neo4j "${NEO4J_HOME}"
 
-    # Set the initial password via neo4j-admin
-    gosu neo4j neo4j-admin dbms set-initial-password "${NEO4J_PASSWORD}" 2>/dev/null || true
+    # Set initial password via neo4j-admin (Neo4j 5.x syntax)
+    su - neo4j -s /bin/bash -c "/opt/neo4j/bin/neo4j-admin dbms set-initial-password '${NEO4J_PASSWORD}'" 2>/dev/null || \
+        gosu neo4j /opt/neo4j/bin/neo4j-admin dbms set-initial-password "${NEO4J_PASSWORD}" 2>/dev/null || true
 
     echo "==> Neo4j password set."
 fi
@@ -76,7 +79,10 @@ fi
 
 # ── Redis data dir ────────────────────────────────────────
 mkdir -p /var/lib/redis
-chmod 755 /var/lib/redis
+chown redis:redis /var/lib/redis 2>/dev/null || chmod 777 /var/lib/redis
+
+# ── Docker helper scripts dir ───────────────────────────
+mkdir -p /app/docker
 
 # ── Wait helper (used post-startup if needed) ─────────────
 wait_for_port() {
