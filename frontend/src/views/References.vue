@@ -82,8 +82,14 @@
       <div v-else-if="fetchStep === 'results'" class="fetch-step">
         <div class="results-header">
           <span class="results-count">
-            共 {{ searchResults.length }} 条结果
-            <span v-if="totalPages > 1">（第 {{ searchPage + 1 }} / {{ totalPages }} 页）</span>
+            <template v-if="searchLoading">
+              <el-icon class="is-loading"><Loading /></el-icon>
+              {{ searchStreamStatus || '搜索中…' }}
+            </template>
+            <template v-else>
+              共 {{ searchResults.length }} 条结果
+              <span v-if="totalPages > 1">（第 {{ searchPage + 1 }} / {{ totalPages }} 页）</span>
+            </template>
           </span>
           <el-button link @click="fetchStep = 'search'">重新搜索</el-button>
         </div>
@@ -293,7 +299,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import { Upload, Link, Search, Loading, Lock } from '@element-plus/icons-vue'
-import { referenceApi, streamFetchImport } from '@/api'
+import { referenceApi, streamFetchImport, streamSearchNovels } from '@/api'
 import type { NovelSearchResult, FetchBookInfo, FetchChapterInfo } from '@/api'
 import VChart from 'vue-echarts'
 
@@ -327,6 +333,8 @@ const searchKeyword = ref('')
 const searchLoading = ref(false)
 const searchResults = ref<NovelSearchResult[]>([])
 const searchPage = ref(0)
+const searchStreamStatus = ref('')  // e.g. "已从 n个站点获取 N 条结果..."
+let _searchAbort: AbortController | null = null
 
 const totalPages = computed(() => Math.ceil(searchResults.value.length / PAGE_SIZE))
 const pagedResults = computed(() =>
@@ -371,9 +379,15 @@ const chapterRangeMarks = computed(() => {
 })
 
 function openFetchDialog() {
+  // Cancel any in-flight search stream before resetting state
+  if (_searchAbort) {
+    _searchAbort.abort()
+    _searchAbort = null
+  }
   fetchStep.value = 'search'
   searchKeyword.value = ''
   searchResults.value = []
+  searchStreamStatus.value = ''
   bookInfo.value = null
   selectedBook.value = null
   fetchGenre.value = ''
@@ -396,15 +410,46 @@ function handleFetchDialogClose(done: () => void) {
 async function doSearch() {
   const kw = searchKeyword.value.trim()
   if (!kw) return
+
+  // Cancel any previous in-flight search
+  if (_searchAbort) {
+    _searchAbort.abort()
+  }
+  _searchAbort = new AbortController()
+  const signal = _searchAbort.signal
+
   searchLoading.value = true
+  searchResults.value = []
+  searchPage.value = 0
+  searchStreamStatus.value = '正在连接各站点…'
+  fetchStep.value = 'results'
+
+  let siteCount = 0
   try {
-    const res = await referenceApi.searchNovels(projectId, kw)
-    searchResults.value = (res.data as any).results ?? []
-    searchPage.value = 0
-    fetchStep.value = 'results'
+    for await (const event of streamSearchNovels(projectId, kw, { signal })) {
+      if (event.type === 'batch') {
+        searchResults.value.push(...event.results)
+        siteCount++
+        searchStreamStatus.value =
+          `已从 ${siteCount} 个站点获取 ${searchResults.value.length} 条结果…`
+      } else if (event.type === 'done') {
+        searchStreamStatus.value =
+          `搜索完成，共 ${siteCount} 个站点，${event.total} 条结果`
+      } else if (event.type === 'error') {
+        ElMessage.error(`搜索出错：${event.message}`)
+      }
+    }
   } catch (e: any) {
-    const msg = e?.response?.data?.error || e?.response?.data?.detail || '搜索失败，请稍后重试'
-    ElMessage.error(msg)
+    if (signal.aborted) return  // Normal abort on re-search — do not show error
+    // Fallback to non-streaming search if stream endpoint unavailable
+    try {
+      const res = await referenceApi.searchNovels(projectId, kw)
+      searchResults.value = (res.data as any).results ?? []
+      searchStreamStatus.value = `共 ${searchResults.value.length} 条结果`
+    } catch (e2: any) {
+      const msg = e2?.response?.data?.error || e2?.response?.data?.detail || '搜索失败，请稍后重试'
+      ElMessage.error(msg)
+    }
   } finally {
     searchLoading.value = false
   }

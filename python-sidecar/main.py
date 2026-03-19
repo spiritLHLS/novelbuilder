@@ -402,8 +402,12 @@ async def agent_status(session_id: str):
 @app.get("/agent/stream/{session_id}")
 async def agent_stream(session_id: str):
     """SSE stream for agent progress updates."""
+    # Return 404 immediately if the session doesn't exist yet to avoid
+    # a silent 5-minute spin.
+    if session_id not in _agent_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     async def event_gen():
-        import asyncio
         prev_len = 0
         for _ in range(300):  # max 5 minutes at 1s intervals
             session = _agent_sessions.get(session_id, {})
@@ -440,8 +444,9 @@ async def graph_entities(project_id: str):
 async def graph_query(req: GraphQueryRequest):
     """Execute a raw Cypher read query."""
     neo4j = get_neo4j()
-    # Only allow read queries for safety
-    if any(kw in req.cypher.upper() for kw in ("DELETE", "DROP", "DETACH", "CREATE", "MERGE", "SET")):
+    # Only allow read queries for safety — block known write/admin keywords.
+    _WRITE_KEYWORDS = ("DELETE", "DROP", "DETACH", "CREATE", "MERGE", "SET", "REMOVE", "CALL")
+    if any(kw in req.cypher.upper() for kw in _WRITE_KEYWORDS):
         raise HTTPException(status_code=400, detail="Only read queries allowed via this endpoint")
     results = await neo4j.query(req.cypher, req.params)
     return {"results": results}
@@ -1352,8 +1357,9 @@ async def import_chapters_analyze(req: ImportChaptersRequest):
 class NovelSearchReq(BaseModel):
     keyword: str
     sites: Optional[list[str]] = None
-    limit: int = 100
-    per_site_limit: int = 20
+    # limit=0 means unlimited (all results from all sites)
+    limit: int = 0
+    per_site_limit: int = 10
 
 class NovelBookInfoReq(BaseModel):
     site: str
@@ -1396,7 +1402,7 @@ async def novels_search(req: NovelSearchReq):
             sites=req.sites or None,
             limit=req.limit if req.limit > 0 else None,
             per_site_limit=req.per_site_limit,
-            timeout=8.0,
+            timeout=15.0,
         )
     except Exception as exc:
         logger.exception("Novel search failed")
@@ -1417,6 +1423,108 @@ async def novels_search(req: NovelSearchReq):
             "word_count":     str(d.get("word_count", "")),
         })
     return {"results": results}
+
+
+def _normalize_result(r: object) -> dict:
+    """Convert a SearchResult (TypedDict or dict-like) to a plain serialisable dict."""
+    d = dict(r) if not isinstance(r, dict) else r  # type: ignore[arg-type]
+    return {
+        "site":           str(d.get("site", "")),
+        "book_id":        str(d.get("book_id", "")),
+        "book_url":       str(d.get("book_url", "")),
+        "cover_url":      str(d.get("cover_url", "")),
+        "title":          str(d.get("title", "")),
+        "author":         str(d.get("author", "")),
+        "latest_chapter": str(d.get("latest_chapter", "")),
+        "update_date":    str(d.get("update_date", "")),
+        "word_count":     str(d.get("word_count", "")),
+    }
+
+
+class NovelSearchStreamReq(BaseModel):
+    keyword: str
+    sites: Optional[list[str]] = None
+    per_site_limit: int = 10
+
+
+@app.post("/novels/search-stream")
+async def novels_search_stream(req: NovelSearchStreamReq):
+    """
+    Stream search results site-by-site as NDJSON.
+
+    Emits one JSON line per site that responds:
+      {"type": "batch", "site": "xxx", "results": [...]}
+
+    Finalises with:
+      {"type": "done", "total": N}
+
+    On import error:
+      {"type": "error", "message": "..."}
+    """
+    try:
+        from novel_downloader.plugins.search import search_stream as nd_search_stream
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="novel-downloader not installed; run: pip install novel-downloader",
+        )
+
+    async def event_gen():
+        total = 0
+        try:
+            async for batch in nd_search_stream(
+                req.keyword,
+                sites=req.sites or None,
+                per_site_limit=req.per_site_limit,
+                timeout=15.0,
+                nsfw=False,
+            ):
+                if not batch:
+                    continue
+                results = [_normalize_result(r) for r in batch]
+                total += len(results)
+                site_name = results[0]["site"] if results else ""
+                yield (
+                    json.dumps(
+                        {"type": "batch", "site": site_name, "results": results},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except Exception as exc:
+            logger.exception("Novel search stream failed")
+            yield (
+                json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False)
+                + "\n"
+            )
+            return
+        yield (
+            json.dumps({"type": "done", "total": total}, ensure_ascii=False) + "\n"
+        )
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/novels/sites")
+async def novels_list_sites():
+    """Return the list of site keys that have a registered searcher."""
+    try:
+        from novel_downloader.plugins.registry import registrar
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="novel-downloader not installed; run: pip install novel-downloader",
+        )
+    classes = registrar.get_searcher_classes(None, load_all_if_none=True)
+    sites = []
+    for cls in classes:
+        key = getattr(cls, "site_key", None) or cls.__module__.split(".")[-2]
+        sites.append(key)
+    return {"sites": sites, "count": len(sites)}
 
 
 @app.post("/novels/book-info")

@@ -168,8 +168,8 @@ export const referenceApi = {
     }),
   importFromURL: (projectId: string, data: { url: string; title: string; author: string; genre: string }) =>
     api.post(`/projects/${projectId}/references/import-url`, data),
-  searchNovels: (projectId: string, keyword: string, sites?: string[] | null, limit = 20) =>
-    api.post(`/projects/${projectId}/references/search`, { keyword, sites: sites ?? null, limit }),
+  searchNovels: (projectId: string, keyword: string, sites?: string[] | null, perSiteLimit = 10) =>
+    api.post(`/projects/${projectId}/references/search`, { keyword, sites: sites ?? null, limit: 0, per_site_limit: perSiteLimit }),
   getBookInfo: (projectId: string, site: string, bookId: string) =>
     api.post(`/projects/${projectId}/references/book-info`, { site, book_id: bookId }),
   updateMigrationConfig: (id: string, config: any) =>
@@ -216,6 +216,56 @@ export type FetchImportEvent =
   | { type: 'progress'; done: number; total: number; chapter_title: string }
   | { type: 'done'; file_path: string; total_chapters: number; skipped_chapters: number; ref_id?: string }
   | { type: 'error'; message: string }
+
+export type NovelSearchStreamEvent =
+  | { type: 'batch'; site: string; results: NovelSearchResult[] }
+  | { type: 'done'; total: number }
+  | { type: 'error'; message: string }
+
+export async function* streamSearchNovels(
+  projectId: string,
+  keyword: string,
+  options?: { sites?: string[] | null; perSiteLimit?: number; signal?: AbortSignal },
+): AsyncGenerator<NovelSearchStreamEvent> {
+  const resp = await fetch(`/api/projects/${projectId}/references/search-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      keyword,
+      sites: options?.sites ?? null,
+      per_site_limit: options?.perSiteLimit ?? 10,
+    }),
+    signal: options?.signal,
+  })
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(text || `HTTP ${resp.status}`)
+  }
+  const reader = resp.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (trimmed) {
+          try {
+            yield JSON.parse(trimmed) as NovelSearchStreamEvent
+          } catch {
+            // ignore malformed lines
+          }
+        }
+      }
+    }
+  } finally {
+    reader.cancel()
+  }
+}
 
 export async function* streamFetchImport(
   projectId: string,

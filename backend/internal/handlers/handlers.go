@@ -194,6 +194,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/projects/:id/references/upload", h.UploadReference)
 	api.POST("/projects/:id/references/import-url", h.ImportReferenceFromURL)
 	api.POST("/projects/:id/references/search", h.SearchReferenceNovels)
+	api.POST("/projects/:id/references/search-stream", h.SearchReferenceNovelsStream)
 	api.POST("/projects/:id/references/book-info", h.GetReferenceBookInfo)
 	api.POST("/projects/:id/references/fetch-import", h.FetchImportReference)
 	api.GET("/references/:id", h.GetReference)
@@ -1117,16 +1118,18 @@ func (h *Handler) DeleteReference(c *gin.Context) {
 // SearchReferenceNovels proxies keyword search to the Python sidecar's /novels/search endpoint.
 func (h *Handler) SearchReferenceNovels(c *gin.Context) {
 	var body struct {
-		Keyword string   `json:"keyword" binding:"required"`
-		Sites   []string `json:"sites"`
-		Limit   int      `json:"limit"`
+		Keyword      string   `json:"keyword" binding:"required"`
+		Sites        []string `json:"sites"`
+		Limit        int      `json:"limit"`          // 0 = unlimited
+		PerSiteLimit int      `json:"per_site_limit"` // 0 = use sidecar default (10)
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if body.Limit <= 0 {
-		body.Limit = 20
+	// Do NOT cap to 20; 0 means "unlimited" on the sidecar side.
+	if body.PerSiteLimit <= 0 {
+		body.PerSiteLimit = 10
 	}
 
 	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
@@ -1135,9 +1138,10 @@ func (h *Handler) SearchReferenceNovels(c *gin.Context) {
 	}
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"keyword": body.Keyword,
-		"sites":   body.Sites,
-		"limit":   body.Limit,
+		"keyword":        body.Keyword,
+		"sites":          body.Sites,
+		"limit":          body.Limit,
+		"per_site_limit": body.PerSiteLimit,
 	})
 	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, sidecarURL+"/novels/search", bytes.NewReader(reqBody))
 	if err != nil {
@@ -1153,6 +1157,74 @@ func (h *Handler) SearchReferenceNovels(c *gin.Context) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	c.Data(resp.StatusCode, "application/json", raw)
+}
+
+// SearchReferenceNovelsStream proxies the streaming search endpoint from the
+// Python sidecar (/novels/search-stream) and relays site-by-site NDJSON batches.
+func (h *Handler) SearchReferenceNovelsStream(c *gin.Context) {
+	var body struct {
+		Keyword      string   `json:"keyword" binding:"required"`
+		Sites        []string `json:"sites"`
+		PerSiteLimit int      `json:"per_site_limit"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if body.PerSiteLimit <= 0 {
+		body.PerSiteLimit = 10
+	}
+
+	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
+	if sidecarURL == "" {
+		sidecarURL = "http://localhost:8081"
+	}
+
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"keyword":        body.Keyword,
+		"sites":          body.Sites,
+		"per_site_limit": body.PerSiteLimit,
+	})
+
+	// Use a long-lived HTTP client without a short deadline (same as fetch-import).
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, sidecarURL+"/novels/search-stream", bytes.NewReader(reqBody))
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to build sidecar request"})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := fetchImportHTTPClient.Do(httpReq)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "search stream service unavailable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		errBody, _ := io.ReadAll(resp.Body)
+		c.JSON(502, gin.H{"error": string(errBody)})
+		return
+	}
+
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+
+	flusher, canFlush := c.Writer.(http.Flusher)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		fmt.Fprintf(c.Writer, "%s\n", line)
+		if canFlush {
+			flusher.Flush()
+		}
+	}
 }
 
 // GetReferenceBookInfo proxies to /novels/book-info on the Python sidecar.
