@@ -60,6 +60,17 @@ HBA
         su - postgres -c "psql -d $DB_NAME -f $f"
     done
 
+    # Grant the app user full access to every table/sequence created by migrations.
+    # Migrations run as postgres (owner), so novelbuilder has no privileges by default.
+    su - postgres -c "psql -d $DB_NAME -c \"
+        GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA public TO $DB_USER;
+        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO $DB_USER;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public
+            GRANT ALL ON TABLES    TO $DB_USER;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public
+            GRANT ALL ON SEQUENCES TO $DB_USER;
+    \""
+
     su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA stop -w"
     echo "==> PostgreSQL ready."
 fi
