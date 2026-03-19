@@ -1754,6 +1754,52 @@ func (h *Handler) AgentRun(c *gin.Context) {
 	if req.TaskType == "" {
 		req.TaskType = "generate_chapter"
 	}
+
+	if req.LLMConfig == nil {
+		req.LLMConfig = map[string]interface{}{}
+	}
+
+	_, hasAPIKey := req.LLMConfig["api_key"]
+	_, hasModel := req.LLMConfig["model"]
+	_, hasBaseURL := req.LLMConfig["base_url"]
+	if !hasAPIKey || !hasModel || !hasBaseURL {
+		profile, err := h.llmProfiles.GetDefault(c.Request.Context())
+		if err != nil {
+			h.logger.Error("resolve default llm profile failed", zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to resolve default LLM profile"})
+			return
+		}
+		if profile == nil {
+			c.JSON(400, gin.H{"error": "no default AI model configured: please set one in 设置 → AI 模型配置"})
+			return
+		}
+
+		if !hasAPIKey {
+			req.LLMConfig["api_key"] = profile.APIKey
+		}
+		if !hasModel {
+			req.LLMConfig["model"] = profile.ModelName
+		}
+		if !hasBaseURL {
+			req.LLMConfig["base_url"] = profile.BaseURL
+		}
+		if _, ok := req.LLMConfig["max_tokens"]; !ok {
+			req.LLMConfig["max_tokens"] = profile.MaxTokens
+		}
+		if _, ok := req.LLMConfig["temperature"]; !ok {
+			req.LLMConfig["temperature"] = profile.Temperature
+		}
+		if _, ok := req.LLMConfig["graphiti_model"]; !ok {
+			req.LLMConfig["graphiti_model"] = profile.ModelName
+		}
+		if _, ok := req.LLMConfig["graphiti_api_key"]; !ok {
+			req.LLMConfig["graphiti_api_key"] = profile.APIKey
+		}
+		if _, ok := req.LLMConfig["graphiti_base_url"]; !ok {
+			req.LLMConfig["graphiti_base_url"] = profile.BaseURL
+		}
+	}
+
 	sessionID, err := h.sidecar.RunAgent(c.Request.Context(), projectID, req)
 	if err != nil {
 		h.logger.Error("agent run failed", zap.Error(err))

@@ -60,19 +60,34 @@ def save_short_term(project_id: str, paragraphs: list[str]) -> None:
 
 # ── graphiti long-term memory ─────────────────────────────────────────────────
 
-def _build_graphiti():
+def _build_graphiti(llm_cfg: dict[str, Any] | None = None):
     """Build graphiti client lazily to avoid import errors if Neo4j is down."""
     try:
         from graphiti_core import Graphiti
         from graphiti_core.llm_client.openai_client import OpenAIClient as GOpenAI
         from graphiti_core.embedder.openai_embedder import OpenAIEmbedder as GEmbed
 
+        cfg = llm_cfg or {}
         neo4j_uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
         neo4j_user = os.getenv("NEO4J_USER", "neo4j")
         neo4j_pw = os.getenv("NEO4J_PASSWORD", "novelbuilder")
-        api_key = os.getenv("GRAPHITI_LLM_API_KEY") or os.getenv("OPENAI_API_KEY", "placeholder")
-        base_url = os.getenv("GRAPHITI_LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        model = os.getenv("GRAPHITI_LLM_MODEL", "gpt-4o-mini")
+        api_key = (
+            cfg.get("graphiti_api_key")
+            or cfg.get("api_key")
+            or os.getenv("GRAPHITI_LLM_API_KEY")
+            or os.getenv("OPENAI_API_KEY", "placeholder")
+        )
+        base_url = (
+            cfg.get("graphiti_base_url")
+            or cfg.get("base_url")
+            or os.getenv("GRAPHITI_LLM_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        )
+        model = (
+            cfg.get("graphiti_model")
+            or cfg.get("model")
+            or os.getenv("GRAPHITI_LLM_MODEL", "gpt-4o-mini")
+        )
 
         llm_client = GOpenAI(api_key=api_key, base_url=base_url, model=model)
         embedder = GEmbed(api_key=api_key, base_url=base_url)
@@ -86,18 +101,29 @@ def _build_graphiti():
 
 # Module-level lazy singleton
 _graphiti_instance = None
+_graphiti_sig: tuple[str, str, str] | None = None
 
 
-def get_graphiti():
+def get_graphiti(llm_cfg: dict[str, Any] | None = None):
     global _graphiti_instance
-    if _graphiti_instance is None:
-        _graphiti_instance = _build_graphiti()
+    global _graphiti_sig
+
+    cfg = llm_cfg or {}
+    sig = (
+        str(cfg.get("graphiti_base_url") or cfg.get("base_url") or ""),
+        str(cfg.get("graphiti_model") or cfg.get("model") or ""),
+        str(cfg.get("graphiti_api_key") or cfg.get("api_key") or ""),
+    )
+    if _graphiti_instance is None or _graphiti_sig != sig:
+        _graphiti_instance = _build_graphiti(cfg)
+        _graphiti_sig = sig
     return _graphiti_instance
 
 
-async def recall_long_term(project_id: str, query: str, limit: int = 8) -> list[GraphEntity]:
+async def recall_long_term(project_id: str, query: str, limit: int = 8,
+                           llm_cfg: dict[str, Any] | None = None) -> list[GraphEntity]:
     """Search graphiti for relevant facts about the project."""
-    g = get_graphiti()
+    g = get_graphiti(llm_cfg)
     if g is None:
         return []
     try:
@@ -119,9 +145,10 @@ async def recall_long_term(project_id: str, query: str, limit: int = 8) -> list[
 
 
 async def update_long_term(project_id: str, chapter_num: int,
-                           chapter_text: str, summary: str) -> None:
+                           chapter_text: str, summary: str,
+                           llm_cfg: dict[str, Any] | None = None) -> None:
     """Store a new chapter's events into graphiti's graph."""
-    g = get_graphiti()
+    g = get_graphiti(llm_cfg)
     if g is None:
         return
     try:
@@ -146,9 +173,10 @@ async def recall_memory_node(state: AgentState) -> dict[str, Any]:
     """
     project_id = state["project_id"]
     query = state.get("user_prompt", "") + " " + state.get("outline_hint", "")
+    llm_cfg = state.get("llm_config", {})
 
     short_term = load_short_term(project_id)
-    long_term = await recall_long_term(project_id, query)
+    long_term = await recall_long_term(project_id, query, llm_cfg=llm_cfg)
 
     logger.info("Memory recalled: stm=%d paragraphs, ltm=%d entities",
                 len(short_term), len(long_term))
@@ -168,6 +196,7 @@ async def update_memory_node(state: AgentState) -> dict[str, Any]:
     chapter_num = state.get("chapter_num", 0)
     draft = state.get("draft", "")
     summary = state.get("chapter_summary", "")
+    llm_cfg = state.get("llm_config", {})
 
     # Split draft into paragraphs for STM
     paragraphs = [p.strip() for p in draft.split("\n\n") if p.strip()]
@@ -175,6 +204,6 @@ async def update_memory_node(state: AgentState) -> dict[str, Any]:
 
     # Update graphiti LTM asynchronously
     if draft:
-        await update_long_term(project_id, chapter_num, draft, summary)
+        await update_long_term(project_id, chapter_num, draft, summary, llm_cfg=llm_cfg)
 
     return {}
