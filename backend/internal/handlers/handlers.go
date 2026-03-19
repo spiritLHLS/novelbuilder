@@ -46,6 +46,10 @@ type Handler struct {
 	webhooks       *services.WebhookService
 	sidecar        *services.SidecarService
 	systemSettings *services.SystemSettingsService
+	audit          *services.AuditService
+	bookRules      *services.BookRulesService
+	imports        *services.ImportService
+	agentRouting   *services.AgentRoutingService
 	logger         *zap.Logger
 }
 
@@ -73,6 +77,10 @@ func NewHandler(
 	webhooks *services.WebhookService,
 	sidecar *services.SidecarService,
 	systemSettings *services.SystemSettingsService,
+	audit *services.AuditService,
+	bookRules *services.BookRulesService,
+	imports *services.ImportService,
+	agentRouting *services.AgentRoutingService,
 	logger *zap.Logger,
 ) *Handler {
 	return &Handler{
@@ -99,6 +107,10 @@ func NewHandler(
 		webhooks:       webhooks,
 		sidecar:        sidecar,
 		systemSettings: systemSettings,
+		audit:          audit,
+		bookRules:      bookRules,
+		imports:        imports,
+		agentRouting:   agentRouting,
 		logger:         logger,
 	}
 }
@@ -256,6 +268,40 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/projects/:id/vector/status", h.GetVectorStatus)
 	api.POST("/projects/:id/vector/rebuild", h.RebuildVectorIndex)
 	api.POST("/projects/:id/vector/search", h.SearchVector)
+
+	// ── 33-Dimension Audit ────────────────────────────────────────────────────
+	api.POST("/chapters/:id/audit", h.AuditChapter)
+	api.GET("/chapters/:id/audit-report", h.GetChapterAuditReport)
+
+	// ── Anti-AI Rewrite (去AI味) ───────────────────────────────────────────────
+	api.POST("/chapters/:id/anti-detect", h.AntiDetectChapter)
+
+	// ── Book Rules (style guide) ───────────────────────────────────────────────
+	api.GET("/projects/:id/book-rules", h.GetBookRules)
+	api.PUT("/projects/:id/book-rules", h.UpdateBookRules)
+
+	// ── Creative Brief (创作简报) ──────────────────────────────────────────────
+	api.POST("/projects/:id/creative-brief", h.GenerateCreativeBrief)
+
+	// ── Chapter Import (续写已有作品) ──────────────────────────────────────────
+	api.POST("/projects/:id/import-chapters", h.CreateChapterImport)
+	api.GET("/projects/:id/import-chapters", h.ListChapterImports)
+	api.GET("/imports/:id", h.GetChapterImport)
+	api.POST("/imports/:id/process", h.ProcessChapterImport)
+
+	// ── Fan Fiction Settings ───────────────────────────────────────────────────
+	api.PUT("/projects/:id/fanfic", h.UpdateProjectFanfic)
+
+	// ── Per-Agent Model Routing ────────────────────────────────────────────────
+	api.GET("/agent-routes", h.ListAgentRoutes)
+	api.PUT("/agent-routes/:agent_type", h.UpsertAgentRoute)
+	api.DELETE("/agent-routes/:agent_type", h.DeleteAgentRoute)
+	api.GET("/projects/:id/agent-routes", h.ListProjectAgentRoutes)
+	api.PUT("/projects/:id/agent-routes/:agent_type", h.UpsertProjectAgentRoute)
+	api.DELETE("/projects/:id/agent-routes/:agent_type", h.DeleteProjectAgentRoute)
+
+	// ── Auto-Write Daemon ─────────────────────────────────────────────────────
+	api.PUT("/projects/:id/auto-write", h.SetAutoWrite)
 }
 
 func (h *Handler) ListProjects(c *gin.Context) {
@@ -1406,7 +1452,8 @@ func (h *Handler) DeleteLLMProfile(c *gin.Context) {
 }
 
 func (h *Handler) SetDefaultLLMProfile(c *gin.Context) {
-	req := models.UpdateLLMProfileRequest{IsDefault: true}
+	t := true
+	req := models.UpdateLLMProfileRequest{IsDefault: &t}
 	profile, err := h.llmProfiles.Update(c.Request.Context(), c.Param("id"), req)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -1945,4 +1992,335 @@ func (h *Handler) SearchVector(c *gin.Context) {
 		return
 	}
 	c.Data(200, "application/json", raw)
+}
+
+// ─── helper: resolve default LLM config from DB ──────────────────────────────
+
+func (h *Handler) resolveLLMConfig(ctx context.Context) (map[string]interface{}, error) {
+	profile, err := h.llmProfiles.GetDefault(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if profile == nil {
+		return nil, errors.New("no default AI model configured: please set one in 设置 → AI 模型配置")
+	}
+	return map[string]interface{}{
+		"api_key":     profile.APIKey,
+		"model":       profile.ModelName,
+		"base_url":    profile.BaseURL,
+		"max_tokens":  profile.MaxTokens,
+		"temperature": profile.Temperature,
+	}, nil
+}
+
+// ─── 33-Dimension Audit ───────────────────────────────────────────────────────
+
+func (h *Handler) AuditChapter(c *gin.Context) {
+	chapterID := c.Param("id")
+
+	// Resolve chapter + project
+	chapter, err := h.chapters.Get(c.Request.Context(), chapterID)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "chapter not found"})
+		return
+	}
+
+	llmCfg, err := h.resolveLLMConfig(c.Request.Context())
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	report, err := h.audit.RunAudit(c.Request.Context(), chapter, chapter.ProjectID, llmCfg, nil)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "audit failed: " + err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": report})
+}
+
+func (h *Handler) GetChapterAuditReport(c *gin.Context) {
+	chapterID := c.Param("id")
+	report, err := h.audit.GetLatestReport(c.Request.Context(), chapterID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if report == nil {
+		c.JSON(404, gin.H{"error": "no audit report found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": report})
+}
+
+// ─── Anti-AI Rewrite ──────────────────────────────────────────────────────────
+
+func (h *Handler) AntiDetectChapter(c *gin.Context) {
+	chapterID := c.Param("id")
+	var req models.AntiDetectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Intensity == "" {
+		req.Intensity = "medium"
+	}
+
+	chapter, err := h.chapters.Get(c.Request.Context(), chapterID)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "chapter not found"})
+		return
+	}
+
+	llmCfg, err := h.resolveLLMConfig(c.Request.Context())
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	rules, _ := h.bookRules.Get(c.Request.Context(), chapter.ProjectID)
+
+	result, err := h.bookRules.AntiDetectRewrite(c.Request.Context(), chapterID, chapter.Content, req.Intensity, rules, llmCfg)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "anti-detect rewrite failed: " + err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": result})
+}
+
+// ─── Book Rules ───────────────────────────────────────────────────────────────
+
+func (h *Handler) GetBookRules(c *gin.Context) {
+	rules, err := h.bookRules.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if rules == nil {
+		c.JSON(200, gin.H{"data": nil})
+		return
+	}
+	c.JSON(200, gin.H{"data": rules})
+}
+
+func (h *Handler) UpdateBookRules(c *gin.Context) {
+	var req models.UpdateBookRulesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	rules, err := h.bookRules.Upsert(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": rules})
+}
+
+// ─── Creative Brief ───────────────────────────────────────────────────────────
+
+func (h *Handler) GenerateCreativeBrief(c *gin.Context) {
+	projectID := c.Param("id")
+	var req models.CreativeBriefRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	llmCfg, err := h.resolveLLMConfig(c.Request.Context())
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	result, err := h.bookRules.GenerateFromBrief(c.Request.Context(), projectID, req, llmCfg)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "creative brief failed: " + err.Error()})
+		return
+	}
+
+	// Auto-save the generated book rules
+	if result.RulesContent != "" || result.StyleGuide != "" {
+		antiJSON, _ := json.Marshal(result.AntiAIWordlist)
+		bannedJSON, _ := json.Marshal(result.BannedPatterns)
+		h.bookRules.Upsert(c.Request.Context(), projectID, models.UpdateBookRulesRequest{
+			RulesContent:   result.RulesContent,
+			StyleGuide:     result.StyleGuide,
+			AntiAIWordlist: antiJSON,
+			BannedPatterns: bannedJSON,
+		})
+	}
+
+	c.JSON(200, gin.H{"data": result})
+}
+
+// ─── Chapter Import ───────────────────────────────────────────────────────────
+
+func (h *Handler) CreateChapterImport(c *gin.Context) {
+	projectID := c.Param("id")
+	var req models.CreateImportRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	imp, err := h.imports.Create(c.Request.Context(), projectID, req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": imp})
+}
+
+func (h *Handler) ListChapterImports(c *gin.Context) {
+	imports, err := h.imports.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": imports})
+}
+
+func (h *Handler) GetChapterImport(c *gin.Context) {
+	imp, err := h.imports.Get(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(404, gin.H{"error": "import not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": imp})
+}
+
+func (h *Handler) ProcessChapterImport(c *gin.Context) {
+	importID := c.Param("id")
+
+	llmCfg, err := h.resolveLLMConfig(c.Request.Context())
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Run in background so HTTP returns immediately
+	go func() {
+		if err := h.imports.Process(context.Background(), importID, llmCfg); err != nil {
+			h.logger.Error("import process failed", zap.String("import_id", importID), zap.Error(err))
+		}
+	}()
+
+	c.JSON(202, gin.H{"status": "processing", "import_id": importID})
+}
+
+// ─── Fan Fiction ──────────────────────────────────────────────────────────────
+
+func (h *Handler) UpdateProjectFanfic(c *gin.Context) {
+	projectID := c.Param("id")
+	var req models.UpdateProjectFanficRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if req.FanficMode != nil {
+		allowed := map[string]bool{"canon": true, "au": true, "ooc": true, "cp": true, "": true}
+		if !allowed[*req.FanficMode] {
+			c.JSON(400, gin.H{"error": "fanfic_mode must be one of: canon, au, ooc, cp"})
+			return
+		}
+	}
+	if err := h.projects.UpdateFanfic(c.Request.Context(), projectID, req.FanficMode, req.FanficSourceText); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// ─── Auto-Write ───────────────────────────────────────────────────────────────
+
+func (h *Handler) SetAutoWrite(c *gin.Context) {
+	projectID := c.Param("id")
+	var req models.AutoWriteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	enabled := req.IntervalMinutes > 0
+	interval := req.IntervalMinutes
+	if interval <= 0 {
+		interval = 60
+	}
+	if err := h.projects.SetAutoWrite(c.Request.Context(), projectID, enabled, interval); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"auto_write_enabled": enabled, "auto_write_interval": interval})
+}
+
+// ─── Per-Agent Model Routing ──────────────────────────────────────────────────
+
+func (h *Handler) ListAgentRoutes(c *gin.Context) {
+	routes, err := h.agentRouting.List(c.Request.Context(), nil)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": routes})
+}
+
+func (h *Handler) UpsertAgentRoute(c *gin.Context) {
+	agentType := c.Param("agent_type")
+	var req models.UpsertAgentRouteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	req.AgentType = agentType
+	req.ProjectID = nil
+	route, err := h.agentRouting.Upsert(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": route})
+}
+
+func (h *Handler) DeleteAgentRoute(c *gin.Context) {
+	if err := h.agentRouting.Delete(c.Request.Context(), c.Param("agent_type"), nil); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func (h *Handler) ListProjectAgentRoutes(c *gin.Context) {
+	pid := c.Param("id")
+	routes, err := h.agentRouting.List(c.Request.Context(), &pid)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": routes})
+}
+
+func (h *Handler) UpsertProjectAgentRoute(c *gin.Context) {
+	projectID := c.Param("id")
+	agentType := c.Param("agent_type")
+	var req models.UpsertAgentRouteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	req.AgentType = agentType
+	req.ProjectID = &projectID
+	route, err := h.agentRouting.Upsert(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": route})
+}
+
+func (h *Handler) DeleteProjectAgentRoute(c *gin.Context) {
+	pid := c.Param("id")
+	if err := h.agentRouting.Delete(c.Request.Context(), c.Param("agent_type"), &pid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
 }

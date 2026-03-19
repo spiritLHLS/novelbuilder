@@ -89,6 +89,12 @@ func main() {
 	// Sidecar proxy service (agent / graph / vector)
 	sidecarService := services.NewSidecarService(cfg.PythonSidecar.URL, logger)
 
+	// ── New inkos-parity services ─────────────────────────────────────────────
+	auditService := services.NewAuditService(db, cfg.PythonSidecar.URL, logger)
+	bookRulesService := services.NewBookRulesService(db, cfg.PythonSidecar.URL, logger)
+	importService := services.NewImportService(db, cfg.PythonSidecar.URL, logger)
+	agentRoutingService := services.NewAgentRoutingService(db, logger)
+
 	// Start background task worker pool
 	taskQueueService.Start()
 	defer taskQueueService.Stop()
@@ -118,6 +124,10 @@ func main() {
 		webhookService,
 		sidecarService,
 		sysSettings,
+		auditService,
+		bookRulesService,
+		importService,
+		agentRoutingService,
 		logger,
 	)
 

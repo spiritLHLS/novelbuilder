@@ -113,6 +113,20 @@ func (s *ProjectService) Delete(ctx context.Context, id string) error {
 	return err
 }
 
+func (s *ProjectService) UpdateFanfic(ctx context.Context, id string, fanficMode *string, sourceText string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE projects SET fanfic_mode = $2, fanfic_source_text = $3, updated_at = NOW() WHERE id = $1`,
+		id, fanficMode, sourceText)
+	return err
+}
+
+func (s *ProjectService) SetAutoWrite(ctx context.Context, id string, enabled bool, intervalMinutes int) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE projects SET auto_write_enabled = $2, auto_write_interval = $3, updated_at = NOW() WHERE id = $1`,
+		id, enabled, intervalMinutes)
+	return err
+}
+
 // ============================================================
 // Blueprint Service
 // ============================================================

@@ -87,11 +87,25 @@
                 <span>任务队列</span>
               </el-menu-item>
             </el-menu-item-group>
+            <el-menu-item-group title="创作工具">
+              <el-menu-item :index="`/projects/${currentProjectId}/creative-brief`">
+                <el-icon><DocumentAdd /></el-icon>
+                <span>创作简报</span>
+              </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/import-chapters`">
+                <el-icon><Upload /></el-icon>
+                <span>导入续写</span>
+              </el-menu-item>
+            </el-menu-item-group>
           </template>
           <el-menu-item-group title="系统">
             <el-menu-item index="/settings/llm">
               <el-icon><Setting /></el-icon>
               <span>AI 模型配置</span>
+            </el-menu-item>
+            <el-menu-item index="/settings/agent-routing">
+              <el-icon><Share /></el-icon>
+              <span>多模型路由</span>
             </el-menu-item>
             <el-menu-item index="/settings/prompt-presets">
               <el-icon><DocumentCopy /></el-icon>

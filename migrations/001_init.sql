@@ -704,3 +704,102 @@ CREATE TABLE graph_sync_log (
 );
 
 CREATE INDEX idx_graph_sync_log_project ON graph_sync_log(project_id, entity_type);
+
+-- ============================================================
+-- Per-Agent Model Routing
+-- Different agent types (writer, auditor, planner, etc.) can use different LLM profiles.
+-- project_id = NULL means global default for that agent type.
+-- ============================================================
+
+CREATE TABLE agent_model_routes (
+    id             UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_type     VARCHAR(50)  NOT NULL,  -- writer|auditor|planner|reviser|radar|moderator
+    llm_profile_id UUID         REFERENCES llm_profiles(id) ON DELETE SET NULL,
+    project_id     UUID         REFERENCES projects(id) ON DELETE CASCADE,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- Partial unique indexes to handle NULL project_id correctly
+CREATE UNIQUE INDEX uq_agent_route_project ON agent_model_routes(agent_type, project_id) WHERE project_id IS NOT NULL;
+CREATE UNIQUE INDEX uq_agent_route_global ON agent_model_routes(agent_type) WHERE project_id IS NULL;
+CREATE INDEX idx_agent_model_routes_project ON agent_model_routes(project_id);
+
+CREATE TRIGGER trg_agent_model_routes_updated_at BEFORE UPDATE ON agent_model_routes
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================
+-- Multi-Dimension Chapter Audit Reports (33-dimension)
+-- ============================================================
+
+CREATE TABLE audit_reports (
+    id             UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    chapter_id     UUID         NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    project_id     UUID         NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    dimensions     JSONB        NOT NULL DEFAULT '{}',  -- {dim_name: {score, issues, passed}}
+    overall_score  FLOAT        NOT NULL DEFAULT 0.0,
+    passed         BOOLEAN      NOT NULL DEFAULT FALSE,
+    ai_probability FLOAT        NOT NULL DEFAULT 0.0,
+    issues         JSONB        NOT NULL DEFAULT '[]',
+    revision_count INT          NOT NULL DEFAULT 0,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_audit_reports_chapter ON audit_reports(chapter_id, created_at DESC);
+CREATE INDEX idx_audit_reports_project ON audit_reports(project_id, created_at DESC);
+
+-- ============================================================
+-- Book Rules (style guide + writing rules + anti-AI wordlists)
+-- One row per project.
+-- ============================================================
+
+CREATE TABLE book_rules (
+    id               UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id       UUID    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    rules_content    TEXT    NOT NULL DEFAULT '',
+    style_guide      TEXT    NOT NULL DEFAULT '',
+    anti_ai_wordlist JSONB   NOT NULL DEFAULT '[]',
+    banned_patterns  JSONB   NOT NULL DEFAULT '[]',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_book_rules_project UNIQUE (project_id)
+);
+
+CREATE TRIGGER trg_book_rules_updated_at BEFORE UPDATE ON book_rules
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================
+-- Chapter Imports (paste-and-import existing novels)
+-- Supports fan-fiction import via fanfic_mode.
+-- ============================================================
+
+CREATE TABLE chapter_imports (
+    id                   UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id           UUID         NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source_text          TEXT         NOT NULL,
+    split_pattern        VARCHAR(200) NOT NULL DEFAULT '第.{1,4}[章节回]',
+    fanfic_mode          VARCHAR(20),  -- NULL|canon|au|ooc|cp
+    status               VARCHAR(20)  NOT NULL DEFAULT 'pending',
+    total_chapters       INT          NOT NULL DEFAULT 0,
+    processed_chapters   INT          NOT NULL DEFAULT 0,
+    error_message        TEXT         NOT NULL DEFAULT '',
+    reverse_engineered   JSONB        NOT NULL DEFAULT '{}',
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_chapter_import_status CHECK (status IN ('pending','processing','completed','failed'))
+);
+
+CREATE INDEX idx_chapter_imports_project ON chapter_imports(project_id, created_at DESC);
+
+CREATE TRIGGER trg_chapter_imports_updated_at BEFORE UPDATE ON chapter_imports
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================
+-- Fan Fiction Settings (per project)
+-- ============================================================
+
+ALTER TABLE projects
+    ADD COLUMN fanfic_mode        VARCHAR(20),    -- NULL | canon | au | ooc | cp
+    ADD COLUMN fanfic_source_text TEXT,           -- pasted source material
+    ADD COLUMN auto_write_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN auto_write_interval INT    NOT NULL DEFAULT 60;  -- minutes

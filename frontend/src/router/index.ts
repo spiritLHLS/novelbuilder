@@ -123,6 +123,32 @@ const router = createRouter({
       name: 'prompt-presets',
       component: () => import('@/views/PromptPresets.vue'),
     },
+    // ── New inkos-parity features ──────────────────────────────────────────
+    {
+      path: '/projects/:projectId/chapters/:chapterId/audit',
+      name: 'audit-report',
+      component: () => import('@/views/AuditReport.vue'),
+    },
+    {
+      path: '/projects/:projectId/chapters/:chapterId/anti-detect',
+      name: 'anti-detect',
+      component: () => import('@/views/AntiDetect.vue'),
+    },
+    {
+      path: '/projects/:projectId/creative-brief',
+      name: 'creative-brief',
+      component: () => import('@/views/CreativeBrief.vue'),
+    },
+    {
+      path: '/projects/:projectId/import-chapters',
+      name: 'import-chapters',
+      component: () => import('@/views/ImportChapters.vue'),
+    },
+    {
+      path: '/settings/agent-routing',
+      name: 'agent-routing',
+      component: () => import('@/views/AgentRouting.vue'),
+    },
   ],
 })
 

@@ -59,7 +59,7 @@ type UpdateLLMProfileRequest struct {
 	ModelName   string   `json:"model_name"`
 	MaxTokens   int      `json:"max_tokens"`
 	Temperature *float64 `json:"temperature"`
-	IsDefault   bool     `json:"is_default"`
+	IsDefault   *bool    `json:"is_default"`
 }
 
 // RAGStatus is returned by GET /api/projects/:id/rag/status.
@@ -743,7 +743,7 @@ type VectorCollectionStat struct {
 type VectorStatus struct {
 	ProjectID   string                 `json:"project_id"`
 	Collections []VectorCollectionStat `json:"collections"`
-	Total       int                    `json:"total"`
+	TotalChunks int                    `json:"total_chunks"`
 }
 
 type VectorSearchRequest struct {
@@ -754,4 +754,171 @@ type VectorSearchRequest struct {
 
 type VectorRebuildRequest struct {
 	Items []map[string]interface{} `json:"items" binding:"required"`
+}
+
+// ============================================================
+// Per-Agent Model Routing
+// ============================================================
+
+// AgentType identifies which agent role a route targets.
+type AgentType string
+
+const (
+	AgentTypeWriter    AgentType = "writer"
+	AgentTypeAuditor   AgentType = "auditor"
+	AgentTypePlanner   AgentType = "planner"
+	AgentTypeReviser   AgentType = "reviser"
+	AgentTypeRadar     AgentType = "radar"
+	AgentTypeModerator AgentType = "moderator"
+)
+
+type AgentModelRoute struct {
+	ID           string  `json:"id"`
+	AgentType    string  `json:"agent_type"`
+	LLMProfileID *string `json:"llm_profile_id"`
+	ProjectID    *string `json:"project_id"`
+	// Populated on read when llm_profile_id is set
+	ProfileName     *string   `json:"profile_name,omitempty"`
+	ProfileProvider *string   `json:"profile_provider,omitempty"`
+	ProfileModel    *string   `json:"profile_model,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type UpsertAgentRouteRequest struct {
+	AgentType    string  `json:"agent_type"`
+	ProjectID    *string `json:"project_id"`
+	LLMProfileID *string `json:"llm_profile_id"` // null = clear route (use global default)
+}
+
+// ============================================================
+// Multi-Dimension Audit Reports
+// ============================================================
+
+type AuditDimension struct {
+	Score  float64  `json:"score"` // 0.0 – 1.0
+	Passed bool     `json:"passed"`
+	Issues []string `json:"issues"`
+}
+
+type AuditReport struct {
+	ID            string                    `json:"id"`
+	ChapterID     string                    `json:"chapter_id"`
+	ProjectID     string                    `json:"project_id"`
+	Dimensions    map[string]AuditDimension `json:"dimensions"`
+	OverallScore  float64                   `json:"overall_score"`
+	Passed        bool                      `json:"passed"`
+	AIProbability float64                   `json:"ai_probability"`
+	Issues        []string                  `json:"issues"`
+	RevisionCount int                       `json:"revision_count"`
+	CreatedAt     time.Time                 `json:"created_at"`
+}
+
+type AuditChapterRequest struct {
+	// Optional: supply llm_profile_id to use a specific profile for the LLM eval pass
+	LLMProfileID string `json:"llm_profile_id"`
+}
+
+// ============================================================
+// Book Rules
+// ============================================================
+
+type BookRules struct {
+	ID             string          `json:"id"`
+	ProjectID      string          `json:"project_id"`
+	RulesContent   string          `json:"rules_content"`
+	StyleGuide     string          `json:"style_guide"`
+	AntiAIWordlist json.RawMessage `json:"anti_ai_wordlist"`
+	BannedPatterns json.RawMessage `json:"banned_patterns"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+}
+
+type UpdateBookRulesRequest struct {
+	RulesContent   string          `json:"rules_content"`
+	StyleGuide     string          `json:"style_guide"`
+	AntiAIWordlist json.RawMessage `json:"anti_ai_wordlist"`
+	BannedPatterns json.RawMessage `json:"banned_patterns"`
+}
+
+// ============================================================
+// Creative Brief
+// ============================================================
+
+type CreativeBriefRequest struct {
+	BriefText    string `json:"brief_text" binding:"required"`
+	Genre        string `json:"genre"`
+	LLMProfileID string `json:"llm_profile_id"`
+}
+
+type CreativeBriefResult struct {
+	WorldBible     map[string]interface{} `json:"world_bible"`
+	RulesContent   string                 `json:"rules_content"`
+	StyleGuide     string                 `json:"style_guide"`
+	AntiAIWordlist []string               `json:"anti_ai_wordlist"`
+	BannedPatterns []string               `json:"banned_patterns"`
+}
+
+// ============================================================
+// Chapter Import
+// ============================================================
+
+type ChapterImport struct {
+	ID                string          `json:"id"`
+	ProjectID         string          `json:"project_id"`
+	SourceText        string          `json:"source_text,omitempty"`
+	SplitPattern      string          `json:"split_pattern"`
+	FanficMode        *string         `json:"fanfic_mode"`
+	Status            string          `json:"status"`
+	TotalChapters     int             `json:"total_chapters"`
+	ProcessedChapters int             `json:"processed_chapters"`
+	ErrorMessage      string          `json:"error_message"`
+	ReverseEngineered json.RawMessage `json:"reverse_engineered"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+}
+
+type CreateImportRequest struct {
+	SourceText   string  `json:"source_text"   binding:"required"`
+	SplitPattern string  `json:"split_pattern"`
+	FanficMode   *string `json:"fanfic_mode"`
+	LLMProfileID string  `json:"llm_profile_id"`
+}
+
+// ============================================================
+// Anti-AI Rewrite
+// ============================================================
+
+type AntiDetectRequest struct {
+	Intensity    string `json:"intensity"` // light|medium|heavy
+	LLMProfileID string `json:"llm_profile_id"`
+}
+
+type AntiDetectResult struct {
+	OriginalText  string   `json:"original_text"`
+	RewrittenText string   `json:"rewritten_text"`
+	ChangesMade   []string `json:"changes_made"`
+	AIProbBefore  float64  `json:"ai_prob_before"`
+	AIProbAfter   float64  `json:"ai_prob_after"`
+}
+
+// ============================================================
+// Project extensions (fanfic + auto-write)
+// ============================================================
+
+type ProjectFull struct {
+	Project
+	FanficMode        *string `json:"fanfic_mode"`
+	AutoWriteEnabled  bool    `json:"auto_write_enabled"`
+	AutoWriteInterval int     `json:"auto_write_interval"`
+}
+
+type UpdateProjectFanficRequest struct {
+	FanficMode       *string `json:"fanfic_mode"`
+	FanficSourceText string  `json:"fanfic_source_text"`
+}
+
+type AutoWriteRequest struct {
+	IntervalMinutes int    `json:"interval_minutes"`
+	LLMProfileID    string `json:"llm_profile_id"`
 }

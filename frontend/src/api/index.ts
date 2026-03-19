@@ -404,3 +404,80 @@ export const systemSettingsApi = {
   /** Delete a setting (resets it to its application default). */
   delete: (key: string) => api.delete(`/settings/${key}`),
 }
+
+// ── 33-Dimension Audit ────────────────────────────────────────────────────────
+export const auditApi = {
+  /** Run a full 33-dimension audit on a chapter. */
+  run: (chapterId: string) => api.post(`/chapters/${chapterId}/audit`),
+  /** Fetch the latest audit report for a chapter. */
+  getReport: (chapterId: string) => api.get(`/chapters/${chapterId}/audit-report`),
+}
+
+// ── Anti-AI Rewrite (去AI味) ──────────────────────────────────────────────────
+export const antiDetectApi = {
+  /** Rewrite chapter content to remove AI-flavor patterns. */
+  rewrite: (chapterId: string, intensity: 'light' | 'medium' | 'heavy' = 'medium') =>
+    api.post(`/chapters/${chapterId}/anti-detect`, { intensity }),
+}
+
+// ── Book Rules (style guide + anti-AI wordlists) ──────────────────────────────
+export const bookRulesApi = {
+  get: (projectId: string) => api.get(`/projects/${projectId}/book-rules`),
+  update: (projectId: string, data: {
+    rules_content?: string
+    style_guide?: string
+    anti_ai_wordlist?: string[]
+    banned_patterns?: string[]
+  }) => api.put(`/projects/${projectId}/book-rules`, data),
+}
+
+// ── Creative Brief (创作简报) ──────────────────────────────────────────────────
+export const creativeBriefApi = {
+  /** Generate world_bible + book_rules from a free-form creative brief. */
+  generate: (projectId: string, data: { brief_text: string; genre?: string }) =>
+    api.post(`/projects/${projectId}/creative-brief`, data),
+}
+
+// ── Chapter Import (续写已有作品) ─────────────────────────────────────────────
+export const importApi = {
+  create: (projectId: string, data: {
+    source_text: string
+    split_pattern?: string
+    fanfic_mode?: string | null
+  }) => api.post(`/projects/${projectId}/import-chapters`, data),
+  list: (projectId: string) => api.get(`/projects/${projectId}/import-chapters`),
+  get: (importId: string) => api.get(`/imports/${importId}`),
+  process: (importId: string) => api.post(`/imports/${importId}/process`),
+}
+
+// ── Fan Fiction ───────────────────────────────────────────────────────────────
+export const fanficApi = {
+  update: (projectId: string, data: { fanfic_mode?: string | null; fanfic_source_text?: string }) =>
+    api.put(`/projects/${projectId}/fanfic`, data),
+}
+
+// ── Per-Agent Model Routing ───────────────────────────────────────────────────
+export const agentRoutingApi = {
+  /** List global agent routes (no project scope). */
+  listGlobal: () => api.get('/agent-routes'),
+  /** Set a global agent route. */
+  setGlobal: (agentType: string, data: { llm_profile_id: string | null }) =>
+    api.put(`/agent-routes/${agentType}`, data),
+  /** Delete a global agent route. */
+  deleteGlobal: (agentType: string) => api.delete(`/agent-routes/${agentType}`),
+  /** List project-scoped agent routes (merged with globals). */
+  listProject: (projectId: string) => api.get(`/projects/${projectId}/agent-routes`),
+  /** Set a project-scoped agent route. */
+  setProject: (projectId: string, agentType: string, data: { llm_profile_id: string | null }) =>
+    api.put(`/projects/${projectId}/agent-routes/${agentType}`, data),
+  /** Delete a project-scoped agent route. */
+  deleteProject: (projectId: string, agentType: string) =>
+    api.delete(`/projects/${projectId}/agent-routes/${agentType}`),
+}
+
+// ── Auto-Write Daemon ─────────────────────────────────────────────────────────
+export const autoWriteApi = {
+  /** Enable auto-write with given interval, or disable (interval = 0). */
+  set: (projectId: string, intervalMinutes: number) =>
+    api.put(`/projects/${projectId}/auto-write`, { interval_minutes: intervalMinutes }),
+}

@@ -217,6 +217,20 @@ class QdrantStore:
         except Exception as exc:
             logger.warning("Qdrant delete failed: %s", exc)
 
+    async def delete_by_source_id(self, project_id: str, source_id: str) -> None:
+        """Delete all points with a specific source_id across all collections."""
+        for col in COLLECTIONS:
+            col_name = self._collection_name(project_id, col)
+            try:
+                await self._client.delete(
+                    collection_name=col_name,
+                    points_selector=Filter(
+                        must=[FieldCondition(key="source_id", match=MatchValue(value=source_id))]
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("Qdrant delete_by_source_id failed for %s: %s", col_name, exc)
+
     async def get_collection_stats(self, project_id: str) -> list[dict]:
         """Return count for each logical collection for the given project."""
         stats = []

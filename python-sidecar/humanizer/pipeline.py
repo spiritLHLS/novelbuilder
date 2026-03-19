@@ -176,7 +176,7 @@ class HumanizationPipeline:
             dialogue = match.group(1)
 
             if len(dialogue) < 20 or random.random() > intensity:
-                return f""{dialogue}""
+                return f'\u201c{dialogue}\u201d'
 
             changes += 1
 
@@ -195,14 +195,14 @@ class HumanizationPipeline:
                 break_pos = dialogue.find("，", mid - 10)
                 if break_pos > 0:
                     actions = [
-                        ""他顿了顿，"",
-                        ""她停了停，想了想才继续，"",
-                        ""他摇了摇头，"",
+                        '\u201c他顿了顿，\u201d',
+                        '\u201c她停了停，想了想才继续，\u201d',
+                        '\u201c他摇了摇头，\u201d',
                     ]
                     action = random.choice(actions)
                     dialogue = dialogue[:break_pos + 1] + action + dialogue[break_pos + 1:]
 
-            return f""{dialogue}""
+            return f'\u201c{dialogue}\u201d'
 
         text = re.sub(r'"([^"]*)"', compress_dialogue, text)
 

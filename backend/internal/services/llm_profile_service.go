@@ -238,10 +238,12 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 	if req.Temperature != nil {
 		existing.Temperature = *req.Temperature
 	}
-	existing.IsDefault = req.IsDefault
+	if req.IsDefault != nil {
+		existing.IsDefault = *req.IsDefault
+	}
 
 	// If becoming default, clear others
-	if req.IsDefault {
+	if req.IsDefault != nil && *req.IsDefault {
 		if _, err := tx.Exec(ctx, `UPDATE llm_profiles SET is_default = FALSE WHERE is_default = TRUE AND id != $1`, id); err != nil {
 			return nil, fmt.Errorf("clear existing default: %w", err)
 		}

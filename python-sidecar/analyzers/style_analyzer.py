@@ -130,7 +130,7 @@ class StyleAnalyzer:
             "dash_ratio": round(
                 (punct_counter.get("——", 0) + punct_counter.get("—", 0)) / max(total_punct, 1), 4
             ),
-            "dialogue_quote_count": text.count(""") + text.count('"'),
+            "dialogue_quote_count": text.count('\u201c') + text.count('\u201d') + text.count('"'),
         }
 
     def _pos_distribution(self, pos_tags: list) -> Dict[str, Any]:
