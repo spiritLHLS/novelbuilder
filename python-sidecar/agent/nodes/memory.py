@@ -75,7 +75,7 @@ def _build_graphiti(llm_cfg: dict[str, Any] | None = None):
             cfg.get("graphiti_api_key")
             or cfg.get("api_key")
             or os.getenv("GRAPHITI_LLM_API_KEY")
-            or os.getenv("OPENAI_API_KEY", "placeholder")
+            or os.getenv("OPENAI_API_KEY")
         )
         base_url = (
             cfg.get("graphiti_base_url")
@@ -88,6 +88,10 @@ def _build_graphiti(llm_cfg: dict[str, Any] | None = None):
             or cfg.get("model")
             or os.getenv("GRAPHITI_LLM_MODEL", "gpt-4o-mini")
         )
+
+        if not api_key:
+            logger.warning("graphiti disabled: missing API key")
+            return None
 
         llm_client = GOpenAI(api_key=api_key, base_url=base_url, model=model)
         embedder = GEmbed(api_key=api_key, base_url=base_url)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/handlers"
 	"github.com/novelbuilder/backend/internal/middleware"
+	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/services"
 	"github.com/novelbuilder/backend/internal/workflow"
 	"go.uber.org/zap"
@@ -142,6 +144,41 @@ func main() {
 		radarService,
 		logger,
 	)
+
+	// Register background task handlers.
+	taskQueueService.RegisterHandler("generate_next_chapter", func(ctx context.Context, task models.TaskQueueItem) error {
+		if task.ProjectID == nil || *task.ProjectID == "" {
+			return fmt.Errorf("generate_next_chapter requires project_id")
+		}
+		projectID := *task.ProjectID
+
+		if err := wfEngine.CanGenerateNextChapter(ctx, projectID); err != nil {
+			return err
+		}
+
+		var payload struct {
+			Generate    models.GenerateChapterRequest `json:"generate"`
+			AuditRevise models.AuditReviseRequest     `json:"audit_revise"`
+		}
+		if len(task.Payload) > 0 {
+			_ = json.Unmarshal(task.Payload, &payload)
+		}
+
+		lastNum, err := chapterService.MaxChapterNum(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("get max chapter num: %w", err)
+		}
+
+		ch, err := chapterService.Generate(ctx, projectID, lastNum+1, payload.Generate)
+		if err != nil {
+			return err
+		}
+
+		if _, err := h.RunAuditRevisePipeline(ctx, ch.ID, payload.AuditRevise); err != nil {
+			return fmt.Errorf("audit-revise pipeline: %w", err)
+		}
+		return nil
+	})
 
 	// Setup Gin router
 	r := gin.Default()

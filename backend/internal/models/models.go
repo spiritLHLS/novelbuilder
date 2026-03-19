@@ -199,6 +199,21 @@ type Chapter struct {
 	UpdatedAt        time.Time       `json:"updated_at" db:"updated_at"`
 }
 
+type ChapterSnapshot struct {
+	ID               string          `json:"id"`
+	ChapterID        string          `json:"chapter_id"`
+	Version          int             `json:"version"`
+	Title            string          `json:"title"`
+	Content          string          `json:"content"`
+	WordCount        int             `json:"word_count"`
+	Summary          string          `json:"summary"`
+	QualityReport    json.RawMessage `json:"quality_report"`
+	OriginalityScore float64         `json:"originality_score"`
+	Source           string          `json:"source"`
+	Note             string          `json:"note"`
+	CreatedAt        time.Time       `json:"created_at"`
+}
+
 type WorkflowRun struct {
 	ID           string    `json:"id" db:"id"`
 	ProjectID    string    `json:"project_id" db:"project_id"`
@@ -817,6 +832,16 @@ type AuditReport struct {
 type AuditChapterRequest struct {
 	// Optional: supply llm_profile_id to use a specific profile for the LLM eval pass
 	LLMProfileID string `json:"llm_profile_id"`
+}
+
+type AuditReviseRequest struct {
+	LLMProfileID string `json:"llm_profile_id"`
+	MaxRounds    int    `json:"max_rounds"`
+	Intensity    string `json:"intensity"`
+}
+
+type RestoreChapterSnapshotRequest struct {
+	SnapshotID string `json:"snapshot_id" binding:"required"`
 }
 
 // ============================================================

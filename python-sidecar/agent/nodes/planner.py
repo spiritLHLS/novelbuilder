@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -85,9 +86,12 @@ def _default_plan(task_type: str) -> list[PlanStep]:
 
 
 def _build_llm(cfg: dict) -> ChatOpenAI:
+    api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("llm_config.api_key is required for planner node")
     return ChatOpenAI(
         base_url=cfg.get("base_url", "https://api.openai.com/v1"),
-        api_key=cfg.get("api_key", "placeholder"),
+        api_key=api_key,
         model=cfg.get("model", "gpt-4o-mini"),
         max_tokens=512,
         temperature=0.3,

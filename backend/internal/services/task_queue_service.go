@@ -18,7 +18,7 @@ import (
 
 // TaskHandler is called by the worker pool to handle a task.
 // Returning an error marks the task as failed (retried if attempts < max_attempts).
-type TaskHandler func(ctx context.Context, payload json.RawMessage) error
+type TaskHandler func(ctx context.Context, task models.TaskQueueItem) error
 
 type TaskQueueService struct {
 	db         *pgxpool.Pool
@@ -131,7 +131,7 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 	if !ok {
 		handlerErr = fmt.Errorf("no handler registered for task type %q", task.TaskType)
 	} else {
-		handlerErr = h(ctx, task.Payload)
+		handlerErr = h(ctx, task)
 	}
 
 	if handlerErr == nil {

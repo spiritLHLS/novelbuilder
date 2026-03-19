@@ -5,6 +5,7 @@ produces a chapter draft.  Also generates a chapter summary for memory update.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -25,9 +26,12 @@ _SUMMARY_SYSTEM = (
 
 
 def _build_llm(cfg: dict, streaming: bool = False) -> ChatOpenAI:
+    api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("llm_config.api_key is required for generator node")
     return ChatOpenAI(
         base_url=cfg.get("base_url", "https://api.openai.com/v1"),
-        api_key=cfg.get("api_key", "placeholder"),
+        api_key=api_key,
         model=cfg.get("model", "gpt-4o"),
         max_tokens=cfg.get("max_tokens", 4096),
         temperature=cfg.get("temperature", 0.85),

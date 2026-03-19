@@ -79,3 +79,21 @@ CREATE TABLE chapters (
     CONSTRAINT ck_chapters_status CHECK (status IN ('draft', 'pending_review', 'approved', 'rejected', 'needs_recheck')),
     CONSTRAINT uq_chapters_project_chapter UNIQUE (project_id, chapter_num)
 );
+
+CREATE TABLE chapter_snapshots (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chapter_id        UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    version           INT NOT NULL,
+    title             VARCHAR(200),
+    content           TEXT NOT NULL,
+    word_count        INT DEFAULT 0,
+    summary           TEXT DEFAULT '',
+    quality_report    JSONB DEFAULT '{}',
+    originality_score FLOAT DEFAULT 0,
+    source            VARCHAR(40) NOT NULL DEFAULT 'manual',
+    note              TEXT DEFAULT '',
+    created_at        TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_chapter_snapshots_chapter_created
+    ON chapter_snapshots(chapter_id, created_at DESC);
