@@ -65,16 +65,13 @@
             </el-col>
             <el-col :span="12">
               <el-form-item label="目标字数">
-                <el-input-number v-model="genForm.target_words" :min="500" :step="500" style="width: 100%;" />
+                <el-input-number v-model="genForm.chapter_words" :min="500" :max="20000" :step="500" style="width: 100%;" />
               </el-form-item>
             </el-col>
           </el-row>
-          <el-form-item label="章节标题（可选）">
-            <el-input v-model="genForm.title" placeholder="留空则自动生成" />
-          </el-form-item>
-          <el-form-item label="本章提示/方向">
-            <el-input v-model="genForm.direction" type="textarea" :rows="3"
-              placeholder="描述本章的大致方向或特殊要求" />
+          <el-form-item label="本章方向提示（可选）">
+            <el-input v-model="genForm.context_hint" type="textarea" :rows="3"
+              placeholder="描述本章的大致方向或特殊要求，如：本章重点写师徒矛盾" />
           </el-form-item>
           <el-form-item label="生成方式">
             <el-radio-group v-model="genForm.stream">
@@ -152,7 +149,7 @@ const streamBox = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
 
 const genForm = ref({
-  chapter_num: 1, target_words: 3000, title: '', direction: '', stream: true,
+  chapter_num: 1, chapter_words: 3000, context_hint: '', stream: true,
 })
 
 const showBatchDialog = ref(false)
@@ -244,6 +241,7 @@ async function startBatchGenerate() {
 function showGenerate() {
   const maxNum = chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0)
   genForm.value.chapter_num = maxNum + 1
+  genForm.value.context_hint = ''
   streamContent.value = ''
   streaming.value = false
   streamDone.value = false
@@ -252,7 +250,7 @@ function showGenerate() {
 
 function regenerateChapter(ch: any) {
   genForm.value.chapter_num = ch.chapter_num
-  genForm.value.title = ch.title || ''
+  genForm.value.context_hint = ''
   streamContent.value = ''
   streaming.value = false
   streamDone.value = false
@@ -273,9 +271,8 @@ async function startGenerate() {
         projectId,
         {
           chapter_num: genForm.value.chapter_num,
-          target_words: genForm.value.target_words,
-          title: genForm.value.title,
-          direction: genForm.value.direction,
+          chapter_words: genForm.value.chapter_words,
+          context_hint: genForm.value.context_hint,
         },
         (chunk: string) => {
           streamContent.value += chunk
@@ -302,9 +299,8 @@ async function startGenerate() {
     try {
       await chapterApi.generate(projectId, {
         chapter_num: genForm.value.chapter_num,
-        target_words: genForm.value.target_words,
-        title: genForm.value.title,
-        direction: genForm.value.direction,
+        chapter_words: genForm.value.chapter_words,
+        context_hint: genForm.value.context_hint,
       })
       ElMessage.success('章节生成完成')
       showGenerateDialog.value = false

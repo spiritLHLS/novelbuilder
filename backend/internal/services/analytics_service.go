@@ -66,6 +66,11 @@ type ProjectAnalytics struct {
 
 	// AIGC (AI detection) distribution buckets
 	AIGCBuckets map[string]int `json:"aigc_buckets"` // low/medium/high
+
+	// Token usage (summed across all chapters)
+	TotalInputTokens  int64   `json:"total_input_tokens"`
+	TotalOutputTokens int64   `json:"total_output_tokens"`
+	EstimatedCostUSD  float64 `json:"estimated_cost_usd"` // rough estimate at $0.002/1K tokens
 }
 
 func (s *AnalyticsService) GetProjectAnalytics(ctx context.Context, projectID string) (*ProjectAnalytics, error) {
@@ -202,6 +207,16 @@ func (s *AnalyticsService) GetProjectAnalytics(ctx context.Context, projectID st
 			s.logger.Warn("aigc bucket rows iteration failed", zap.Error(err))
 		}
 	}
+
+	// ── Token usage aggregates ────────────────────────────────────────────────
+	if err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)
+		 FROM chapters WHERE project_id = $1`, projectID).
+		Scan(&out.TotalInputTokens, &out.TotalOutputTokens); err != nil {
+		s.logger.Warn("token usage query failed", zap.Error(err))
+	}
+	// Rough cost estimate: $0.002 per 1K tokens (blended average)
+	out.EstimatedCostUSD = float64(out.TotalInputTokens+out.TotalOutputTokens) * 0.000002
 
 	return out, nil
 }

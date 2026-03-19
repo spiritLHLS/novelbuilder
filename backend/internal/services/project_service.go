@@ -41,7 +41,7 @@ func (s *ProjectService) Ping(ctx context.Context) error {
 
 func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT id, title, genre, description, style_description, target_words, status, created_at, updated_at
+		`SELECT id, title, genre, description, style_description, target_words, chapter_words, status, created_at, updated_at
 		 FROM projects ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -51,7 +51,7 @@ func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 	var projects []models.Project
 	for rows.Next() {
 		var p models.Project
-		if err := rows.Scan(&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.ChapterWords, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		projects = append(projects, p)
@@ -68,12 +68,15 @@ func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectReq
 		req.TargetWords = 500000
 	}
 	var p models.Project
+	if req.ChapterWords <= 0 {
+		req.ChapterWords = 3000
+	}
 	err := s.db.QueryRow(ctx,
-		`INSERT INTO projects (id, title, genre, description, style_description, target_words, status, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, 'draft', NOW(), NOW())
-		 RETURNING id, title, genre, description, style_description, target_words, status, created_at, updated_at`,
-		id, req.Title, req.Genre, req.Description, req.StyleDescription, req.TargetWords).Scan(
-		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+		`INSERT INTO projects (id, title, genre, description, style_description, target_words, chapter_words, status, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', NOW(), NOW())
+		 RETURNING id, title, genre, description, style_description, target_words, chapter_words, status, created_at, updated_at`,
+		id, req.Title, req.Genre, req.Description, req.StyleDescription, req.TargetWords, req.ChapterWords).Scan(
+		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.ChapterWords, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create project: %w", err)
 	}
@@ -83,9 +86,9 @@ func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectReq
 func (s *ProjectService) Get(ctx context.Context, id string) (*models.Project, error) {
 	var p models.Project
 	err := s.db.QueryRow(ctx,
-		`SELECT id, title, genre, description, style_description, target_words, status, created_at, updated_at
+		`SELECT id, title, genre, description, style_description, target_words, chapter_words, status, created_at, updated_at
 		 FROM projects WHERE id = $1`, id).Scan(
-		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.ChapterWords, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -100,12 +103,15 @@ func (s *ProjectService) Update(ctx context.Context, id string, req models.Creat
 		req.TargetWords = 500000
 	}
 	var p models.Project
+	if req.ChapterWords <= 0 {
+		req.ChapterWords = 3000
+	}
 	err := s.db.QueryRow(ctx,
-		`UPDATE projects SET title = $1, genre = $2, description = $3, style_description = $4, target_words = $5, updated_at = NOW()
-		 WHERE id = $6
-		 RETURNING id, title, genre, description, style_description, target_words, status, created_at, updated_at`,
-		req.Title, req.Genre, req.Description, req.StyleDescription, req.TargetWords, id).Scan(
-		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+		`UPDATE projects SET title = $1, genre = $2, description = $3, style_description = $4, target_words = $5, chapter_words = $6, updated_at = NOW()
+		 WHERE id = $7
+		 RETURNING id, title, genre, description, style_description, target_words, chapter_words, status, created_at, updated_at`,
+		req.Title, req.Genre, req.Description, req.StyleDescription, req.TargetWords, req.ChapterWords, id).Scan(
+		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription, &p.TargetWords, &p.ChapterWords, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("update project: %w", err)
 	}
@@ -578,6 +584,15 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		return nil, err
 	}
 
+	// Resolve target word count (request > project default > 3000)
+	targetWords := req.ChapterWords
+	if targetWords <= 0 {
+		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&targetWords)
+		if targetWords <= 0 {
+			targetWords = 3000
+		}
+	}
+
 	// Build system prompt using HEAD/MIDDLE/TAIL (Lost-in-Middle) layout
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
 
@@ -593,16 +608,20 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 - 张力水平：%.1f
 
 要求：
-1. 内容至少2000字
+1. 内容至少%d字
 2. 保持与前文的连贯性
 3. 按照大纲推进剧情
 4. 自然融入伏笔
-5. 章节结尾留有悬念
-
-请直接输出章节内容，不要包含任何元数据或标记。`,
+5. 章节结尾留有悬念`,
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
-		req.EndHookType, req.EndHookStrength, req.TensionLevel)
+		req.EndHookType, req.EndHookStrength, req.TensionLevel,
+		targetWords)
+
+	if req.ContextHint != "" {
+		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
+	}
+	userPrompt += "\n\n请直接输出章节内容，不要包含任何元数据或标记。"
 
 	resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_generation",
@@ -638,17 +657,18 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		`SELECT id FROM volumes WHERE project_id = $1 AND chapter_start <= $2 AND chapter_end >= $2`,
 		projectID, chapterNum).Scan(&volumeID)
 
-	// Save chapter
+	// Save chapter (including token usage from AI response)
 	chID := uuid.New().String()
 	genParams, _ := json.Marshal(req)
 	var ch models.Chapter
 	err = s.db.QueryRow(ctx,
 		`INSERT INTO chapters (id, project_id, volume_id, chapter_num, title, content, word_count, summary,
-		 gen_params, status, version, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', 1, NOW(), NOW())
+		 gen_params, input_tokens, output_tokens, status, version, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', 1, NOW(), NOW())
 		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, summary,
 		 gen_params, quality_report, originality_score, status, version, review_comment, created_at, updated_at`,
-		chID, projectID, volumeID, chapterNum, title, chapterContent, wordCount, summary, genParams).Scan(
+		chID, projectID, volumeID, chapterNum, title, chapterContent, wordCount, summary, genParams,
+		resp.InputTokens, resp.OutputTokens).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
@@ -686,6 +706,13 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		})
 	}
 
+	// ── Async post-generation state settlement ────────────────────────────────
+	go func(pid, cid, content string) {
+		sCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		s.settleChapterState(sCtx, pid, cid, content)
+	}(projectID, ch.ID, chapterContent)
+
 	s.logger.Info("chapter generated",
 		zap.String("project_id", projectID),
 		zap.Int("chapter_num", chapterNum),
@@ -699,9 +726,22 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 		return err
 	}
 
+	// Resolve target word count (request > project default > 3000)
+	targetWords := req.ChapterWords
+	if targetWords <= 0 {
+		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&targetWords)
+		if targetWords <= 0 {
+			targetWords = 3000
+		}
+	}
+
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
-	userPrompt := fmt.Sprintf(`请生成第 %d 章的完整内容。叙事视角：%s，POV角色：%s，目标节奏：%s，张力水平：%.1f。请直接输出章节内容。`,
-		chapterNum, req.NarrativeOrder, req.POVCharacter, req.TargetPace, req.TensionLevel)
+	userPrompt := fmt.Sprintf(`请生成第 %d 章的完整内容。叙事视角：%s，POV角色：%s，目标节奏：%s，张力水平：%.1f，内容至少%d字。`,
+		chapterNum, req.NarrativeOrder, req.POVCharacter, req.TargetPace, req.TensionLevel, targetWords)
+	if req.ContextHint != "" {
+		userPrompt += fmt.Sprintf(" 本章特别方向：%s", req.ContextHint)
+	}
+	userPrompt += " 请直接输出章节内容。"
 
 	var fullContent strings.Builder
 	err := s.ai.ChatStreamWithConfig(ctx, gateway.ChatRequest{
@@ -742,8 +782,8 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 	genParams, _ := json.Marshal(req)
 	if _, saveErr := s.db.Exec(ctx,
 		`INSERT INTO chapters (id, project_id, volume_id, chapter_num, title, content, word_count, summary,
-		 gen_params, status, version, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', 1, NOW(), NOW())`,
+		 gen_params, input_tokens, output_tokens, status, version, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, 'draft', 1, NOW(), NOW())`,
 		chID, projectID, volumeID, chapterNum, title, content, wordCount, summary, genParams); saveErr != nil {
 		s.logger.Error("failed to persist streamed chapter", zap.Error(saveErr))
 		return saveErr
@@ -776,6 +816,13 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 			"word_count":  wordCount,
 		})
 	}
+
+	// ── Async post-generation state settlement ────────────────────────────────
+	go func(pid, cid, c string) {
+		sCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		s.settleChapterState(sCtx, pid, cid, c)
+	}(projectID, chID, content)
 
 	handler(gateway.StreamChunk{Done: true})
 	return nil
@@ -967,6 +1014,15 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 	}
 	_ = s.CreateSnapshot(ctx, id, "before_regenerate", "before chapter regenerate")
 
+	// Resolve target word count (request > project default > 3000)
+	targetWords := req.ChapterWords
+	if targetWords <= 0 {
+		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&targetWords)
+		if targetWords <= 0 {
+			targetWords = 3000
+		}
+	}
+
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
 	userPrompt := fmt.Sprintf(`请生成第 %d 章的完整内容。
 
@@ -979,16 +1035,19 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 - 张力水平：%.1f
 
 要求：
-1. 内容至少2000字
+1. 内容至少%d字
 2. 保持与前文的连贯性
 3. 按照大纲推进剧情
 4. 自然融入伏笔
-5. 章节结尾留有悬念
-
-请直接输出章节内容，不要包含任何元数据或标记。`,
+5. 章节结尾留有悬念`,
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
-		req.EndHookType, req.EndHookStrength, req.TensionLevel)
+		req.EndHookType, req.EndHookStrength, req.TensionLevel,
+		targetWords)
+	if req.ContextHint != "" {
+		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
+	}
+	userPrompt += "\n\n请直接输出章节内容，不要包含任何元数据或标记。"
 
 	resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_regeneration",
@@ -1006,6 +1065,11 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 		chapterContent = humanized
 	}
 
+	// Update token counts alongside content
+	s.db.Exec(ctx,
+		`UPDATE chapters SET input_tokens = input_tokens + $1, output_tokens = output_tokens + $2 WHERE id = $3`,
+		resp.InputTokens, resp.OutputTokens, id)
+
 	updated, err := s.UpdateContent(ctx, id, chapterContent, "draft")
 	if err != nil {
 		return nil, fmt.Errorf("update regenerated chapter: %w", err)
@@ -1020,7 +1084,168 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 		}(updated.ID, updated.ProjectID, updated.Content)
 	}
 
+	// ── Async post-generation state settlement ────────────────────────────────
+	go func(pid, cid, content string) {
+		sCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		s.settleChapterState(sCtx, pid, cid, content)
+	}(projectID, updated.ID, updated.Content)
+
 	return updated, nil
+}
+
+// settleChapterState performs post-generation state settlement in a background goroutine.
+// It makes a single LLM call to extract character state changes and foreshadowing resolutions
+// from the chapter content, then applies all updates in one pgx.Batch to avoid N+1 queries.
+func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chapterID, content string) {
+	// ── 1. Fetch all characters and active foreshadowings in two queries (no N+1) ──
+	type charInfo struct {
+		id   string
+		name string
+	}
+	var chars []charInfo
+	charRows, err := s.db.Query(ctx,
+		`SELECT id, name FROM characters WHERE project_id = $1`, projectID)
+	if err != nil {
+		s.logger.Warn("settle: failed to load characters", zap.Error(err))
+		return
+	}
+	for charRows.Next() {
+		var ci charInfo
+		charRows.Scan(&ci.id, &ci.name)
+		chars = append(chars, ci)
+	}
+	charRows.Close()
+
+	type fsInfo struct {
+		id      string
+		content string
+	}
+	var foreshadowings []fsInfo
+	fsRows, err := s.db.Query(ctx,
+		`SELECT id, content FROM foreshadowings WHERE project_id = $1 AND status IN ('planned','planted')`, projectID)
+	if err != nil {
+		s.logger.Warn("settle: failed to load foreshadowings", zap.Error(err))
+		return
+	}
+	for fsRows.Next() {
+		var fi fsInfo
+		fsRows.Scan(&fi.id, &fi.content)
+		foreshadowings = append(foreshadowings, fi)
+	}
+	fsRows.Close()
+
+	if len(chars) == 0 && len(foreshadowings) == 0 {
+		return
+	}
+
+	// ── 2. Build structured prompt for LLM settlement analysis ──────────────
+	charNames := make([]string, len(chars))
+	for i, c := range chars {
+		charNames[i] = c.name
+	}
+	fsContents := make([]string, len(foreshadowings))
+	for i, f := range foreshadowings {
+		fsContents[i] = f.content
+	}
+
+	truncated := content
+	if utf8.RuneCountInString(truncated) > 4000 {
+		runes := []rune(truncated)
+		truncated = string(runes[:4000])
+	}
+
+	systemMsg := `你是小说状态追踪系统。分析章节内容，提取状态变化。必须以纯JSON格式回复，不要包含其他文本。`
+	userMsg := fmt.Sprintf(`角色列表：%v
+待解决伏笔：%v
+
+章节内容（节选）：
+%s
+
+请分析后输出如下JSON（只输出JSON，不要解释）：
+{
+  "character_states": [
+    {"name": "角色名（必须来自上面的列表）", "current_state": "状态描述"}
+  ],
+  "resolved_foreshadowings": [
+    "已解决的伏笔内容（必须来自上面的列表，精确匹配）"
+  ]
+}`, charNames, fsContents, truncated)
+
+	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
+		Task:      "state_settlement",
+		MaxTokens: 800,
+		Messages: []gateway.ChatMessage{
+			{Role: "system", Content: systemMsg},
+			{Role: "user", Content: userMsg},
+		},
+	})
+	if err != nil {
+		s.logger.Warn("settle: LLM call failed", zap.Error(err))
+		return
+	}
+
+	// ── 3. Parse LLM response ────────────────────────────────────────────────
+	var settlement struct {
+		CharacterStates []struct {
+			Name         string `json:"name"`
+			CurrentState string `json:"current_state"`
+		} `json:"character_states"`
+		ResolvedForeshadowings []string `json:"resolved_foreshadowings"`
+	}
+	raw := extractJSON(resp.Content)
+	if err := json.Unmarshal([]byte(raw), &settlement); err != nil {
+		s.logger.Warn("settle: failed to parse LLM response", zap.Error(err), zap.String("raw", resp.Content[:min(len(resp.Content), 200)]))
+		return
+	}
+
+	// ── 4. Build lookup maps from fetched data (O(n) not O(n²)) ─────────────
+	charByName := make(map[string]string, len(chars))
+	for _, c := range chars {
+		charByName[c.name] = c.id
+	}
+	fsByContent := make(map[string]string, len(foreshadowings))
+	for _, f := range foreshadowings {
+		fsByContent[f.content] = f.id
+	}
+
+	// ── 5. Apply all updates in a single pgx.Batch (one short transaction) ───
+	batch := &pgx.Batch{}
+	for _, cs := range settlement.CharacterStates {
+		cid, ok := charByName[cs.Name]
+		if !ok || cs.CurrentState == "" {
+			continue
+		}
+		stateJSON, _ := json.Marshal(map[string]string{"summary": cs.CurrentState})
+		batch.Queue(
+			`UPDATE characters SET current_state = $1, updated_at = NOW() WHERE id = $2`,
+			stateJSON, cid)
+	}
+	for _, fsContent := range settlement.ResolvedForeshadowings {
+		fid, ok := fsByContent[fsContent]
+		if !ok {
+			continue
+		}
+		batch.Queue(
+			`UPDATE foreshadowings SET status = 'resolved', updated_at = NOW() WHERE id = $1`,
+			fid)
+	}
+
+	if batch.Len() == 0 {
+		return
+	}
+
+	br := s.db.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			s.logger.Warn("settle: batch exec failed", zap.Error(err))
+		}
+	}
+	s.logger.Info("chapter state settled",
+		zap.String("chapter_id", chapterID),
+		zap.Int("char_updates", len(settlement.CharacterStates)),
+		zap.Int("fs_resolved", len(settlement.ResolvedForeshadowings)))
 }
 
 // buildSystemPrompt constructs the system prompt using the Lost-in-Middle layout:

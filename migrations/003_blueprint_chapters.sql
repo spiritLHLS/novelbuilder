@@ -71,6 +71,8 @@ CREATE TABLE chapters (
     gen_params      JSONB DEFAULT '{}',
     quality_report  JSONB DEFAULT '{}',
     originality_score FLOAT DEFAULT 0,
+    input_tokens    INT NOT NULL DEFAULT 0,
+    output_tokens   INT NOT NULL DEFAULT 0,
     status          VARCHAR(20) DEFAULT 'draft',
     version         INT DEFAULT 1,
     review_comment  TEXT,

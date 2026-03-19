@@ -12,6 +12,7 @@ type Project struct {
 	Description      string    `json:"description" db:"description"`
 	StyleDescription string    `json:"style_description" db:"style_description"`
 	TargetWords      int       `json:"target_words" db:"target_words"`
+	ChapterWords     int       `json:"chapter_words" db:"chapter_words"`
 	Status           string    `json:"status" db:"status"`
 	CreatedAt        time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
@@ -279,6 +280,7 @@ type CreateProjectRequest struct {
 	Description      string `json:"description"`
 	StyleDescription string `json:"style_description"`
 	TargetWords      int    `json:"target_words"`
+	ChapterWords     int    `json:"chapter_words"`
 }
 
 type GenerateBlueprintRequest struct {
@@ -311,6 +313,10 @@ type GenerateChapterRequest struct {
 	EndHookType     string  `json:"end_hook_type"`
 	EndHookStrength int     `json:"end_hook_strength"`
 	TensionLevel    float64 `json:"tension_level"`
+	// ChapterWords is the target word count for this chapter (0 = use project default or 3000).
+	ChapterWords int `json:"chapter_words"`
+	// ContextHint is an optional per-chapter creative direction injected into the user prompt.
+	ContextHint string `json:"context_hint"`
 	// LLMConfig is populated internally by the handler via agent routing; not sent from the frontend.
 	LLMConfig map[string]interface{} `json:"llm_config,omitempty"`
 }

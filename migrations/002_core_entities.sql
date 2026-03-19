@@ -12,6 +12,7 @@ CREATE TABLE projects (
     description       TEXT,
     style_description TEXT,
     target_words      INT NOT NULL DEFAULT 500000,
+    chapter_words     INT NOT NULL DEFAULT 3000,
     status            VARCHAR(20) DEFAULT 'active',
     created_at        TIMESTAMP DEFAULT NOW(),
     updated_at        TIMESTAMP DEFAULT NOW()

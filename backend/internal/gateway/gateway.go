@@ -41,9 +41,11 @@ type ChatRequest struct {
 }
 
 type ChatResponse struct {
-	Content    string `json:"content"`
-	Model      string `json:"model"`
-	TokensUsed int    `json:"tokens_used"`
+	Content      string `json:"content"`
+	Model        string `json:"model"`
+	TokensUsed   int    `json:"tokens_used"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
 }
 
 type StreamChunk struct {
@@ -145,9 +147,11 @@ func (gw *AIGateway) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, 
 			return nil, errors.New("no choices in response")
 		}
 		return &ChatResponse{
-			Content:    resp.Choices[0].Message.Content,
-			Model:      resolved.ProfileName,
-			TokensUsed: resp.Usage.TotalTokens,
+			Content:      resp.Choices[0].Message.Content,
+			Model:        resolved.ProfileName,
+			TokensUsed:   resp.Usage.TotalTokens,
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
 		}, nil
 
 	case "anthropic":
@@ -175,9 +179,11 @@ func (gw *AIGateway) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, 
 			return nil, fmt.Errorf("anthropic chat: %w", err)
 		}
 		return &ChatResponse{
-			Content:    resp.GetFirstContentText(),
-			Model:      resolved.ProfileName,
-			TokensUsed: resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			Content:      resp.GetFirstContentText(),
+			Model:        resolved.ProfileName,
+			TokensUsed:   resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			InputTokens:  resp.Usage.InputTokens,
+			OutputTokens: resp.Usage.OutputTokens,
 		}, nil
 	}
 
@@ -354,8 +360,10 @@ func (gw *AIGateway) ChatWithConfig(ctx context.Context, req ChatRequest, cfg ma
 			return nil, errors.New("no choices in response")
 		}
 		return &ChatResponse{
-			Content:    resp.Choices[0].Message.Content,
-			TokensUsed: resp.Usage.TotalTokens,
+			Content:      resp.Choices[0].Message.Content,
+			TokensUsed:   resp.Usage.TotalTokens,
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
 		}, nil
 
 	case "anthropic":
@@ -383,8 +391,10 @@ func (gw *AIGateway) ChatWithConfig(ctx context.Context, req ChatRequest, cfg ma
 			return nil, fmt.Errorf("anthropic chat (custom config): %w", err)
 		}
 		return &ChatResponse{
-			Content:    resp.GetFirstContentText(),
-			TokensUsed: resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			Content:      resp.GetFirstContentText(),
+			TokensUsed:   resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			InputTokens:  resp.Usage.InputTokens,
+			OutputTokens: resp.Usage.OutputTokens,
 		}, nil
 	}
 

@@ -56,6 +56,14 @@
                 <el-icon><Coin /></el-icon>
                 <span>资源账本</span>
               </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/analytics`">
+                <el-icon><TrendCharts /></el-icon>
+                <span>数据分析</span>
+              </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/graph-memory`">
+                <el-icon><Share /></el-icon>
+                <span>图谱记忆</span>
+              </el-menu-item>
             </el-menu-item-group>
             <el-menu-item-group title="生成管线">
               <el-menu-item :index="`/projects/${currentProjectId}/blueprint`">
@@ -96,6 +104,22 @@
                 <el-icon><Upload /></el-icon>
                 <span>导入续写</span>
               </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/subplots`">
+                <el-icon><Menu /></el-icon>
+                <span>子情节管理</span>
+              </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/emotional-arcs`">
+                <el-icon><DataLine /></el-icon>
+                <span>情绪弧线</span>
+              </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/character-matrix`">
+                <el-icon><Grid /></el-icon>
+                <span>角色关系矩阵</span>
+              </el-menu-item>
+              <el-menu-item :index="`/projects/${currentProjectId}/radar`">
+                <el-icon><Aim /></el-icon>
+                <span>雷达分析</span>
+              </el-menu-item>
             </el-menu-item-group>
           </template>
           <el-menu-item-group title="系统">
@@ -114,6 +138,10 @@
             <el-menu-item index="/settings/system">
               <el-icon><Tools /></el-icon>
               <span>系统设置</span>
+            </el-menu-item>
+            <el-menu-item index="/settings/genre-templates">
+              <el-icon><Files /></el-icon>
+              <span>题材规则</span>
             </el-menu-item>
           </el-menu-item-group>
         </el-menu>
