@@ -57,10 +57,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        supervisor \
        # OpenJDK 21 for Neo4j
        openjdk-21-jre-headless \
-    # musl loader for qdrant binaries built against musl
-    musl \
-       # libgomp needed by Qdrant binary
+       # Qdrant runtime deps (binary is glibc/Debian-based)
+       libunwind8 libgcc-s1 \
+       # libgomp needed by Qdrant HNSW index builds
        libgomp1 \
+       # netcat for wait-for-port.sh TCP readiness checks
+       netcat-openbsd \
        # gosu for privilege dropping
        gosu \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
