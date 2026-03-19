@@ -21,37 +21,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-# ─── importlib.resources.MultiplexedPath.joinpath patch ──────────────────────
-# novel-downloader ≥ 3.1.0 requires Python ≥ 3.11.  However, Python 3.11
-# narrowed importlib.resources._adapters.MultiplexedPath.joinpath() from the
-# variadic form joinpath(self, *descendants) to a single-argument form
-# joinpath(self, child).  novel_downloader/infra/paths.py executes:
-#   DEFAULT_CONFIG_FILE = RES.joinpath("config", "settings.sample.toml")
-# at module level (two segments), which raises TypeError on Python 3.11+.
-# We patch the class back to variadic HERE, before novel_downloader is ever
-# imported.  All lazy "from novel_downloader ..." imports inside route
-# handlers execute after this module-level code, so they see the fixed class.
-try:
-    from importlib.resources._adapters import MultiplexedPath as _MP
-    import inspect as _inspect
-    _orig_jp = _MP.__dict__.get("joinpath") or _MP.joinpath
-    if not any(
-        p.kind == _inspect.Parameter.VAR_POSITIONAL
-        for p in _inspect.signature(_orig_jp).parameters.values()
-    ):
-        def _jp_variadic(self, *args):
-            if not args:
-                return self
-            result = _orig_jp(self, args[0])
-            for a in args[1:]:
-                result = result.joinpath(a)
-            return result
-        _MP.joinpath = _jp_variadic
-    del _inspect, _orig_jp, _MP
-except Exception:
-    pass
-# ─────────────────────────────────────────────────────────────────────────────
-
 from analyzers.style_analyzer import StyleAnalyzer
 from analyzers.narrative_analyzer import NarrativeAnalyzer
 from analyzers.atmosphere_analyzer import AtmosphereAnalyzer
