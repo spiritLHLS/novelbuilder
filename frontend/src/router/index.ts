@@ -104,6 +104,11 @@ const router = createRouter({
       component: () => import('@/views/SystemSettings.vue'),
     },
     {
+      path: '/settings/logs',
+      name: 'system-logs',
+      component: () => import('@/views/SystemLogs.vue'),
+    },
+    {
       path: '/projects/:projectId/glossary',
       name: 'glossary',
       component: () => import('@/views/Glossary.vue'),

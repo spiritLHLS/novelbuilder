@@ -309,6 +309,17 @@ export async function* streamFetchImport(
   }
 }
 
+// Service Logs
+export const logsApi = {
+  /** Return available service names. */
+  listServices: () => api.get<{ services: string[] }>('/logs'),
+  /** Return the last `lines` log lines for `service`. */
+  getLines: (service: string, lines = 200) =>
+    api.get<{ service: string; lines: string[]; total: number }>(
+      '/logs', { params: { service, lines } }
+    ),
+}
+
 // Agent Review
 export const agentReviewApi = {
   start: (projectId: string, data: any) => api.post(`/projects/${projectId}/agent-reviews`, data),

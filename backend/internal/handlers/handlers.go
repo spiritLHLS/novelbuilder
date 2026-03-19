@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -370,6 +372,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// ── Runtime Diagnostics ───────────────────────────────────────────────────
 	api.GET("/doctor", h.Doctor)
+
+	// ── Service Logs ──────────────────────────────────────────────────────────
+	api.GET("/logs", h.GetServiceLogs)
 }
 
 func (h *Handler) ListProjects(c *gin.Context) {
@@ -3279,4 +3284,115 @@ func (h *Handler) DeleteGenreTemplate(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"status": "deleted"})
+}
+
+// logSources maps the service name accepted by ?service= to the log file paths
+// written by supervisord for that service.  Paths are fixed by supervisord.conf.
+var logSources = map[string][]string{
+	"go-backend":     {"/var/log/go-backend.log", "/var/log/go-backend_err.log"},
+	"python-sidecar": {"/var/log/python-sidecar.log", "/var/log/python-sidecar_err.log"},
+	"postgresql":     {"/var/log/postgresql.log", "/var/log/postgresql_err.log"},
+	"redis":          {"/var/log/redis.log", "/var/log/redis_err.log"},
+	"neo4j":          {"/var/log/neo4j.log", "/var/log/neo4j_err.log"},
+	"qdrant":         {"/var/log/qdrant.log", "/var/log/qdrant_err.log"},
+	"supervisord":    {"/var/log/supervisord.log"},
+}
+
+// GetServiceLogs returns the last N lines from a supervisord-managed service log.
+// No DB interaction — reads only from the filesystem log files.
+//
+//	GET /api/logs                           → {"services": [...]}
+//	GET /api/logs?service=go-backend        → {"service":"...","lines":[...],"total":N}
+//	GET /api/logs?service=python-sidecar&lines=500
+func (h *Handler) GetServiceLogs(c *gin.Context) {
+	service := strings.TrimSpace(c.Query("service"))
+
+	// No service param → return list of available services.
+	if service == "" {
+		names := make([]string, 0, len(logSources))
+		for k := range logSources {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		c.JSON(200, gin.H{"services": names})
+		return
+	}
+
+	paths, ok := logSources[service]
+	if !ok {
+		valid := make([]string, 0, len(logSources))
+		for k := range logSources {
+			valid = append(valid, k)
+		}
+		sort.Strings(valid)
+		c.JSON(400, gin.H{"error": "unknown service; valid: " + strings.Join(valid, ", ")})
+		return
+	}
+
+	maxLines := 200
+	if n, err := strconv.Atoi(c.Query("lines")); err == nil && n > 0 {
+		if n > 5000 {
+			n = 5000
+		}
+		maxLines = n
+	}
+
+	// Collect lines from stdout + stderr log files for the service.
+	// Reads are purely sequential file I/O — no DB round-trips.
+	var combined []string
+	for _, fp := range paths {
+		lines, _ := tailLogFile(fp, maxLines)
+		combined = append(combined, lines...)
+	}
+	if len(combined) > maxLines {
+		combined = combined[len(combined)-maxLines:]
+	}
+
+	c.JSON(200, gin.H{
+		"service": service,
+		"lines":   combined,
+		"total":   len(combined),
+	})
+}
+
+// tailLogFile reads the last n lines from a file by seeking from the end in
+// 32 KiB chunks.  This avoids loading GB-sized logs into memory.
+func tailLogFile(path string, n int) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := fi.Size()
+	if size == 0 {
+		return nil, nil
+	}
+
+	const chunkSize = 32 * 1024
+	var buf []byte
+	pos := size
+	for {
+		readSize := int64(chunkSize)
+		if readSize > pos {
+			readSize = pos
+		}
+		pos -= readSize
+		tmp := make([]byte, readSize)
+		if _, err := f.ReadAt(tmp, pos); err != nil {
+			return nil, err
+		}
+		buf = append(tmp, buf...)
+		lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+		if len(lines) >= n || pos == 0 {
+			if len(lines) > n {
+				lines = lines[len(lines)-n:]
+			}
+			return lines, nil
+		}
+	}
 }

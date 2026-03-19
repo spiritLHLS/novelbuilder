@@ -117,6 +117,7 @@ const systemItems = [
   { path: '/settings/prompt-presets', icon: 'DocumentCopy', label: '提示词预设' },
   { path: '/settings/system', icon: 'Tools', label: '系统设置' },
   { path: '/settings/genre-templates', icon: 'Files', label: '题材规则' },
+  { path: '/settings/logs', icon: 'Monitor', label: '系统日志' },
 ]
 </script>
 

@@ -4,11 +4,13 @@ Handles: LangGraph agent, Neo4j graph ops, Qdrant vector ops,
          reference analysis, humanization pipeline, metrics.
 """
 import asyncio
+import inspect as _inspect
 import json
 import logging
 import math
 import os
 import re
+import sys as _sys
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -22,29 +24,101 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # ─── importlib.resources compatibility patch ────────────────────────────────
-# Python 3.12 narrowed MultiplexedPath.joinpath() to a single child argument.
-# Python 3.13 removed MultiplexedPath from the public importlib.resources API.
-# We patch the class to accept *args and chain calls one segment at a time.
+# Python 3.12 narrowed MultiplexedPath.joinpath() to accept only one path
+# segment.  Python 3.13 moved the class out of the public namespace.
+# novel-downloader (and some of its deps) call joinpath(a, b, ...) with
+# multiple segments, which raises TypeError on Python 3.12+.
+#
+# We search every known location for the class and, when its joinpath
+# accepts only a single positional argument, we replace it with a variadic
+# wrapper that chains one-segment calls.
+def _patch_multiplexed_path() -> int:
+    """Return the number of classes that were successfully patched."""
+    import importlib.resources as _ilr  # noqa: PLC0415
+
+    def _try_get(mod_name: str) -> object | None:
+        mod = _sys.modules.get(mod_name)
+        if mod is None:
+            try:
+                import importlib as _il
+                mod = _il.import_module(mod_name)
+            except Exception:
+                return None
+        return getattr(mod, "MultiplexedPath", None)
+
+    # Collect candidate classes from all known locations.
+    seen: set[int] = set()
+    candidates: list[type] = []
+    for loc in (
+        lambda: getattr(_ilr, "MultiplexedPath", None),
+        lambda: _try_get("importlib.resources._adapters"),
+        lambda: _try_get("importlib.resources.readers"),
+        lambda: _try_get("importlib._bootstrap_external"),
+    ):
+        try:
+            cls = loc()
+        except Exception:
+            continue
+        if cls is not None and id(cls) not in seen:
+            seen.add(id(cls))
+            candidates.append(cls)
+
+    patched = 0
+    for cls in candidates:
+        # Get the raw function from the class dict to bypass MRO caching.
+        orig = cls.__dict__.get("joinpath") or cls.joinpath
+        try:
+            params = list(_inspect.signature(orig).parameters.values())
+        except (TypeError, ValueError):
+            continue
+        # Skip if already variadic (*args) — no patch needed.
+        if any(p.kind == _inspect.Parameter.VAR_POSITIONAL for p in params):
+            continue
+
+        def _make_variadic(o=orig):
+            def _joinpath_multi(self, *args):
+                if not args:
+                    return self
+                result = o(self, args[0])
+                for a in args[1:]:
+                    # Dispatch polymorphically: result may be a plain Path
+                    # after entering a real directory inside the traversable.
+                    result = result.joinpath(a)
+                return result
+            _joinpath_multi.__name__ = "joinpath"
+            _joinpath_multi.__doc__ = (
+                "joinpath(*args): variadic wrapper around the single-arg original."
+            )
+            return _joinpath_multi
+
+        try:
+            cls.joinpath = _make_variadic()
+            patched += 1
+        except Exception as e:
+            print(
+                f"[sidecar] WARNING: could not patch {cls!r}.joinpath: {e}",
+                file=_sys.stderr,
+            )
+
+    return patched
+
+
 try:
-    try:
-        from importlib.resources import MultiplexedPath as _MPath  # Py ≤ 3.12
-    except ImportError:
-        from importlib.resources._adapters import MultiplexedPath as _MPath  # Py 3.13
-    _orig_mp_jp = _MPath.joinpath
-    def _patched_mp_jp(self, *args):
-        """Accept multiple path segments by chaining one-at-a-time calls."""
-        if not args:
-            return self
-        result = _orig_mp_jp(self, args[0])
-        for a in args[1:]:
-            # Use polymorphic .joinpath so the correct method is dispatched
-            # regardless of whether result is still a MultiplexedPath or a
-            # Plain Path / Traversable returned after entering a real directory.
-            result = result.joinpath(a)
-        return result
-    _MPath.joinpath = _patched_mp_jp
-except Exception:
-    pass
+    _n = _patch_multiplexed_path()
+    if _n:
+        print(
+            f"[sidecar] Patched MultiplexedPath.joinpath on {_n} class(es)"
+            f" (Python {_sys.version_info.major}.{_sys.version_info.minor},"
+            f" needed for novel-downloader multi-segment joinpath calls)",
+            file=_sys.stderr,
+        )
+except Exception as _patch_err:
+    print(
+        f"[sidecar] MultiplexedPath joinpath patch raised an unexpected error: {_patch_err}",
+        file=_sys.stderr,
+    )
+finally:
+    del _patch_multiplexed_path
 # ─────────────────────────────────────────────────────────────────────────────
 
 from analyzers.style_analyzer import StyleAnalyzer

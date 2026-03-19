@@ -72,23 +72,7 @@
           </el-form>
         </el-card>
       </el-col>
-      <el-col :span="8">
-        <el-card class="preset-card">
-          <template #header><span>Python Sidecar</span></template>
-          <el-form label-width="160px" label-position="left" size="small">
-            <el-form-item label="Sidecar URL">
-              <el-input
-                v-model="presets.sidecar_url"
-                placeholder="http://127.0.0.1:8081"
-                @blur="setPreset('sidecar_url', presets.sidecar_url)"
-              />
-            </el-form-item>
-          </el-form>
-          <p class="hint-block">
-            修改后需要重启服务才能生效（仅此项需要重启）。
-          </p>
-        </el-card>
-      </el-col>
+
     </el-row>
 
     <!-- Raw settings table for custom / advanced keys -->
@@ -141,7 +125,6 @@ const PRESET_KEYS = new Set([
   'min_reward_density',
   'burstiness_target_cv',
   'strict_review',
-  'sidecar_url',
 ])
 
 const allSettings = ref<Record<string, string>>({})
@@ -157,7 +140,6 @@ const presets = reactive({
   min_reward_density: 1.5,
   burstiness_target_cv: 0.8,
   strict_review: 'true',
-  sidecar_url: 'http://127.0.0.1:8081',
 })
 
 const customSettings = computed(() =>
@@ -187,7 +169,6 @@ async function fetchSettings() {
     if (data.min_reward_density !== undefined) presets.min_reward_density = Number(data.min_reward_density)
     if (data.burstiness_target_cv !== undefined) presets.burstiness_target_cv = Number(data.burstiness_target_cv)
     if (data.strict_review !== undefined) presets.strict_review = data.strict_review
-    if (data.sidecar_url !== undefined) presets.sidecar_url = data.sidecar_url
   } catch {
     ElMessage.error('获取系统设置失败')
   } finally {
