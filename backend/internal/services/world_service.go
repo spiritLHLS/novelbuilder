@@ -508,6 +508,9 @@ func (s *QualityService) reviewAsLogicReviewer(ctx context.Context, content, pro
 			}
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			s.logger.Warn("logic reviewer: rows error", zap.Error(err))
+		}
 	}
 
 	systemPrompt := fmt.Sprintf(`你是一位逻辑审稿人，专门检查小说的世界观、人物、时间线一致性。
@@ -897,6 +900,9 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		rebuilt++
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return rebuilt, fmt.Errorf("rebuild project rows: %w", err)
+	}
 
 	if err := s.rag.StoreEmbeddingBatch(ctx, projectID, allItems); err != nil {
 		return rebuilt, err
