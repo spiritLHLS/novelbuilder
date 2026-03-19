@@ -47,4 +47,6 @@ pdfminer.six==20221105
 aiohttp>=3.9.0
 
 # Novel download / search (multi-site: 笔趣阁, 起点 etc.)
-novel-downloader>=3.1.0
+# Requires Python>=3.11.  MultiplexedPath.joinpath patch in main.py
+# restores variadic form before first import.
+novel-downloader==3.1.1
