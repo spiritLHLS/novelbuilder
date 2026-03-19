@@ -14,8 +14,8 @@
           <template #header>
             <div class="card-header">
               <span class="title">{{ project.title }}</span>
-              <el-dropdown @click.stop trigger="click">
-                <el-icon class="more-btn"><MoreFilled /></el-icon>
+              <el-dropdown trigger="click">
+                <el-icon class="more-btn" @click.stop><MoreFilled /></el-icon>
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item @click="editProject(project)">编辑</el-dropdown-item>
