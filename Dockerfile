@@ -45,15 +45,12 @@ FROM neo4j:5.24-community AS neo4j-source
 FROM eclipse-temurin:21-jre AS jre-source
 
 # ── Stage 6: Runtime ─────────────────────────────────────
-# Python 3.10 is required.  In Python 3.11 the importlib.resources
-# MultiplexedPath.joinpath() signature was narrowed from variadic
-# (*descendants) to a single positional argument (child).
-# novel-downloader calls RES.joinpath("config", "settings.sample.toml")
-# with two segments at module-import time, which raises TypeError on 3.11+.
-# Python 3.10 retains the variadic form; all project dependencies
-# (graphiti-core, qdrant-client, sentence-transformers, torch 2.5, etc.)
-# support Python 3.10.
-FROM python:3.10.16-slim
+# novel-downloader>=3.1.0 requires Python>=3.11.  Python 3.11 narrowed
+# importlib.resources MultiplexedPath.joinpath() from variadic (*descendants)
+# to a single positional arg, which breaks novel-downloader at import time.
+# The runtime patch in python-sidecar/main.py restores the variadic form
+# before novel-downloader is first imported.
+FROM python:3.11.11-slim
 
 # ---- System packages ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
