@@ -141,7 +141,7 @@ novelbuilder/
 ```bash
 git clone https://github.com/spiritLHLS/novelbuilder.git
 cd novelbuilder
-docker build -t novelbuilder .
+docker build  --no-cache -t novelbuilder .
 docker rm -f nb 2>/dev/null || true
 docker run -d \
   --name nb \
