@@ -42,3 +42,6 @@ scipy>=1.11
 
 # Document parsers (legacy analyze endpoint)
 pdfminer.six==20221105
+
+# Novel download / search (multi-site: 笔趣阁, 起点 etc.)
+novel-downloader>=0.4.0

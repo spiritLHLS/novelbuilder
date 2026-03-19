@@ -82,6 +82,7 @@ type ReferenceMaterial struct {
 	Author          string          `json:"author" db:"author"`
 	Genre           string          `json:"genre" db:"genre"`
 	FilePath        string          `json:"file_path" db:"file_path"`
+	SourceURL       string          `json:"source_url" db:"source_url"`
 	StyleLayer      json.RawMessage `json:"style_layer" db:"style_layer"`
 	NarrativeLayer  json.RawMessage `json:"narrative_layer" db:"narrative_layer"`
 	AtmosphereLayer json.RawMessage `json:"atmosphere_layer" db:"atmosphere_layer"`

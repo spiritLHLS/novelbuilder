@@ -5,18 +5,95 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
+
+// validatePublicHTTPURL checks that rawURL is an http/https URL pointing to a public
+// IP address (blocks RFC-1918, loopback, link-local, etc. to prevent SSRF).
+func validatePublicHTTPURL(rawURL string) error {
+	u, err := url.ParseRequestURI(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("only http and https URLs are allowed")
+	}
+	hostname := u.Hostname()
+	ips, err := net.LookupHost(hostname)
+	if err != nil {
+		return fmt.Errorf("cannot resolve host %q: %w", hostname, err)
+	}
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if !isPublicIP(ip) {
+			return fmt.Errorf("URL resolves to a private/reserved address and is not allowed")
+		}
+	}
+	return nil
+}
+
+// isPublicIP returns true only for globally routable unicast addresses.
+func isPublicIP(ip net.IP) bool {
+	privateRanges := []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.0/8",
+		"::1/128",
+		"fc00::/7",
+		"fe80::/10",
+		"169.254.0.0/16",
+		"100.64.0.0/10",
+		"192.0.0.0/24",
+		"198.18.0.0/15",
+		"198.51.100.0/24",
+		"203.0.113.0/24",
+		"240.0.0.0/4",
+		"0.0.0.0/8",
+	}
+	for _, cidr := range privateRanges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if network.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+// isTextContentType returns true for text-based MIME types.
+func isTextContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	allowedPrefixes := []string{"text/", "application/json", "application/xml", "application/atom", "application/rss"}
+	for _, prefix := range allowedPrefixes {
+		if strings.Contains(ct, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 // ============================================================
 // World Bible Service
@@ -718,15 +795,15 @@ func NewReferenceService(db *pgxpool.Pool, sidecarURL string, rag *RAGService, l
 	return &ReferenceService{db: db, sidecarURL: sidecarURL, rag: rag, logger: logger}
 }
 
-func (s *ReferenceService) Create(ctx context.Context, projectID, title, author, genre, filePath string) (*models.ReferenceMaterial, error) {
+func (s *ReferenceService) Create(ctx context.Context, projectID, title, author, genre, filePath, sourceURL string) (*models.ReferenceMaterial, error) {
 	var ref models.ReferenceMaterial
 	err := s.db.QueryRow(ctx,
-		`INSERT INTO reference_materials (project_id, title, author, genre, file_path, status)
-		 VALUES ($1, $2, $3, $4, $5, 'processing')
-		 RETURNING id, project_id, title, author, genre, file_path, status, created_at`,
-		projectID, title, author, genre, filePath).Scan(
+		`INSERT INTO reference_materials (project_id, title, author, genre, file_path, source_url, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'processing')
+		 RETURNING id, project_id, title, author, genre, file_path, COALESCE(source_url,''), status, created_at`,
+		projectID, title, author, genre, filePath, sourceURL).Scan(
 		&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
-		&ref.Status, &ref.CreatedAt)
+		&ref.SourceURL, &ref.Status, &ref.CreatedAt)
 	return &ref, err
 }
 
@@ -734,11 +811,13 @@ func (s *ReferenceService) Get(ctx context.Context, id string) (*models.Referenc
 	var ref models.ReferenceMaterial
 	err := s.db.QueryRow(ctx,
 		`SELECT id, project_id, title, author, genre, COALESCE(file_path, ''),
+		        COALESCE(source_url, ''),
 		        COALESCE(style_layer, '{}'), COALESCE(narrative_layer, '{}'), COALESCE(atmosphere_layer, '{}'),
 		        COALESCE(migration_config, '{}'), COALESCE(style_collection, ''), status, created_at,
 		        sample_texts
 		 FROM reference_materials WHERE id = $1`, id).Scan(
 		&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
+		&ref.SourceURL,
 		&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
 		&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
 		&ref.SampleTexts)
@@ -754,6 +833,7 @@ func (s *ReferenceService) Get(ctx context.Context, id string) (*models.Referenc
 func (s *ReferenceService) List(ctx context.Context, projectID string) ([]models.ReferenceMaterial, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, project_id, title, author, genre, COALESCE(file_path, ''),
+		        COALESCE(source_url, ''),
 		        COALESCE(style_layer, '{}'), COALESCE(narrative_layer, '{}'), COALESCE(atmosphere_layer, '{}'),
 		        COALESCE(migration_config, '{}'), COALESCE(style_collection, ''), status, created_at,
 		        sample_texts
@@ -767,6 +847,7 @@ func (s *ReferenceService) List(ctx context.Context, projectID string) ([]models
 	for rows.Next() {
 		var ref models.ReferenceMaterial
 		if err := rows.Scan(&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
+			&ref.SourceURL,
 			&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
 			&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
 			&ref.SampleTexts); err != nil {
@@ -775,6 +856,73 @@ func (s *ReferenceService) List(ctx context.Context, projectID string) ([]models
 		refs = append(refs, ref)
 	}
 	return refs, rows.Err()
+}
+
+func (s *ReferenceService) Delete(ctx context.Context, id string) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM reference_materials WHERE id = $1`, id)
+	return err
+}
+
+// CreateFromURL downloads the content at rawURL, saves it to the upload directory, and
+// creates a reference_materials record. It enforces SSRF-safe URL validation.
+func (s *ReferenceService) CreateFromURL(ctx context.Context, projectID, rawURL, title, author, genre string) (*models.ReferenceMaterial, error) {
+	if err := validatePublicHTTPURL(rawURL); err != nil {
+		return nil, err
+	}
+
+	const maxBytes = 20 * 1024 * 1024 // 20 MB
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("User-Agent", "NovelBuilder/1.0")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch URL: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("remote server returned HTTP %d", resp.StatusCode)
+	}
+
+	// Enforce content-type: must be text-based
+	ct := resp.Header.Get("Content-Type")
+	if ct != "" && !isTextContentType(ct) {
+		return nil, fmt.Errorf("unsupported content type %q; only text types are allowed", ct)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if len(body) > maxBytes {
+		return nil, fmt.Errorf("remote content exceeds 20 MB limit")
+	}
+
+	uploadDir := "/data/uploads"
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create upload dir: %w", err)
+	}
+
+	ext := ".txt"
+	if idx := strings.LastIndex(rawURL, "."); idx >= 0 {
+		candidate := strings.ToLower(rawURL[idx:])
+		switch candidate {
+		case ".txt", ".md", ".html", ".htm":
+			ext = candidate
+		}
+	}
+
+	fileName := uuid.New().String() + ext
+	filePath := filepath.Join(uploadDir, fileName)
+	if err := os.WriteFile(filePath, body, 0o644); err != nil {
+		return nil, fmt.Errorf("save file: %w", err)
+	}
+
+	return s.Create(ctx, projectID, title, author, genre, filePath, rawURL)
 }
 
 func (s *ReferenceService) UpdateMigrationConfig(ctx context.Context, id string, config json.RawMessage) error {

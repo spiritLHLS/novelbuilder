@@ -1319,6 +1319,222 @@ async def import_chapters_analyze(req: ImportChaptersRequest):
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# NOVEL NETWORK SEARCH / DOWNLOAD  (backed by novel-downloader)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class NovelSearchReq(BaseModel):
+    keyword: str
+    sites: Optional[list[str]] = None
+    limit: int = 20
+
+class NovelBookInfoReq(BaseModel):
+    site: str
+    book_id: str
+
+class NovelFetchImportReq(BaseModel):
+    site: str
+    book_id: str
+    title: str
+    author: str = ""
+    chapter_ids: list[str]
+
+
+def _make_nd_cfg(tmpdir: str):
+    from novel_downloader.schemas import ClientConfig
+    return ClientConfig(
+        request_interval=float(os.getenv("ND_REQUEST_INTERVAL", "1.0")),
+        cache_dir=tmpdir,
+        raw_data_dir=tmpdir,
+        output_dir=tmpdir,
+        cache_book_info=False,
+        cache_chapter=False,
+        workers=1,
+    )
+
+
+@app.post("/novels/search")
+async def novels_search(req: NovelSearchReq):
+    """Search for novels by keyword across all registered sites."""
+    try:
+        from novel_downloader.plugins.search import search as nd_search
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="novel-downloader not installed; run: pip install novel-downloader",
+        )
+    try:
+        raw = await nd_search(
+            req.keyword,
+            sites=req.sites or None,
+            limit=req.limit,
+            timeout=8.0,
+        )
+    except Exception as exc:
+        logger.exception("Novel search failed")
+        raise HTTPException(status_code=502, detail=f"Search failed: {exc}")
+
+    results = []
+    for r in raw:
+        d = dict(r) if not isinstance(r, dict) else r
+        results.append({
+            "site":           str(d.get("site", "")),
+            "book_id":        str(d.get("book_id", "")),
+            "book_url":       str(d.get("book_url", "")),
+            "cover_url":      str(d.get("cover_url", "")),
+            "title":          str(d.get("title", "")),
+            "author":         str(d.get("author", "")),
+            "latest_chapter": str(d.get("latest_chapter", "")),
+            "update_date":    str(d.get("update_date", "")),
+            "word_count":     str(d.get("word_count", "")),
+        })
+    return {"results": results}
+
+
+@app.post("/novels/book-info")
+async def novels_book_info(req: NovelBookInfoReq):
+    """Fetch book metadata and full chapter catalogue for a site/book_id pair."""
+    try:
+        import tempfile
+        from novel_downloader.plugins import registrar
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="novel-downloader not installed; run: pip install novel-downloader",
+        )
+    try:
+        with tempfile.TemporaryDirectory(prefix="nb_info_") as tmpdir:
+            cfg = _make_nd_cfg(tmpdir)
+            client = registrar.get_client(req.site, cfg)
+            async with client:
+                info = dict(await client.get_book_info(req.book_id))
+    except Exception as exc:
+        logger.exception("Book info fetch failed for %s/%s", req.site, req.book_id)
+        raise HTTPException(status_code=502, detail=f"Failed to fetch book info: {exc}")
+
+    volumes = []
+    total_chapters = 0
+    for vol in info.get("volumes") or []:
+        chapters = []
+        for ch in vol.get("chapters") or []:
+            chapters.append({
+                "chapter_id": str(ch.get("chapterId") or ch.get("chapter_id", "")),
+                "title":      str(ch.get("title", "")),
+                "accessible": bool(ch.get("accessible", True)),
+            })
+        volumes.append({
+            "volume_name": str(vol.get("volume_name", "正文")),
+            "chapters":    chapters,
+        })
+        total_chapters += len(chapters)
+
+    return {
+        "site":           req.site,
+        "book_id":        req.book_id,
+        "title":          str(info.get("book_name", "")),
+        "author":         str(info.get("author", "")),
+        "summary":        str(info.get("summary", "")),
+        "cover_url":      str(info.get("cover_url", "")),
+        "volumes":        volumes,
+        "total_chapters": total_chapters,
+    }
+
+
+@app.post("/novels/fetch-import")
+async def novels_fetch_import(req: NovelFetchImportReq):
+    """
+    Stream-download selected chapters and save them as a single .txt file.
+
+    Yields NDJSON lines:
+      {"type": "progress", "done": N, "total": M, "chapter_title": "..."}
+      {"type": "done", "file_path": "/data/uploads/xxx.txt", "total_chapters": N, "skipped_chapters": K}
+    """
+    try:
+        import tempfile
+        from novel_downloader.plugins import registrar
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="novel-downloader not installed; run: pip install novel-downloader",
+        )
+
+    import uuid as _uuid
+
+    async def event_generator():
+        total = len(req.chapter_ids)
+        all_chapters: list[dict] = []
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="nb_fetch_") as tmpdir:
+                cfg = _make_nd_cfg(tmpdir)
+                client = registrar.get_client(req.site, cfg)
+                async with client:
+                    for idx, chap_id in enumerate(req.chapter_ids, start=1):
+                        try:
+                            ch = await client.get_chapter(req.book_id, chap_id)
+                            if ch:
+                                all_chapters.append(dict(ch))
+                        except Exception as exc:
+                            logger.warning(
+                                "Skip chapter %s/%s: %s", req.book_id, chap_id, exc
+                            )
+                        chapter_title = (
+                            all_chapters[-1].get("title", "") if all_chapters else ""
+                        )
+                        yield (
+                            json.dumps(
+                                {
+                                    "type": "progress",
+                                    "done": idx,
+                                    "total": total,
+                                    "chapter_title": chapter_title,
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+
+            # Build text file
+            upload_dir = os.getenv("UPLOAD_DIR", "/data/uploads")
+            os.makedirs(upload_dir, exist_ok=True)
+            file_name = str(_uuid.uuid4()) + ".txt"
+            file_path = os.path.join(upload_dir, file_name)
+
+            lines: list[str] = []
+            if req.title:
+                lines += [req.title, ""]
+            if req.author:
+                lines += [f"作者：{req.author}", ""]
+            lines.append("")
+            for ch in all_chapters:
+                lines.append(ch.get("title", ""))
+                lines.append(ch.get("content", ""))
+                lines.append("")
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+
+        except Exception as exc:
+            logger.exception("fetch-import failed")
+            yield json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
+            return
+
+        yield (
+            json.dumps(
+                {
+                    "type":             "done",
+                    "file_path":        file_path,
+                    "total_chapters":   len(all_chapters),
+                    "skipped_chapters": total - len(all_chapters),
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("SIDECAR_PORT", "8081"))

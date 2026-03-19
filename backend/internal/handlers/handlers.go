@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -191,9 +192,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	api.GET("/projects/:id/references", h.ListReferences)
 	api.POST("/projects/:id/references/upload", h.UploadReference)
+	api.POST("/projects/:id/references/import-url", h.ImportReferenceFromURL)
+	api.POST("/projects/:id/references/search", h.SearchReferenceNovels)
+	api.POST("/projects/:id/references/book-info", h.GetReferenceBookInfo)
+	api.POST("/projects/:id/references/fetch-import", h.FetchImportReference)
 	api.GET("/references/:id", h.GetReference)
 	api.PUT("/references/:id/migration-config", h.UpdateMigrationConfig)
 	api.POST("/references/:id/analyze", h.AnalyzeReference)
+	api.DELETE("/references/:id", h.DeleteReference)
 
 	// RAG knowledge base management
 	api.POST("/projects/:id/rag/rebuild", h.RebuildRAG)
@@ -1056,7 +1062,7 @@ func (h *Handler) UploadReference(c *gin.Context) {
 	author := c.PostForm("author")
 	genre := c.PostForm("genre")
 
-	ref, err := h.references.Create(c.Request.Context(), c.Param("id"), title, author, genre, filePath)
+	ref, err := h.references.Create(c.Request.Context(), c.Param("id"), title, author, genre, filePath, "")
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -1075,6 +1081,201 @@ func (h *Handler) GetReference(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"data": ref})
+}
+
+func (h *Handler) ImportReferenceFromURL(c *gin.Context) {
+	var body struct {
+		URL    string `json:"url" binding:"required"`
+		Title  string `json:"title"`
+		Author string `json:"author"`
+		Genre  string `json:"genre"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	ref, err := h.references.CreateFromURL(c.Request.Context(), c.Param("id"), body.URL, body.Title, body.Author, body.Genre)
+	if err != nil {
+		if containsStr(err.Error(), "private/reserved") || containsStr(err.Error(), "only http") || containsStr(err.Error(), "invalid URL") || containsStr(err.Error(), "unsupported content type") {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"data": ref})
+}
+
+func (h *Handler) DeleteReference(c *gin.Context) {
+	if err := h.references.Delete(c.Request.Context(), c.Param("id")); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(204, nil)
+}
+
+// SearchReferenceNovels proxies keyword search to the Python sidecar's /novels/search endpoint.
+func (h *Handler) SearchReferenceNovels(c *gin.Context) {
+	var body struct {
+		Keyword string   `json:"keyword" binding:"required"`
+		Sites   []string `json:"sites"`
+		Limit   int      `json:"limit"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Limit <= 0 {
+		body.Limit = 20
+	}
+
+	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
+	if sidecarURL == "" {
+		sidecarURL = "http://localhost:8081"
+	}
+
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"keyword": body.Keyword,
+		"sites":   body.Sites,
+		"limit":   body.Limit,
+	})
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, sidecarURL+"/novels/search", bytes.NewReader(reqBody))
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to build request"})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := analyzeHTTPClient.Do(httpReq)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "search service unavailable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	c.Data(resp.StatusCode, "application/json", raw)
+}
+
+// GetReferenceBookInfo proxies to /novels/book-info on the Python sidecar.
+func (h *Handler) GetReferenceBookInfo(c *gin.Context) {
+	var body struct {
+		Site   string `json:"site" binding:"required"`
+		BookID string `json:"book_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
+	if sidecarURL == "" {
+		sidecarURL = "http://localhost:8081"
+	}
+
+	reqBody, _ := json.Marshal(body)
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, sidecarURL+"/novels/book-info", bytes.NewReader(reqBody))
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to build request"})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := analyzeHTTPClient.Do(httpReq)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "book info service unavailable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	c.Data(resp.StatusCode, "application/json", raw)
+}
+
+// FetchImportReference streams chapter download progress from the sidecar and,
+// on the final "done" event, creates a reference_materials DB record.
+var fetchImportHTTPClient = &http.Client{Timeout: 600 * time.Second}
+
+func (h *Handler) FetchImportReference(c *gin.Context) {
+	projectID := c.Param("id")
+	var body struct {
+		Site       string   `json:"site" binding:"required"`
+		BookID     string   `json:"book_id" binding:"required"`
+		Title      string   `json:"title"`
+		Author     string   `json:"author"`
+		Genre      string   `json:"genre"`
+		ChapterIDs []string `json:"chapter_ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
+	if sidecarURL == "" {
+		sidecarURL = "http://localhost:8081"
+	}
+
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"site":        body.Site,
+		"book_id":     body.BookID,
+		"title":       body.Title,
+		"author":      body.Author,
+		"chapter_ids": body.ChapterIDs,
+	})
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, sidecarURL+"/novels/fetch-import", bytes.NewReader(reqBody))
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to build sidecar request"})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := fetchImportHTTPClient.Do(httpReq)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "sidecar unavailable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		errBody, _ := io.ReadAll(resp.Body)
+		c.JSON(502, gin.H{"error": string(errBody)})
+		return
+	}
+
+	c.Header("Content-Type", "application/x-ndjson")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+
+	flusher, canFlush := c.Writer.(http.Flusher)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		// Inspect the "done" event to create reference_materials record.
+		var event map[string]interface{}
+		if json.Unmarshal([]byte(line), &event) == nil {
+			if evType, _ := event["type"].(string); evType == "done" {
+				if filePath, _ := event["file_path"].(string); filePath != "" {
+					ref, err := h.references.Create(c.Request.Context(), projectID,
+						body.Title, body.Author, body.Genre, filePath, "")
+					if err == nil {
+						event["ref_id"] = ref.ID
+					}
+				}
+				augmented, _ := json.Marshal(event)
+				fmt.Fprintf(c.Writer, "%s\n", augmented)
+				if canFlush {
+					flusher.Flush()
+				}
+				continue
+			}
+		}
+		fmt.Fprintf(c.Writer, "%s\n", line)
+		if canFlush {
+			flusher.Flush()
+		}
+	}
 }
 
 func (h *Handler) UpdateMigrationConfig(c *gin.Context) {

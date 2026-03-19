@@ -166,9 +166,97 @@ export const referenceApi = {
     api.post(`/projects/${projectId}/references/upload`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
+  importFromURL: (projectId: string, data: { url: string; title: string; author: string; genre: string }) =>
+    api.post(`/projects/${projectId}/references/import-url`, data),
+  searchNovels: (projectId: string, keyword: string, sites?: string[] | null, limit = 20) =>
+    api.post(`/projects/${projectId}/references/search`, { keyword, sites: sites ?? null, limit }),
+  getBookInfo: (projectId: string, site: string, bookId: string) =>
+    api.post(`/projects/${projectId}/references/book-info`, { site, book_id: bookId }),
   updateMigrationConfig: (id: string, config: any) =>
     api.put(`/references/${id}/migration-config`, config),
   analyze: (id: string) => api.post(`/references/${id}/analyze`),
+  delete: (id: string) => api.delete(`/references/${id}`),
+}
+
+export interface NovelSearchResult {
+  site: string
+  book_id: string
+  book_url: string
+  cover_url: string
+  title: string
+  author: string
+  latest_chapter: string
+  update_date: string
+  word_count: string
+}
+
+export interface FetchChapterInfo {
+  chapter_id: string
+  title: string
+  accessible: boolean
+}
+
+export interface FetchVolumeInfo {
+  volume_name: string
+  chapters: FetchChapterInfo[]
+}
+
+export interface FetchBookInfo {
+  site: string
+  book_id: string
+  title: string
+  author: string
+  summary: string
+  cover_url: string
+  volumes: FetchVolumeInfo[]
+  total_chapters: number
+}
+
+export type FetchImportEvent =
+  | { type: 'progress'; done: number; total: number; chapter_title: string }
+  | { type: 'done'; file_path: string; total_chapters: number; skipped_chapters: number; ref_id?: string }
+  | { type: 'error'; message: string }
+
+export async function* streamFetchImport(
+  projectId: string,
+  data: {
+    site: string
+    book_id: string
+    title: string
+    author: string
+    genre: string
+    chapter_ids: string[]
+  },
+): AsyncGenerator<FetchImportEvent> {
+  const resp = await fetch(`/api/projects/${projectId}/references/fetch-import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(text || `HTTP ${resp.status}`)
+  }
+  const reader = resp.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (trimmed) {
+        try {
+          yield JSON.parse(trimmed) as FetchImportEvent
+        } catch {
+          // ignore malformed lines
+        }
+      }
+    }
+  }
 }
 
 // Agent Review
