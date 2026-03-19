@@ -71,12 +71,13 @@ COPY --from=neo4j-source /var/lib/neo4j ${NEO4J_HOME}
 # Neo4j needs its bin dir on PATH
 ENV PATH="${NEO4J_HOME}/bin:${PATH}"
 
-# Create neo4j user and fix permissions
+# Create neo4j user and fix permissions.
+# The neo4j source image ships data/logs/import as symlinks that would
+# break mkdir-p; remove them unconditionally and recreate as real dirs.
 RUN if ! getent group neo4j >/dev/null; then groupadd -r neo4j; fi \
     && if ! id -u neo4j >/dev/null 2>&1; then useradd -r -g neo4j -d ${NEO4J_HOME} neo4j; fi \
-    && if [ -e ${NEO4J_HOME}/data ] && [ ! -d ${NEO4J_HOME}/data ] && [ ! -L ${NEO4J_HOME}/data ]; then rm -f ${NEO4J_HOME}/data; fi \
-    && if [ -e ${NEO4J_HOME}/logs ] && [ ! -d ${NEO4J_HOME}/logs ] && [ ! -L ${NEO4J_HOME}/logs ]; then rm -f ${NEO4J_HOME}/logs; fi \
-    && mkdir -p ${NEO4J_HOME}/run \
+    && rm -rf ${NEO4J_HOME}/data ${NEO4J_HOME}/logs ${NEO4J_HOME}/run ${NEO4J_HOME}/import \
+    && mkdir -p ${NEO4J_HOME}/data ${NEO4J_HOME}/logs ${NEO4J_HOME}/run ${NEO4J_HOME}/import \
     && chown -R neo4j:neo4j ${NEO4J_HOME}
 
 # ---- Qdrant (copy binary + config) ----

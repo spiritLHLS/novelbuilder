@@ -17,13 +17,14 @@ export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
 export NEO4J_USER="${NEO4J_USER:-neo4j}"
 export NEO4J_PASSWORD="${NEO4J_PASSWORD:-novelbuilder}"
 
-# Ensure runtime directories are writable even when volumes are reused.
+# Ensure Neo4j runtime directories exist as real directories.
+# Symlinks (or files) from the image layer are removed first so mkdir never fails.
 for d in "${NEO4J_HOME}/data" "${NEO4J_HOME}/logs" "${NEO4J_HOME}/run" "${NEO4J_HOME}/import"; do
-    if [ -e "$d" ] && [ ! -d "$d" ] && [ ! -L "$d" ]; then
-        rm -f "$d"
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+        rm -rf "$d"
     fi
+    mkdir -p "$d"
 done
-mkdir -p "${NEO4J_HOME}/data" "${NEO4J_HOME}/logs" "${NEO4J_HOME}/run" "${NEO4J_HOME}/import"
 chown -R neo4j:neo4j "${NEO4J_HOME}/data" "${NEO4J_HOME}/logs" "${NEO4J_HOME}/run" "${NEO4J_HOME}/import" 2>/dev/null || true
 
 # ── PostgreSQL init ──────────────────────────────────────
