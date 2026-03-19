@@ -61,6 +61,7 @@
           <el-select v-model="form.genre" placeholder="选择类型">
             <el-option label="玄幻" value="玄幻" />
             <el-option label="仙侠" value="仙侠" />
+            <el-option label="西幻" value="西幻" />
             <el-option label="都市" value="都市" />
             <el-option label="科幻" value="科幻" />
             <el-option label="历史" value="历史" />
@@ -182,7 +183,7 @@ function formatDate(d: string) {
 
 function genreTagType(genre: string) {
   const map: Record<string, string> = {
-    '玄幻': '', '仙侠': 'success', '都市': 'info',
+    '玄幻': '', '仙侠': 'success', '西幻': 'warning', '都市': 'info',
     '科幻': 'warning', '悬疑': 'danger',
   }
   return (map[genre] || '') as any

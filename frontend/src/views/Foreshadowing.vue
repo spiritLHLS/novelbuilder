@@ -23,8 +23,8 @@
         <el-card shadow="hover" class="fs-card" :class="f.status">
           <div class="fs-header">
             <h3>{{ f.title }}</h3>
-            <el-dropdown @command="(cmd: string) => handleCommand(cmd, f)">
-              <el-icon><MoreFilled /></el-icon>
+            <el-dropdown trigger="click" @command="(cmd: string) => handleCommand(cmd, f)">
+              <el-icon @click.stop><MoreFilled /></el-icon>
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item v-if="f.status === 'planted'" command="triggered">标为触发</el-dropdown-item>

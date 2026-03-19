@@ -23,7 +23,7 @@
           <label class="block text-sm font-medium text-gray-700 mb-1">体裁 (可选)</label>
           <input v-model="genre" type="text"
             class="w-full border rounded p-2 text-sm"
-            placeholder="e.g. 都市修真、玄幻、历史" />
+            placeholder="e.g. 都市修真、玄幻、西幻、历史" />
         </div>
         <button @click="generate" :disabled="running || !briefText.trim()"
           class="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">

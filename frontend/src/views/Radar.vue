@@ -149,7 +149,7 @@ const error = ref('')
 
 const scanForm = ref({ genre: '', platform: '', focus: '' })
 
-const genreList = ['玄幻', '仙侠', '都市', '科幻', '历史', '游戏', '武侠', '军事', '悬疑', '言情', '耽美', '同人']
+const genreList = ['玄幻', '仙侠', '西幻', '都市', '科幻', '历史', '游戏', '武侠', '军事', '悬疑', '言情', '耽美', '同人']
 const platforms = ['起点中文网', '晋江文学城', '番茄小说', '七猫小说', 'Webnovel']
 const focusList = ['趋势分析', '读者痛点', '竞品分析', '文风建议', '节奏把控']
 

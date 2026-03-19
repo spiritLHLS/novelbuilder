@@ -306,7 +306,7 @@ import VChart from 'vue-echarts'
 const route = useRoute()
 const projectId = route.params.projectId as string
 
-const genres = ['玄幻', '修真', '都市', '历史', '科幻', '悬疑', '武侠', '其他']
+const genres = ['玄幻', '修真', '西幻', '都市', '历史', '科幻', '悬疑', '武侠', '其他']
 
 // ─── reference list ───────────────────────────────────────────────────────────
 const loading = ref(false)
