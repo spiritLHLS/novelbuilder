@@ -23,16 +23,11 @@
         <el-card shadow="hover" class="fs-card" :class="f.status">
           <div class="fs-header">
             <h3>{{ f.title }}</h3>
-            <el-dropdown trigger="click" @command="(cmd: string) => handleCommand(cmd, f)">
-              <el-icon @click.stop><MoreFilled /></el-icon>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item v-if="f.status === 'planted'" command="triggered">标为触发</el-dropdown-item>
-                  <el-dropdown-item v-if="f.status === 'triggered'" command="resolved">标为回收</el-dropdown-item>
-                  <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <div class="fs-actions">
+              <el-button v-if="f.status === 'planted'" size="small" @click="handleCommand('triggered', f)">标为触发</el-button>
+              <el-button v-if="f.status === 'triggered'" size="small" @click="handleCommand('resolved', f)">标为回收</el-button>
+              <el-button size="small" type="danger" plain @click="handleCommand('delete', f)">删除</el-button>
+            </div>
           </div>
 
           <el-tag :type="statusTagType(f.status)" size="small">{{ statusLabel(f.status) }}</el-tag>
@@ -232,8 +227,9 @@ async function handleCommand(cmd: string, f: any) {
 .fs-card.planted { border-left: 3px solid #409eff; }
 .fs-card.triggered { border-left: 3px solid #e6a23c; }
 .fs-card.resolved { border-left: 3px solid #67c23a; }
-.fs-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
-.fs-header h3 { font-size: 16px; color: var(--nb-text-primary); margin: 0; }
+.fs-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; gap: 8px; }
+.fs-header h3 { font-size: 16px; color: var(--nb-text-primary); margin: 0; flex: 1; }
+.fs-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .fs-desc { color: var(--nb-text-secondary); margin: 12px 0; line-height: 1.6; font-size: 14px; }
 .fs-meta { font-size: 13px; color: #888; }
 .meta-label { color: #666; }

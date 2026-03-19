@@ -14,17 +14,10 @@
           <template #header>
             <div class="card-header">
               <span class="title">{{ project.title }}</span>
-              <el-dropdown trigger="click">
-                <el-icon class="more-btn" @click.stop><MoreFilled /></el-icon>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item @click="editProject(project)">编辑</el-dropdown-item>
-                    <el-dropdown-item @click="confirmDelete(project)" divided>
-                      <span style="color: #f56c6c">删除</span>
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
+              <div class="card-actions">
+                <el-button size="small" @click.stop="editProject(project)">编辑</el-button>
+                <el-button size="small" type="danger" plain @click.stop="confirmDelete(project)">删除</el-button>
+              </div>
             </div>
           </template>
           <div class="card-body">
@@ -247,9 +240,9 @@ function statusLabel(status: string) {
   color: var(--nb-text-primary);
 }
 
-.more-btn {
-  cursor: pointer;
-  color: #999;
+.card-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .target-words {
