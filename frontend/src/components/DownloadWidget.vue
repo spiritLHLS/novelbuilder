@@ -74,7 +74,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { Loading, Check, Delete, ArrowUp, ArrowDown } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useDownloadStore } from '@/stores/download'
@@ -86,6 +86,32 @@ const isCollapsed = ref(false)
 
 // Show widget whenever there is at least one task (including completed/failed)
 const showWidget = computed(() => store.allTasks.length > 0)
+
+let autoCloseTimer: ReturnType<typeof setTimeout> | null = null
+
+// When all active downloads finish, auto-clear completed tasks after 5s
+// Failed tasks are left visible for user to retry/dismiss manually
+watch(() => store.hasActive, (isActive) => {
+  if (!isActive && store.allTasks.length > 0) {
+    autoCloseTimer = setTimeout(() => {
+      for (const task of [...store.allTasks]) {
+        if (task.fetchStatus === 'completed') {
+          store.removeTask(task.refId)
+        }
+      }
+      autoCloseTimer = null
+    }, 5000)
+  } else if (isActive && autoCloseTimer !== null) {
+    clearTimeout(autoCloseTimer)
+    autoCloseTimer = null
+  }
+})
+
+onBeforeUnmount(() => {
+  if (autoCloseTimer !== null) {
+    clearTimeout(autoCloseTimer)
+  }
+})
 
 function toggle() {
   isCollapsed.value = !isCollapsed.value

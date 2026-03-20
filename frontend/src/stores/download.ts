@@ -104,7 +104,18 @@ export const useDownloadStore = defineStore('download', () => {
         // GET /references/:id returns { data: ref }, so unwrap one level
         const ref: any = res.data?.data ?? res.data
         updateFromRef(ref)
-      } catch { /* silently ignore transient errors */ }
+      } catch (e: any) {
+        // If the resource is gone (e.g. after redeployment), mark as failed
+        if (e?.response?.status === 404) {
+          tasks.value[task.refId] = {
+            ...tasks.value[task.refId],
+            fetchStatus: 'failed',
+            fetchError: '资源不存在，可能已被删除',
+          }
+          savePersisted(tasks.value)
+        }
+        // Other transient errors: silently ignore and retry next cycle
+      }
     }
   }
 

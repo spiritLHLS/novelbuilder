@@ -87,7 +87,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProjectStore, type Project } from '@/stores/project'
@@ -106,8 +106,19 @@ const form = ref({
   style_description: '',
 })
 
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    projectStore.fetchProjects()
+  }
+}
+
 onMounted(() => {
   projectStore.fetchProjects()
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 function enterProject(project: Project) {

@@ -32,6 +32,10 @@ export const useProjectStore = defineStore('project', () => {
     try {
       const res = await projectApi.list()
       projects.value = res.data.data || []
+      // Clear stale currentProjectId if its project no longer exists
+      if (currentProjectId.value && !projects.value.find((p) => p.id === currentProjectId.value)) {
+        currentProjectId.value = null
+      }
     } finally {
       loading.value = false
     }
