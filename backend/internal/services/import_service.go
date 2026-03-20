@@ -146,15 +146,17 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 
 	var apiKey, model, baseURL, provider *string
 	var rpmLimit *int
+	var omitMaxTokens, omitTemperature *bool
+	var apiStyle *string
 	if profileID != nil {
-		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url, provider, rpm_limit FROM llm_profiles WHERE id = $1`, profileID).
-			Scan(&apiKey, &model, &baseURL, &provider, &rpmLimit)
+		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url, provider, rpm_limit, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE id = $1`, profileID).
+			Scan(&apiKey, &model, &baseURL, &provider, &rpmLimit, &omitMaxTokens, &omitTemperature, &apiStyle)
 	}
 	if apiKey == nil {
 		// Fall back to default profile
 		err2 := s.db.QueryRow(ctx,
-			`SELECT api_key, model_name, base_url, provider, rpm_limit FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
-		).Scan(&apiKey, &model, &baseURL, &provider, &rpmLimit)
+			`SELECT api_key, model_name, base_url, provider, rpm_limit, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
+		).Scan(&apiKey, &model, &baseURL, &provider, &rpmLimit, &omitMaxTokens, &omitTemperature, &apiStyle)
 		if err2 != nil {
 			return nil, nil // No profile at all; caller handles
 		}
@@ -180,6 +182,15 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 	}
 	if rpmLimit != nil {
 		cfg["rpm_limit"] = *rpmLimit
+	}
+	if omitMaxTokens != nil {
+		cfg["omit_max_tokens"] = *omitMaxTokens
+	}
+	if omitTemperature != nil {
+		cfg["omit_temperature"] = *omitTemperature
+	}
+	if apiStyle != nil {
+		cfg["api_style"] = *apiStyle
 	}
 	return cfg, nil
 }

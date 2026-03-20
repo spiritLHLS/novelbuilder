@@ -50,6 +50,9 @@ class LLMConfig(BaseModel):
     max_tokens: int = 4096
     temperature: float = 0.4   # lower for extraction tasks
     rpm_limit: int = 0         # 0 = unlimited
+    omit_max_tokens: bool = False   # skip max_tokens field (some providers reject it)
+    omit_temperature: bool = False  # skip temperature field
+    api_style: str = "chat_completions"  # or "responses" (OpenAI Responses API)
 
 class ChunkAnalyzeRequest(BaseModel):
     job_id: str
@@ -107,10 +110,12 @@ async def _rate_limit(cfg: LLMConfig) -> None:
 
 async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dict:
     """
-    Call an OpenAI-compatible chat completion endpoint and return parsed JSON.
+    Call an OpenAI-compatible endpoint and return parsed JSON.
+    Supports two API styles:
+      - "chat_completions": POST {base_url}/chat/completions  (default)
+      - "responses":        POST {base_url}/responses          (OpenAI Responses API)
     Retries up to max_retries times with exponential back-off on transient errors
-    (429, 500, 502, 503, 504).  Returns {} on exhaustion so callers can continue
-    with an empty result rather than failing the whole job.
+    (429, 500, 502, 503, 504).  Returns {} on exhaustion.
     """
     api_key = cfg.api_key or os.getenv("OPENAI_API_KEY", "")
     if not api_key:
@@ -118,29 +123,57 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dic
         return {}
     base_url = cfg.base_url.rstrip("/")
     # Normalize: strip trailing /chat/completions that some provider UIs include in the URL.
-    # Without this, the constructed URL becomes /v1/chat/completions/chat/completions (404).
     base_url = re.sub(r"/chat/completions$", "", base_url, flags=re.IGNORECASE)
+    # Also strip /responses for the responses style.
+    base_url = re.sub(r"/responses$", "", base_url, flags=re.IGNORECASE)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": cfg.model,
-        "messages": [
-            {"role": "system", "content": "你是一位专业的中文小说分析专家，擅长提取人物、世界观和情节大纲。"},
-            {"role": "user", "content": prompt},
-        ],
-        "max_tokens": cfg.max_tokens,
-        "temperature": cfg.temperature,
-    }
+
+    system_msg = "你是一位专业的中文小说分析专家，擅长提取人物、世界观和情节大纲。"
+    use_responses_api = cfg.api_style == "responses"
+
+    if use_responses_api:
+        # OpenAI Responses API format: POST /responses
+        endpoint = f"{base_url}/responses"
+        payload: dict = {
+            "model": cfg.model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_msg}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                },
+            ],
+            "store": False,
+        }
+        if not cfg.omit_max_tokens:
+            payload["max_output_tokens"] = cfg.max_tokens
+    else:
+        # Standard chat/completions format
+        endpoint = f"{base_url}/chat/completions"
+        payload = {
+            "model": cfg.model,
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt},
+            ],
+        }
+        if not cfg.omit_max_tokens:
+            payload["max_tokens"] = cfg.max_tokens
+        if not cfg.omit_temperature:
+            payload["temperature"] = cfg.temperature
 
     delay = 2.0
     async with httpx.AsyncClient(timeout=120.0) as client:
         for attempt in range(1, max_retries + 1):
             try:
                 await _rate_limit(cfg)
-                resp = await client.post(f"{base_url}/chat/completions",
-                                         headers=headers, json=payload)
+                resp = await client.post(endpoint, headers=headers, json=payload)
                 if resp.status_code in (429, 500, 502, 503, 504):
                     try:
                         body_snippet = resp.text[:400]
@@ -160,13 +193,18 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dic
                         body_snippet = "<unreadable>"
                     label = {400: "Bad Request (check model name)", 401: "Unauthorized (invalid API key)", 403: "Forbidden (API key rejected by gateway)"}
                     logger.error(
-                        "LLM HTTP %d %s — will not retry | body: %s",
+                        "LLM HTTP %d %s \u2014 will not retry | body: %s",
                         resp.status_code, label.get(resp.status_code, ""), body_snippet,
                     )
                     break
                 resp.raise_for_status()
                 data = resp.json()
-                raw = data["choices"][0]["message"]["content"]
+                # Extract text from response depending on API style
+                if use_responses_api:
+                    # Responses API: data["output"][0]["content"][0]["text"]
+                    raw = data["output"][0]["content"][0]["text"]
+                else:
+                    raw = data["choices"][0]["message"]["content"]
                 return _parse_json(raw)
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 logger.warning(
@@ -332,6 +370,9 @@ async def merge_chunks(req: MergeRequest):
             max_tokens=req.llm_config.max_tokens,
             temperature=0.3,  # lower for merge/dedup task
             rpm_limit=req.llm_config.rpm_limit,
+            omit_max_tokens=req.llm_config.omit_max_tokens,
+            omit_temperature=req.llm_config.omit_temperature,
+            api_style=req.llm_config.api_style,
         )
     else:
         cfg = LLMConfig(

@@ -115,6 +115,18 @@
           <el-input-number v-model="form.rpm_limit" :min="0" :max="1000" :step="5" style="width:100%" />
           <div class="hint" style="margin-top:4px">每分钟最大请求数，0 表示不限制（适用于受并发上限的中转站）</div>
         </el-form-item>
+        <el-form-item label="API 调用格式">
+          <el-select v-model="form.api_style" style="width:100%">
+            <el-option label="标准 Chat Completions（默认）" value="chat_completions" />
+            <el-option label="OpenAI Responses API（/v1/responses）" value="responses" />
+          </el-select>
+          <div class="hint" style="margin-top:4px">Codex 等模型使用 Responses API 格式</div>
+        </el-form-item>
+        <el-form-item label="省略参数">
+          <el-checkbox v-model="form.omit_max_tokens">不传入 max_tokens</el-checkbox>
+          <el-checkbox v-model="form.omit_temperature" style="margin-left:16px">不传入 temperature</el-checkbox>
+          <div class="hint" style="margin-top:4px">部分提供商不接受这些参数，勾选后跳过</div>
+        </el-form-item>
         <el-form-item label="设为默认">
           <el-switch v-model="form.is_default" />
           <span class="hint">默认模型用于所有 AI 任务</span>
@@ -146,6 +158,9 @@ interface LLMProfile {
   max_tokens: number
   temperature: number
   rpm_limit: number
+  omit_max_tokens: boolean
+  omit_temperature: boolean
+  api_style: string
   is_default: boolean
   has_api_key: boolean
   masked_api_key: string
@@ -167,6 +182,9 @@ const defaultForm = () => ({
   max_tokens: 8192,
   temperature: 0.7,
   rpm_limit: 0,
+  omit_max_tokens: false,
+  omit_temperature: false,
+  api_style: 'chat_completions',
   is_default: false,
 })
 
@@ -205,6 +223,9 @@ function editProfile(profile: LLMProfile) {
     max_tokens: profile.max_tokens,
     temperature: profile.temperature,
     rpm_limit: profile.rpm_limit,
+    omit_max_tokens: profile.omit_max_tokens,
+    omit_temperature: profile.omit_temperature,
+    api_style: profile.api_style || 'chat_completions',
     is_default: profile.is_default,
   })
   showCreateDialog.value = true
