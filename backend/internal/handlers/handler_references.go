@@ -755,3 +755,89 @@ func (h *Handler) GetRAGStatus(c *gin.Context) {
 		"total_chunks": total,
 	})
 }
+
+// ── Deep (chunked, background) analysis handlers ──────────────────────────────
+
+// StartDeepAnalysis enqueues a chunked background analysis job for a reference novel.
+// Response is 202 Accepted with job details; poll GetDeepAnalysisJob for progress.
+func (h *Handler) StartDeepAnalysis(c *gin.Context) {
+	refID := c.Param("id")
+	ref, err := h.references.Get(c.Request.Context(), refID)
+	if err != nil || ref == nil {
+		c.JSON(404, gin.H{"error": "reference not found"})
+		return
+	}
+	if h.deepAnalysis == nil {
+		c.JSON(503, gin.H{"error": "deep analysis service not configured"})
+		return
+	}
+	job, err := h.deepAnalysis.StartDeepAnalysis(c.Request.Context(), refID, ref.ProjectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(202, gin.H{"data": job})
+}
+
+// GetDeepAnalysisJob returns the progress/result of a deep analysis job by ref_id.
+func (h *Handler) GetDeepAnalysisJob(c *gin.Context) {
+	refID := c.Param("id")
+	if h.deepAnalysis == nil {
+		c.JSON(200, gin.H{"data": nil})
+		return
+	}
+	job, err := h.deepAnalysis.GetJobByRef(c.Request.Context(), refID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": job})
+}
+
+// CancelDeepAnalysisJob cancels a pending or running deep analysis job.
+func (h *Handler) CancelDeepAnalysisJob(c *gin.Context) {
+	refID := c.Param("id")
+	if h.deepAnalysis == nil {
+		c.JSON(503, gin.H{"error": "deep analysis service not configured"})
+		return
+	}
+	job, err := h.deepAnalysis.GetJobByRef(c.Request.Context(), refID)
+	if err != nil || job == nil {
+		c.JSON(404, gin.H{"error": "no analysis job found for this reference"})
+		return
+	}
+	if err := h.deepAnalysis.CancelJob(c.Request.Context(), job.ID); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "cancelled", "job_id": job.ID})
+}
+
+// ImportDeepAnalysisResult imports the extracted entities from a completed deep analysis job
+// into the current project's world_bibles, characters, and outlines tables.
+func (h *Handler) ImportDeepAnalysisResult(c *gin.Context) {
+	refID := c.Param("id")
+	ref, err := h.references.Get(c.Request.Context(), refID)
+	if err != nil || ref == nil {
+		c.JSON(404, gin.H{"error": "reference not found"})
+		return
+	}
+	if h.deepAnalysis == nil {
+		c.JSON(503, gin.H{"error": "deep analysis service not configured"})
+		return
+	}
+	job, err := h.deepAnalysis.GetJobByRef(c.Request.Context(), refID)
+	if err != nil || job == nil {
+		c.JSON(404, gin.H{"error": "no analysis job found for this reference"})
+		return
+	}
+	if job.Status != "completed" {
+		c.JSON(400, gin.H{"error": "analysis is not completed yet", "status": job.Status})
+		return
+	}
+	if err := h.deepAnalysis.ImportResult(c.Request.Context(), job.ID, ref.ProjectID); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "imported", "job_id": job.ID, "project_id": ref.ProjectID})
+}

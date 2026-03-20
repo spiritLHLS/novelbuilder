@@ -194,6 +194,11 @@ export const referenceApi = {
     api.post(`/projects/${projectId}/references/import-local`, bundle),
   // Resume a failed/interrupted download
   resumeDownload: (refId: string) => api.post(`/references/${refId}/resume-download`),
+  // Deep analysis (chunked, background)
+  startDeepAnalysis: (id: string) => api.post(`/references/${id}/deep-analyze`),
+  getDeepAnalysisJob: (id: string) => api.get(`/references/${id}/deep-analyze/job`),
+  cancelDeepAnalysis: (id: string) => api.post(`/references/${id}/deep-analyze/cancel`),
+  importDeepAnalysisResult: (id: string) => api.post(`/references/${id}/deep-analyze/import`),
 }
 
 export interface ReferenceChapter {

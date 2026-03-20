@@ -71,12 +71,13 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="330" fixed="right">
+      <el-table-column label="操作" width="420" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openChaptersDialog(row)">章节管理</el-button>
           <el-button size="small" @click="viewAnalysis(row)">查看分析</el-button>
           <el-button size="small" type="primary" @click="startAnalysis(row.id)"
             :loading="analyzing === row.id">分析</el-button>
+          <el-button size="small" type="primary" plain @click="openDeepAnalysisDialog(row)">深度分析</el-button>
           <el-button size="small" type="success" @click="exportSingle(row)"
             :loading="exporting === row.id">导出</el-button>
           <el-button size="small" type="warning" @click="showMigration(row)">迁移</el-button>
@@ -362,6 +363,70 @@
       </template>
     </el-dialog>
 
+    <!-- ── Deep Analysis Dialog ─────────────────────────────────────────── -->
+    <el-dialog
+      v-model="showDeepAnalysisDialog"
+      title="深度分析（提取人物 / 世界观 / 大纲）"
+      width="540px"
+      @closed="stopDeepAnalysisPoll"
+    >
+      <div v-if="deepAnalysisDialogLoading" class="loading-block">
+        <el-icon class="is-loading"><Loading /></el-icon> 正在查询分析状态…
+      </div>
+      <template v-else>
+        <div v-if="deepAnalysisJob" class="deep-analysis-status">
+          <div class="da-header">
+            <span class="da-title">{{ deepAnalysisRef?.title }}</span>
+            <el-tag :type="daStatusType" size="small">{{ daStatusText }}</el-tag>
+          </div>
+          <template v-if="deepAnalysisJob.status === 'running' || deepAnalysisJob.status === 'pending'">
+            <el-progress
+              :percentage="deepAnalysisJob.total_chunks > 0
+                ? Math.round(deepAnalysisJob.done_chunks / deepAnalysisJob.total_chunks * 100)
+                : 0"
+              :stroke-width="10"
+              :format="() => `${deepAnalysisJob.done_chunks} / ${deepAnalysisJob.total_chunks} 块`"
+              style="margin: 16px 0"
+            />
+            <p class="da-hint">分析在后台运行中，可关闭此窗口稍后回看进度</p>
+          </template>
+          <el-alert v-else-if="deepAnalysisJob.status === 'failed'"
+            type="error" :title="deepAnalysisJob.error_message || '分析失败'" :closable="false"
+            style="margin-top:12px" show-icon />
+          <el-alert v-else-if="deepAnalysisJob.status === 'completed'"
+            type="success" title="深度分析完成，可将提取结果导入项目" :closable="false"
+            style="margin-top:12px" show-icon />
+          <el-alert v-else-if="deepAnalysisJob.status === 'cancelled'"
+            type="info" title="分析已取消" :closable="false"
+            style="margin-top:12px" />
+        </div>
+        <div v-else class="da-empty">
+          <p>点击「开始深度分析」将对整本参考书进行分块分析，自动提取人物设定、世界观和大纲，并导入当前项目。</p>
+          <p class="da-hint">大型小说（≥100万字）分析可能需要较长时间，任务在后台运行不影响其他操作。</p>
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="showDeepAnalysisDialog = false">关闭</el-button>
+        <el-button
+          v-if="!deepAnalysisJob || ['failed','cancelled'].includes(deepAnalysisJob.status)"
+          type="primary"
+          :loading="deepAnalysisStarting"
+          @click="doStartDeepAnalysis"
+        >开始深度分析</el-button>
+        <el-button
+          v-if="deepAnalysisJob?.status === 'pending' || deepAnalysisJob?.status === 'running'"
+          type="warning"
+          @click="cancelDeepAnalysis"
+        >取消分析</el-button>
+        <el-button
+          v-if="deepAnalysisJob?.status === 'completed'"
+          type="success"
+          :loading="deepAnalysisImporting"
+          @click="importDeepAnalysisResult"
+        ><el-icon><Download /></el-icon>导入到项目</el-button>
+      </template>
+    </el-dialog>
+
     <!-- ── Migration Config Dialog ────────────────────────────────────────── -->
     <el-dialog v-model="showMigrationDialog" title="氛围迁移配置" width="600px">
       <el-form :model="migrationForm" label-width="120px">
@@ -389,10 +454,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Upload, Link, Search, Loading, Lock, Delete, DocumentCopy } from '@element-plus/icons-vue'
+import { Upload, Link, Search, Loading, Lock, Delete, DocumentCopy, Download } from '@element-plus/icons-vue'
 import { referenceApi, streamSearchNovels } from '@/api'
 import type { NovelSearchResult, FetchBookInfo, FetchChapterInfo, ReferenceChapter } from '@/api'
 import VChart from 'vue-echarts'
@@ -423,6 +488,111 @@ const migrationForm = ref({
   layers: ['style', 'atmosphere'],
   forbidden: '',
 })
+
+// ─── deep analysis ────────────────────────────────────────────────────────────
+const showDeepAnalysisDialog = ref(false)
+const deepAnalysisRef = ref<any>(null)
+const deepAnalysisJob = ref<any>(null)
+const deepAnalysisDialogLoading = ref(false)
+const deepAnalysisStarting = ref(false)
+const deepAnalysisImporting = ref(false)
+let deepAnalysisPollTimer: ReturnType<typeof setInterval> | null = null
+
+const daStatusType = computed(() => {
+  const s = deepAnalysisJob.value?.status
+  if (s === 'completed') return 'success'
+  if (s === 'failed') return 'danger'
+  if (s === 'cancelled') return 'info'
+  return 'warning'
+})
+
+const daStatusText = computed(() => {
+  const map: Record<string, string> = {
+    pending: '等待中', running: '分析中', completed: '已完成', failed: '失败', cancelled: '已取消',
+  }
+  return map[deepAnalysisJob.value?.status] ?? deepAnalysisJob.value?.status ?? '—'
+})
+
+async function openDeepAnalysisDialog(refRow: any) {
+  deepAnalysisRef.value = refRow
+  deepAnalysisJob.value = null
+  deepAnalysisDialogLoading.value = true
+  showDeepAnalysisDialog.value = true
+  try {
+    const res = await referenceApi.getDeepAnalysisJob(refRow.id)
+    deepAnalysisJob.value = (res.data as any).data ?? null
+  } catch {
+    // no job yet — normal
+  } finally {
+    deepAnalysisDialogLoading.value = false
+  }
+  if (deepAnalysisJob.value?.status === 'pending' || deepAnalysisJob.value?.status === 'running') {
+    startDeepAnalysisPoll(refRow.id)
+  }
+}
+
+async function doStartDeepAnalysis() {
+  if (!deepAnalysisRef.value) return
+  deepAnalysisStarting.value = true
+  try {
+    const res = await referenceApi.startDeepAnalysis(deepAnalysisRef.value.id)
+    deepAnalysisJob.value = (res.data as any).data
+    startDeepAnalysisPoll(deepAnalysisRef.value.id)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '启动深度分析失败')
+  } finally {
+    deepAnalysisStarting.value = false
+  }
+}
+
+function startDeepAnalysisPoll(refId: string) {
+  stopDeepAnalysisPoll()
+  deepAnalysisPollTimer = setInterval(async () => {
+    try {
+      const res = await referenceApi.getDeepAnalysisJob(refId)
+      deepAnalysisJob.value = (res.data as any).data ?? deepAnalysisJob.value
+    } catch { /* ignore */ }
+    const status = deepAnalysisJob.value?.status
+    if (status !== 'pending' && status !== 'running') {
+      stopDeepAnalysisPoll()
+    }
+  }, 3000)
+}
+
+function stopDeepAnalysisPoll() {
+  if (deepAnalysisPollTimer) {
+    clearInterval(deepAnalysisPollTimer)
+    deepAnalysisPollTimer = null
+  }
+}
+
+async function cancelDeepAnalysis() {
+  if (!deepAnalysisRef.value) return
+  try {
+    await referenceApi.cancelDeepAnalysis(deepAnalysisRef.value.id)
+    if (deepAnalysisJob.value) deepAnalysisJob.value = { ...deepAnalysisJob.value, status: 'cancelled' }
+    stopDeepAnalysisPoll()
+    ElMessage.success('已取消')
+  } catch {
+    ElMessage.error('取消失败')
+  }
+}
+
+async function importDeepAnalysisResult() {
+  if (!deepAnalysisRef.value) return
+  deepAnalysisImporting.value = true
+  try {
+    await referenceApi.importDeepAnalysisResult(deepAnalysisRef.value.id)
+    ElMessage.success('已成功导入到项目（人物、世界观、大纲）')
+    showDeepAnalysisDialog.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '导入失败')
+  } finally {
+    deepAnalysisImporting.value = false
+  }
+}
+
+onUnmounted(stopDeepAnalysisPoll)
 
 // ─── chapter management ───────────────────────────────────────────────────────
 const showChaptersDialog = ref(false)
@@ -955,6 +1125,11 @@ async function deleteReference(id: string) {
 .json-view { background: var(--nb-table-header-bg); border: 1px solid var(--nb-card-border); padding: 16px; border-radius: 8px; font-size: 12px; color: var(--nb-text-secondary); max-height: 400px; overflow: auto; margin-top: 16px; }
 .chart-container { background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); border-radius: 8px; padding: 16px; }
 .form-hint { font-size: 12px; color: var(--nb-text-secondary); margin-top: 4px; }
+.deep-analysis-status { padding: 4px 0; }
+.da-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.da-title { font-size: 15px; font-weight: 500; color: #e0e0e0; }
+.da-hint { font-size: 12px; color: var(--nb-text-secondary); margin-top: 6px; }
+.da-empty p { margin: 8px 0; color: var(--nb-text-secondary); font-size: 13px; line-height: 1.6; }
 .source-url-info { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; font-size: 13px; color: var(--nb-text-secondary); }
 .source-url-info a { color: #409eff; word-break: break-all; }
 </style>

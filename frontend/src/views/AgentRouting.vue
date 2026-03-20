@@ -95,6 +95,7 @@ const agentTypes = [
   { value: 'reviser', label: '修改师 Reviser', icon: '✏️', desc: '章节修订与改进' },
   { value: 'radar', label: '雷达 Radar', icon: '📡', desc: '伏笔与连贯性检测' },
   { value: 'moderator', label: '主持人 Moderator', icon: '🎬', desc: '多轮审议协调' },
+  { value: 'reference_analyzer', label: '参考书分析器', icon: '📚', desc: '大型参考小说深度分析（人物/世界观/大纲提取）' },
 ]
 
 function getProfileModel(profileId: string): string {

@@ -104,6 +104,21 @@ func main() {
 	characterInteractionService := services.NewCharacterInteractionService(db, logger)
 	radarService := services.NewRadarService(db, aiGateway, logger)
 	genreTemplateService := services.NewGenreTemplateService(db, logger)
+
+	// ── Deep reference analysis service (chunked, background) ────────────────
+	// Must be created AFTER taskQueueService so it can register its handler.
+	deepAnalysisService := services.NewReferenceDeepAnalysisService(
+		db,
+		cfg.PythonSidecar.URL,
+		referenceService,
+		characterService,
+		outlineService,
+		worldBibleService,
+		taskQueueService,
+		agentRoutingService,
+		logger,
+	)
+
 	// Start background task worker pool
 	taskQueueService.Start()
 	defer taskQueueService.Stop()
@@ -199,6 +214,7 @@ func main() {
 		emotionalArcService,
 		characterInteractionService,
 		radarService,
+		deepAnalysisService,
 		logger,
 	)
 

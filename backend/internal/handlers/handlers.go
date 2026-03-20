@@ -44,6 +44,7 @@ type Handler struct {
 	emotionalArcs         *services.EmotionalArcService
 	characterInteractions *services.CharacterInteractionService
 	radar                 *services.RadarService
+	deepAnalysis          *services.ReferenceDeepAnalysisService
 	logger                *zap.Logger
 }
 
@@ -81,6 +82,7 @@ func NewHandler(
 	emotionalArcs *services.EmotionalArcService,
 	characterInteractions *services.CharacterInteractionService,
 	radar *services.RadarService,
+	deepAnalysis *services.ReferenceDeepAnalysisService,
 	logger *zap.Logger,
 ) *Handler {
 	return &Handler{
@@ -117,6 +119,7 @@ func NewHandler(
 		emotionalArcs:         emotionalArcs,
 		characterInteractions: characterInteractions,
 		radar:                 radar,
+		deepAnalysis:          deepAnalysis,
 		logger:                logger,
 	}
 }
@@ -189,6 +192,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/references/:id", h.GetReference)
 	api.PUT("/references/:id/migration-config", h.UpdateMigrationConfig)
 	api.POST("/references/:id/analyze", h.AnalyzeReference)
+	// Deep (chunked, background) analysis
+	api.POST("/references/:id/deep-analyze", h.StartDeepAnalysis)
+	api.GET("/references/:id/deep-analyze/job", h.GetDeepAnalysisJob)
+	api.POST("/references/:id/deep-analyze/cancel", h.CancelDeepAnalysisJob)
+	api.POST("/references/:id/deep-analyze/import", h.ImportDeepAnalysisResult)
 	api.DELETE("/references/:id", h.DeleteReference)
 	api.GET("/references/:id/export", h.ExportReferenceSingle)
 	api.POST("/references/:id/resume-download", h.ResumeReferenceDownload)

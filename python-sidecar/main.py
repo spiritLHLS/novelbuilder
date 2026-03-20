@@ -677,10 +677,12 @@ async def embed_text(req: EmbedRequest):
 from routes_analysis import router as analysis_router
 from routes_audit import router as audit_router
 from routes_novels import router as novels_router
+from routes_deep_analysis import router as deep_analysis_router
 
 app.include_router(analysis_router)
 app.include_router(audit_router)
 app.include_router(novels_router)
+app.include_router(deep_analysis_router)
 
 if __name__ == '__main__':
     import uvicorn
