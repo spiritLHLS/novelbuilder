@@ -224,6 +224,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// LLM Profiles (database-driven model configuration)
 	api.GET("/llm-profiles", h.ListLLMProfiles)
 	api.POST("/llm-profiles", h.CreateLLMProfile)
+	api.POST("/llm-profiles/test", h.TestLLMProfile)
 	api.GET("/llm-profiles/:id", h.GetLLMProfile)
 	api.PUT("/llm-profiles/:id", h.UpdateLLMProfile)
 	api.DELETE("/llm-profiles/:id", h.DeleteLLMProfile)

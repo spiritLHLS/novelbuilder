@@ -405,6 +405,15 @@ export const llmProfileApi = {
   update: (id: string, data: any) => api.put(`/llm-profiles/${id}`, data),
   delete: (id: string) => api.delete(`/llm-profiles/${id}`),
   setDefault: (id: string) => api.post(`/llm-profiles/${id}/set-default`),
+  /** Test connectivity with the given credentials (or a saved profile_id). */
+  test: (data: {
+    profile_id?: string
+    base_url?: string
+    api_key?: string
+    model_name?: string
+    api_style?: string
+    provider?: string
+  }) => api.post<{ ok: boolean; model?: string; duration_ms?: number; error?: string }>('/llm-profiles/test', data),
 }
 
 // RAG knowledge-base

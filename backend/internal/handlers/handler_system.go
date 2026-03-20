@@ -1,10 +1,16 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/models"
@@ -179,6 +185,207 @@ func (h *Handler) SetDefaultLLMProfile(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"data": profile})
+}
+
+// TestLLMProfile sends a minimal probe request to the provider to verify that the
+// supplied credentials and endpoint are reachable and return a valid response.
+// It accepts either an explicit api_key or falls back to looking up a saved
+// profile by profile_id so callers can test without revealing the key to the
+// frontend again.
+func (h *Handler) TestLLMProfile(c *gin.Context) {
+	var req struct {
+		ProfileID string  `json:"profile_id"` // optional: re-test a saved profile
+		BaseURL   string  `json:"base_url"`
+		APIKey    string  `json:"api_key"`
+		ModelName string  `json:"model_name"`
+		APIStyle  string  `json:"api_style"` // "chat_completions" | "responses" | "claude" | "gemini"
+		Provider  string  `json:"provider"`  // hint used to fill missing api_style
+		MaxTokens int     `json:"max_tokens"`
+		Temp      float64 `json:"temperature"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	// If a profile_id is given and no inline key is present, load from DB for the key.
+	if req.ProfileID != "" && req.APIKey == "" {
+		full, err := h.llmProfiles.GetFull(c.Request.Context(), req.ProfileID)
+		if err != nil || full == nil {
+			c.JSON(404, gin.H{"error": "profile not found"})
+			return
+		}
+		req.APIKey = full.APIKey
+		if req.BaseURL == "" {
+			req.BaseURL = full.BaseURL
+		}
+		if req.ModelName == "" {
+			req.ModelName = full.ModelName
+		}
+		if req.APIStyle == "" {
+			req.APIStyle = full.APIStyle
+		}
+		if req.Provider == "" {
+			req.Provider = full.Provider
+		}
+	}
+
+	if req.BaseURL == "" || req.APIKey == "" || req.ModelName == "" {
+		c.JSON(400, gin.H{"error": "base_url, api_key and model_name are required"})
+		return
+	}
+
+	// Infer api_style from provider when not explicitly set.
+	if req.APIStyle == "" {
+		switch req.Provider {
+		case "anthropic":
+			req.APIStyle = "claude"
+		case "gemini":
+			req.APIStyle = "gemini"
+		default:
+			req.APIStyle = "chat_completions"
+		}
+	}
+
+	baseURL := strings.TrimRight(req.BaseURL, "/")
+	start := time.Now()
+
+	var (
+		endpoint string
+		bodyMap  map[string]any
+	)
+
+	switch req.APIStyle {
+	case "responses":
+		// OpenAI Responses API: POST /v1/responses
+		endpoint = baseURL + "/responses"
+		bodyMap = map[string]any{
+			"model": req.ModelName,
+			"input": "Reply with the single word: ok",
+		}
+		if req.MaxTokens > 0 {
+			bodyMap["max_output_tokens"] = req.MaxTokens
+		}
+	case "claude":
+		// Anthropic Messages API: POST /v1/messages
+		endpoint = baseURL + "/messages"
+		bodyMap = map[string]any{
+			"model":      req.ModelName,
+			"max_tokens": 16,
+			"messages": []map[string]string{
+				{"role": "user", "content": "Reply with the single word: ok"},
+			},
+		}
+	case "gemini":
+		// Google Gemini REST API: POST /v1beta/models/{model}:generateContent
+		// Base URL is typically https://generativelanguage.googleapis.com
+		// Auth uses ?key= query param, not Authorization header.
+		endpoint = baseURL + "/models/" + req.ModelName + ":generateContent?key=" + req.APIKey
+		bodyMap = map[string]any{
+			"contents": []map[string]any{
+				{
+					"role":  "user",
+					"parts": []map[string]string{{"text": "Reply with the single word: ok"}},
+				},
+			},
+			"generationConfig": map[string]any{"maxOutputTokens": 16},
+		}
+	default: // chat_completions
+		// Standard OpenAI Chat Completions: POST /v1/chat/completions
+		endpoint = baseURL + "/chat/completions"
+		bodyMap = map[string]any{
+			"model":      req.ModelName,
+			"max_tokens": 16,
+			"messages": []map[string]string{
+				{"role": "user", "content": "Reply with the single word: ok"},
+			},
+		}
+	}
+
+	bodyBytes, _ := json.Marshal(bodyMap)
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		c.JSON(500, gin.H{"ok": false, "error": fmt.Sprintf("build request: %v", err)})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	// Gemini uses API key in query string; other providers use Bearer token.
+	if req.APIStyle != "gemini" {
+		httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
+	}
+	// Anthropic requires additional version header.
+	if req.APIStyle == "claude" {
+		httpReq.Header.Set("x-api-key", req.APIKey)
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
+		httpReq.Header.Del("Authorization") // Anthropic does not use Bearer
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		c.JSON(200, gin.H{"ok": false, "error": fmt.Sprintf("连接失败: %v", err), "duration_ms": time.Since(start).Milliseconds()})
+		return
+	}
+	defer resp.Body.Close()
+
+	rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	durationMs := time.Since(start).Milliseconds()
+
+	if resp.StatusCode >= 400 {
+		// Try to extract human-readable error across different provider response shapes.
+		var rawErr map[string]json.RawMessage
+		errMsg := fmt.Sprintf("HTTP %d", resp.StatusCode)
+		if json.Unmarshal(rawBody, &rawErr) == nil {
+			// OpenAI / compatible: {"error":{"message":"..."}}
+			if errField, ok := rawErr["error"]; ok {
+				var oaiErr struct {
+					Message string `json:"message"`
+				}
+				if json.Unmarshal(errField, &oaiErr) == nil && oaiErr.Message != "" {
+					errMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, oaiErr.Message)
+				}
+			}
+			// Gemini: {"error":{"message":"...","status":"..."}}
+			// (same shape as OpenAI, already handled above)
+			// Anthropic: {"type":"error","error":{"type":"...","message":"..."}}
+			if errMsg == fmt.Sprintf("HTTP %d", resp.StatusCode) {
+				if errField, ok := rawErr["error"]; ok {
+					var anthropicErr struct {
+						Message string `json:"message"`
+					}
+					if json.Unmarshal(errField, &anthropicErr) == nil && anthropicErr.Message != "" {
+						errMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, anthropicErr.Message)
+					}
+				}
+			}
+		}
+		c.JSON(200, gin.H{"ok": false, "error": errMsg, "duration_ms": durationMs})
+		return
+	}
+
+	// Extract model name from response — each provider uses a different field.
+	modelName := req.ModelName
+	switch req.APIStyle {
+	case "claude":
+		// Anthropic: {"model":"claude-...", ...}
+		var parsed struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(rawBody, &parsed) == nil && parsed.Model != "" {
+			modelName = parsed.Model
+		}
+	case "gemini":
+		// Gemini response does not echo back model name in body; use the requested name.
+	default:
+		var parsed struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(rawBody, &parsed) == nil && parsed.Model != "" {
+			modelName = parsed.Model
+		}
+	}
+
+	c.JSON(200, gin.H{"ok": true, "model": modelName, "duration_ms": durationMs})
 }
 
 // ── Prompt Presets ────────────────────────────────────────────────────────────

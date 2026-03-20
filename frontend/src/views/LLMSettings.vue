@@ -49,9 +49,10 @@
           <el-icon v-if="row.is_default" class="default-icon"><StarFilled /></el-icon>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right">
+      <el-table-column label="操作" width="240" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="editProfile(row)">编辑</el-button>
+          <el-button size="small" type="success" @click="testSavedProfile(row)" :loading="testingId === row.id">测试</el-button>
           <el-button
             size="small"
             type="warning"
@@ -71,28 +72,33 @@
     <el-dialog
       v-model="showCreateDialog"
       :title="editingProfile ? '编辑模型配置' : '添加模型配置'"
-      width="560px"
+      width="600px"
       destroy-on-close
     >
       <el-form
         ref="formRef"
         :model="form"
         :rules="rules"
-        label-width="110px"
+        label-width="120px"
         label-position="left"
       >
         <el-form-item label="配置名称" prop="name">
           <el-input v-model="form.name" placeholder="例如：我的 DeepSeek" />
         </el-form-item>
         <el-form-item label="提供商" prop="provider">
-          <el-select v-model="form.provider" placeholder="选择提供商" style="width:100%">
+          <el-select v-model="form.provider" placeholder="选择提供商" style="width:100%" @change="onProviderChange">
             <el-option label="OpenAI" value="openai" />
             <el-option label="OpenAI 兼容（DeepSeek / 本地等）" value="openai_compatible" />
             <el-option label="Anthropic Claude" value="anthropic" />
+            <el-option label="Google Gemini" value="gemini" />
           </el-select>
         </el-form-item>
         <el-form-item label="API Base URL" prop="base_url">
-          <el-input v-model="form.base_url" placeholder="例如：https://api.deepseek.com/v1" />
+          <el-input
+            v-model="form.base_url"
+            placeholder="例如：https://api.deepseek.com/v1"
+            @blur="autoDetect"
+          />
         </el-form-item>
         <el-form-item label="API Key" :prop="editingProfile ? '' : 'api_key'">
           <el-input
@@ -103,7 +109,11 @@
           />
         </el-form-item>
         <el-form-item label="模型名称" prop="model_name">
-          <el-input v-model="form.model_name" placeholder="例如：deepseek-chat" />
+          <el-input
+            v-model="form.model_name"
+            placeholder="例如：deepseek-chat"
+            @blur="autoDetect"
+          />
         </el-form-item>
         <el-form-item label="Max Tokens">
           <el-input-number v-model="form.max_tokens" :min="512" :max="131072" :step="1024" style="width:100%" />
@@ -117,10 +127,12 @@
         </el-form-item>
         <el-form-item label="API 调用格式">
           <el-select v-model="form.api_style" style="width:100%">
-            <el-option label="标准 Chat Completions（默认）" value="chat_completions" />
+            <el-option label="Chat Completions（/v1/chat/completions，默认）" value="chat_completions" />
             <el-option label="OpenAI Responses API（/v1/responses）" value="responses" />
+            <el-option label="Anthropic Messages API（/v1/messages）" value="claude" />
+            <el-option label="Google Gemini REST API（/v1beta/models/…）" value="gemini" />
           </el-select>
-          <div class="hint" style="margin-top:4px">Codex 等模型使用 Responses API 格式</div>
+          <div class="hint" style="margin-top:4px">填写 Base URL 或模型名后可自动识别；选择提供商也会自动切换</div>
         </el-form-item>
         <el-form-item label="省略参数">
           <el-checkbox v-model="form.omit_max_tokens">不传入 max_tokens</el-checkbox>
@@ -132,8 +144,26 @@
           <span class="hint">默认模型用于所有 AI 任务</span>
         </el-form-item>
       </el-form>
+
+      <!-- In-dialog test result -->
+      <el-alert
+        v-if="dialogTestResult"
+        :type="dialogTestResult.ok ? 'success' : 'error'"
+        :title="dialogTestResult.ok
+          ? `连接成功 · 模型: ${dialogTestResult.model} · 耗时 ${dialogTestResult.duration_ms} ms`
+          : `连接失败: ${dialogTestResult.error}`"
+        :closable="false"
+        style="margin-top:12px"
+        show-icon
+      />
+
       <template #footer>
         <el-button @click="cancelDialog">取消</el-button>
+        <el-button
+          type="info"
+          :loading="dialogTesting"
+          @click="testDialogForm"
+        >测试连接</el-button>
         <el-button type="primary" @click="submitForm" :loading="submitting">
           {{ editingProfile ? '保存' : '创建' }}
         </el-button>
@@ -166,12 +196,24 @@ interface LLMProfile {
   masked_api_key: string
 }
 
+interface TestResult {
+  ok: boolean
+  model?: string
+  duration_ms?: number
+  error?: string
+}
+
 const profiles = ref<LLMProfile[]>([])
 const loading = ref(false)
 const showCreateDialog = ref(false)
 const submitting = ref(false)
 const editingProfile = ref<LLMProfile | null>(null)
 const formRef = ref<FormInstance>()
+
+// Test state
+const testingId = ref<string | null>(null)
+const dialogTesting = ref(false)
+const dialogTestResult = ref<TestResult | null>(null)
 
 const defaultForm = () => ({
   name: '',
@@ -212,8 +254,133 @@ async function fetchProfiles() {
   }
 }
 
+// ── Auto-detection ────────────────────────────────────────────────────────────
+// Infer provider, api_style, and omit flags from well-known URL/model patterns.
+function autoDetect() {
+  const url = form.base_url.toLowerCase()
+  const model = form.model_name.toLowerCase()
+
+  // Provider detection from URL
+  if (url.includes('generativelanguage.googleapis.com') || url.includes('googleapis.com')) {
+    form.provider = 'gemini'
+  } else if (url.includes('openai.com')) {
+    form.provider = 'openai'
+  } else if (url.includes('anthropic.com')) {
+    form.provider = 'anthropic'
+  } else if (url.includes('deepseek.com')) {
+    form.provider = 'openai_compatible'
+  } else if (url.includes('localhost') || url.includes('127.0.0.1') || url.includes('ollama')) {
+    form.provider = 'openai_compatible'
+    form.omit_max_tokens = false
+    form.omit_temperature = false
+  }
+
+  // Derive api_style from resolved provider + model name
+  applyProviderDefaults(form.provider, model)
+}
+
+// Apply canonical defaults for a given provider (also called when provider dropdown changes).
+function applyProviderDefaults(provider: string, modelHint = '') {
+  switch (provider) {
+    case 'anthropic':
+      form.api_style = 'claude'
+      form.omit_max_tokens = false
+      form.omit_temperature = false
+      if (!form.base_url || form.base_url === 'https://api.openai.com/v1') {
+        form.base_url = 'https://api.anthropic.com/v1'
+      }
+      break
+    case 'gemini':
+      form.api_style = 'gemini'
+      form.omit_max_tokens = true  // Gemini uses generationConfig.maxOutputTokens, not max_tokens
+      form.omit_temperature = false
+      if (!form.base_url || form.base_url === 'https://api.openai.com/v1') {
+        form.base_url = 'https://generativelanguage.googleapis.com/v1beta'
+      }
+      break
+    case 'openai': {
+      // OpenAI o-series / codex → Responses API; others → Chat Completions
+      const responsesPatterns = [/^o\d/, /^codex/, /gpt-4o-realtime/, /gpt-4o-audio/]
+      if (responsesPatterns.some(p => p.test(modelHint))) {
+        form.api_style = 'responses'
+        form.omit_temperature = true
+      } else {
+        form.api_style = 'chat_completions'
+        form.omit_temperature = false
+      }
+      form.omit_max_tokens = false
+      break
+    }
+    default: // openai_compatible and fallback
+      form.api_style = 'chat_completions'
+      form.omit_max_tokens = false
+      form.omit_temperature = false
+  }
+}
+
+function onProviderChange(provider: string) {
+  applyProviderDefaults(provider, form.model_name.toLowerCase())
+}
+
+// ── Test helpers ──────────────────────────────────────────────────────────────
+async function testSavedProfile(profile: LLMProfile) {
+  testingId.value = profile.id
+  try {
+    const res = await llmProfileApi.test({ profile_id: profile.id })
+    const result: TestResult = res.data
+    if (result.ok) {
+      ElMessage.success(`连接成功 · 模型: ${result.model} · 耗时 ${result.duration_ms} ms`)
+    } else {
+      ElMessage.error(`连接失败: ${result.error}`)
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '测试请求失败')
+  } finally {
+    testingId.value = null
+  }
+}
+
+async function testDialogForm() {
+  // Base URL and model name are needed at minimum
+  if (!form.base_url || !form.model_name) {
+    ElMessage.warning('请先填写 API Base URL 和模型名称')
+    return
+  }
+
+  const apiKey = form.api_key || (editingProfile.value ? undefined : '')
+  if (!apiKey && !editingProfile.value) {
+    ElMessage.warning('请先填写 API Key')
+    return
+  }
+
+  dialogTesting.value = true
+  dialogTestResult.value = null
+  try {
+    const payload: any = {
+      base_url: form.base_url,
+      model_name: form.model_name,
+      api_style: form.api_style,
+      provider: form.provider,
+    }
+    if (form.api_key) {
+      payload.api_key = form.api_key
+    } else if (editingProfile.value) {
+      // Re-test the saved profile's key (backend loads it from DB)
+      payload.profile_id = editingProfile.value.id
+    }
+    const res = await llmProfileApi.test(payload)
+    dialogTestResult.value = res.data
+  } catch (e: any) {
+    dialogTestResult.value = { ok: false, error: e.response?.data?.error || '请求失败' }
+  } finally {
+    dialogTesting.value = false
+  }
+}
+
+// ── CRUD ──────────────────────────────────────────────────────────────────────
 function editProfile(profile: LLMProfile) {
   editingProfile.value = profile
+  dialogTestResult.value = null
   Object.assign(form, {
     name: profile.name,
     provider: profile.provider,
@@ -234,6 +401,7 @@ function editProfile(profile: LLMProfile) {
 function cancelDialog() {
   showCreateDialog.value = false
   editingProfile.value = null
+  dialogTestResult.value = null
   Object.assign(form, defaultForm())
 }
 
@@ -292,6 +460,7 @@ function providerTagType(provider: string) {
     openai: 'success',
     openai_compatible: '',
     anthropic: 'warning',
+    gemini: 'primary',
   }
   return (map[provider] || 'info') as any
 }
