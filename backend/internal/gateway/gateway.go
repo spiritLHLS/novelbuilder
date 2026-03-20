@@ -1,10 +1,15 @@
 package gateway
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"strings"
 
 	anthropic "github.com/liushuangls/go-anthropic/v2"
 	"github.com/novelbuilder/backend/internal/models"
@@ -55,56 +60,107 @@ type StreamChunk struct {
 
 // resolvedModel holds all parameters needed to make an API call.
 type resolvedModel struct {
-	Provider    string
-	APIKey      string
-	ModelID     string // the model string sent to the provider (e.g. "gpt-4o")
-	BaseURL     string
-	MaxTokens   int
-	Temperature float64
-	ProfileName string
+	Provider        string
+	APIStyle        string // normalized: "/chat/completions", "/messages", "/responses", "gemini", etc.
+	APIKey          string
+	ModelID         string // the model string sent to the provider (e.g. "gpt-4o")
+	BaseURL         string
+	MaxTokens       int
+	Temperature     float64
+	OmitMaxTokens   bool
+	OmitTemperature bool
+	ProfileName     string
 }
 
 func NewAIGateway(profiles ProfileResolver, logger *zap.Logger) *AIGateway {
-	return &AIGateway{
-		profiles: profiles,
-		logger:   logger,
-	}
+	return &AIGateway{profiles: profiles, logger: logger}
 }
 
-// buildClientForProfile creates an API client for the given profile on-demand.
-func buildClientForProfile(p *models.LLMProfileFull) interface{} {
-	switch p.Provider {
-	case "anthropic":
-		return anthropic.NewClient(p.APIKey)
-	default: // openai, openai_compatible, deepseek, etc.
-		clientCfg := openai.DefaultConfig(p.APIKey)
-		if p.BaseURL != "" {
-			clientCfg.BaseURL = p.BaseURL
-		}
-		return openai.NewClientWithConfig(clientCfg)
+// normalizeAPIStyle converts legacy style names to path-based values.
+func normalizeAPIStyle(s string) string {
+	switch s {
+	case "chat_completions":
+		return "/chat/completions"
+	case "claude":
+		return "/messages"
+	case "responses":
+		return "/responses"
 	}
+	return s
+}
+
+// apiProtocol returns the dispatch protocol key based on api_style,
+// falling back to provider when api_style is empty.
+func apiProtocol(apiStyle, provider string) string {
+	if apiStyle != "" {
+		if strings.HasSuffix(apiStyle, "/messages") {
+			return "anthropic"
+		}
+		if strings.HasSuffix(apiStyle, "/responses") {
+			return "responses"
+		}
+		if apiStyle == "gemini" {
+			return "gemini"
+		}
+		return "openai"
+	}
+	if provider == "anthropic" {
+		return "anthropic"
+	}
+	return "openai"
+}
+
+// openaiSDKBase strips the /chat/completions suffix from (baseURL+apiStyle)
+// so the OpenAI SDK targets the correct endpoint for both "/chat/completions"
+// and "/v1/chat/completions" api_style values.
+func openaiSDKBase(baseURL, apiStyle string) string {
+	if apiStyle == "" {
+		return baseURL
+	}
+	total := strings.TrimRight(baseURL, "/") + apiStyle
+	if r := strings.TrimSuffix(total, "/chat/completions"); r != total {
+		return r
+	}
+	return baseURL
+}
+
+// anthropicSDKBase strips /messages from (baseURL+apiStyle) so the Anthropic SDK
+// targets the correct endpoint for both "/messages" and "/v1/messages" styles.
+func anthropicSDKBase(baseURL, apiStyle string) string {
+	if baseURL == "" {
+		return "https://api.anthropic.com/v1"
+	}
+	if apiStyle == "" {
+		return baseURL
+	}
+	total := strings.TrimRight(baseURL, "/") + apiStyle
+	if r := strings.TrimSuffix(total, "/messages"); r != total {
+		return r
+	}
+	return baseURL
 }
 
 // resolveModel returns the model parameters from the DB default profile.
-// Returns a clear error if no default profile has been configured yet.
-func (gw *AIGateway) resolveModel(ctx context.Context, req ChatRequest) (resolvedModel, interface{}, error) {
+func (gw *AIGateway) resolveModel(ctx context.Context, req ChatRequest) (resolvedModel, error) {
 	profile, err := gw.profiles.GetDefault(ctx)
 	if err != nil {
-		return resolvedModel{}, nil, fmt.Errorf("fetch default LLM profile: %w", err)
+		return resolvedModel{}, fmt.Errorf("fetch default LLM profile: %w", err)
 	}
 	if profile == nil {
-		return resolvedModel{}, nil, fmt.Errorf(
+		return resolvedModel{}, fmt.Errorf(
 			"no default AI model configured — please add a profile in Settings → AI 模型配置 and mark it as default")
 	}
-
 	resolved := resolvedModel{
-		Provider:    profile.Provider,
-		APIKey:      profile.APIKey,
-		ModelID:     profile.ModelName,
-		BaseURL:     profile.BaseURL,
-		MaxTokens:   profile.MaxTokens,
-		Temperature: profile.Temperature,
-		ProfileName: profile.Name,
+		Provider:        profile.Provider,
+		APIStyle:        normalizeAPIStyle(profile.APIStyle),
+		APIKey:          profile.APIKey,
+		ModelID:         profile.ModelName,
+		BaseURL:         profile.BaseURL,
+		MaxTokens:       profile.MaxTokens,
+		Temperature:     profile.Temperature,
+		OmitMaxTokens:   profile.OmitMaxTokens,
+		OmitTemperature: profile.OmitTemperature,
+		ProfileName:     profile.Name,
 	}
 	if req.MaxTokens > 0 {
 		resolved.MaxTokens = req.MaxTokens
@@ -112,176 +168,110 @@ func (gw *AIGateway) resolveModel(ctx context.Context, req ChatRequest) (resolve
 	if req.Temperature > 0 {
 		resolved.Temperature = req.Temperature
 	}
-	return resolved, buildClientForProfile(profile), nil
+	return resolved, nil
 }
 
 func (gw *AIGateway) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	resolved, client, err := gw.resolveModel(ctx, req)
+	resolved, err := gw.resolveModel(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-
 	gw.logger.Info("AI Chat request",
 		zap.String("profile", resolved.ProfileName),
 		zap.String("model", resolved.ModelID),
+		zap.String("api_style", resolved.APIStyle),
 		zap.String("task", req.Task),
 		zap.Int("messages", len(req.Messages)))
 
-	switch resolved.Provider {
-	case "openai", "deepseek", "openai_compatible":
-		oaiClient := client.(*openai.Client)
-		msgs := make([]openai.ChatCompletionMessage, len(req.Messages))
-		for i, m := range req.Messages {
-			msgs[i] = openai.ChatCompletionMessage{Role: m.Role, Content: m.Content}
-		}
-		resp, err := oaiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-			Model:       resolved.ModelID,
-			Messages:    msgs,
-			MaxTokens:   resolved.MaxTokens,
-			Temperature: float32(resolved.Temperature),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("openai chat: %w", err)
-		}
-		if len(resp.Choices) == 0 {
-			return nil, errors.New("no choices in response")
-		}
-		return &ChatResponse{
-			Content:      resp.Choices[0].Message.Content,
-			Model:        resolved.ProfileName,
-			TokensUsed:   resp.Usage.TotalTokens,
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
-		}, nil
-
+	switch apiProtocol(resolved.APIStyle, resolved.Provider) {
+	case "openai":
+		return gw.chatOpenAI(ctx, resolved, req.Messages)
 	case "anthropic":
-		anthClient := client.(*anthropic.Client)
-		var systemMsg string
-		var anthMsgs []anthropic.Message
-		for _, m := range req.Messages {
-			if m.Role == "system" {
-				systemMsg = m.Content
-				continue
-			}
-			if m.Role == "user" {
-				anthMsgs = append(anthMsgs, anthropic.NewUserTextMessage(m.Content))
-			} else if m.Role == "assistant" {
-				anthMsgs = append(anthMsgs, anthropic.NewAssistantTextMessage(m.Content))
-			}
-		}
-		resp, err := anthClient.CreateMessages(ctx, anthropic.MessagesRequest{
-			Model:     resolved.ModelID,
-			MaxTokens: resolved.MaxTokens,
-			Messages:  anthMsgs,
-			System:    systemMsg,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("anthropic chat: %w", err)
-		}
-		return &ChatResponse{
-			Content:      resp.GetFirstContentText(),
-			Model:        resolved.ProfileName,
-			TokensUsed:   resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-		}, nil
+		return gw.chatAnthropic(ctx, resolved, req.Messages)
+	case "responses":
+		return gw.chatResponses(ctx, resolved, req.Messages)
+	case "gemini":
+		return gw.chatGemini(ctx, resolved, req.Messages)
 	}
-
-	return nil, fmt.Errorf("unsupported provider: %s", resolved.Provider)
+	return nil, fmt.Errorf("unsupported api_style: %q (provider: %s)", resolved.APIStyle, resolved.Provider)
 }
 
 func (gw *AIGateway) ChatStream(ctx context.Context, req ChatRequest, handler func(chunk string) error) error {
-	resolved, client, err := gw.resolveModel(ctx, req)
+	resolved, err := gw.resolveModel(ctx, req)
 	if err != nil {
 		return err
 	}
-
-	switch resolved.Provider {
-	case "openai", "deepseek", "openai_compatible":
-		oaiClient := client.(*openai.Client)
-		msgs := make([]openai.ChatCompletionMessage, len(req.Messages))
-		for i, m := range req.Messages {
-			msgs[i] = openai.ChatCompletionMessage{Role: m.Role, Content: m.Content}
-		}
-		stream, err := oaiClient.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
-			Model:       resolved.ModelID,
-			Messages:    msgs,
-			MaxTokens:   resolved.MaxTokens,
-			Temperature: float32(resolved.Temperature),
-			Stream:      true,
-		})
-		if err != nil {
-			return fmt.Errorf("openai stream: %w", err)
-		}
-		defer stream.Close()
-
-		for {
-			resp, err := stream.Recv()
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			if err != nil {
-				return fmt.Errorf("stream recv: %w", err)
-			}
-			if len(resp.Choices) > 0 {
-				delta := resp.Choices[0].Delta.Content
-				if delta != "" {
-					if err := handler(delta); err != nil {
-						return err
-					}
-				}
-			}
-		}
-
+	switch apiProtocol(resolved.APIStyle, resolved.Provider) {
+	case "openai":
+		return gw.streamOpenAI(ctx, resolved, req.Messages, handler)
 	case "anthropic":
-		anthClient := client.(*anthropic.Client)
-		var systemMsg string
-		var anthMsgs []anthropic.Message
-		for _, m := range req.Messages {
-			if m.Role == "system" {
-				systemMsg = m.Content
-				continue
-			}
-			if m.Role == "user" {
-				anthMsgs = append(anthMsgs, anthropic.NewUserTextMessage(m.Content))
-			} else if m.Role == "assistant" {
-				anthMsgs = append(anthMsgs, anthropic.NewAssistantTextMessage(m.Content))
-			}
-		}
-
-		var streamErr error
-		_, err := anthClient.CreateMessagesStream(ctx, anthropic.MessagesStreamRequest{
-			MessagesRequest: anthropic.MessagesRequest{
-				Model:     resolved.ModelID,
-				MaxTokens: resolved.MaxTokens,
-				Messages:  anthMsgs,
-				System:    systemMsg,
-			},
-			OnContentBlockDelta: func(data anthropic.MessagesEventContentBlockDeltaData) {
-				text := data.Delta.GetText()
-				if text != "" {
-					if err := handler(text); err != nil {
-						streamErr = err
-					}
-				}
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("anthropic stream: %w", err)
-		}
-		if streamErr != nil {
-			return streamErr
-		}
-		return nil
+		return gw.streamAnthropic(ctx, resolved, req.Messages, handler)
+	case "responses":
+		return gw.streamResponses(ctx, resolved, req.Messages, handler)
+	case "gemini":
+		return gw.streamGemini(ctx, resolved, req.Messages, handler)
 	}
-
-	return fmt.Errorf("unsupported provider: %s", resolved.Provider)
+	return fmt.Errorf("unsupported api_style: %q (provider: %s)", resolved.APIStyle, resolved.Provider)
 }
 
-// ChatWithConfig performs a chat using an explicitly provided credentials map
-// (api_key, model, base_url, provider, max_tokens, temperature).
-// If cfg is nil or lacks an api_key, it transparently falls back to Chat()
-// with the database-configured default profile.
+// resolvedFromCfg builds a resolvedModel from an explicit credentials map.
+func resolvedFromCfg(cfg map[string]interface{}, req ChatRequest) resolvedModel {
+	apiKey, _ := cfg["api_key"].(string)
+	model, _ := cfg["model"].(string)
+	baseURL, _ := cfg["base_url"].(string)
+	provider, _ := cfg["provider"].(string)
+	rawStyle, _ := cfg["api_style"].(string)
+	apiStyle := normalizeAPIStyle(rawStyle)
+	omitMaxTokens, _ := cfg["omit_max_tokens"].(bool)
+	omitTemperature, _ := cfg["omit_temperature"].(bool)
+
+	if provider == "" {
+		switch {
+		case baseURL == "":
+			provider = "openai"
+		case strings.HasPrefix(baseURL, "https://api.anthropic.com"):
+			provider = "anthropic"
+		default:
+			provider = "openai_compatible"
+		}
+	}
+
+	maxTokens := 4096
+	if v, ok := cfg["max_tokens"]; ok {
+		switch mv := v.(type) {
+		case int:
+			maxTokens = mv
+		case float64:
+			maxTokens = int(mv)
+		}
+	}
+	temperature := 0.7
+	if v, ok := cfg["temperature"]; ok {
+		if tv, ok := v.(float64); ok {
+			temperature = tv
+		}
+	}
+	if req.MaxTokens > 0 {
+		maxTokens = req.MaxTokens
+	}
+	if req.Temperature > 0 {
+		temperature = req.Temperature
+	}
+	return resolvedModel{
+		Provider:        provider,
+		APIStyle:        apiStyle,
+		APIKey:          apiKey,
+		ModelID:         model,
+		BaseURL:         baseURL,
+		MaxTokens:       maxTokens,
+		Temperature:     temperature,
+		OmitMaxTokens:   omitMaxTokens,
+		OmitTemperature: omitTemperature,
+	}
+}
+
+// ChatWithConfig performs a chat using an explicitly provided credentials map.
+// Falls back to Chat() if cfg is nil or lacks an api_key.
 func (gw *AIGateway) ChatWithConfig(ctx context.Context, req ChatRequest, cfg map[string]interface{}) (*ChatResponse, error) {
 	if cfg == nil {
 		return gw.Chat(ctx, req)
@@ -290,121 +280,22 @@ func (gw *AIGateway) ChatWithConfig(ctx context.Context, req ChatRequest, cfg ma
 	if apiKey == "" {
 		return gw.Chat(ctx, req)
 	}
-
-	model, _ := cfg["model"].(string)
-	baseURL, _ := cfg["base_url"].(string)
-	provider, _ := cfg["provider"].(string)
-	if provider == "" {
-		// Infer provider from base_url heuristic
-		if baseURL == "" || len(baseURL) == 0 {
-			provider = "openai"
-		} else if len(baseURL) >= 25 && baseURL[:25] == "https://api.anthropic.com" {
-			provider = "anthropic"
-		} else {
-			provider = "openai_compatible"
-		}
-	}
-
-	maxTokens := 4096
-	if v, ok := cfg["max_tokens"]; ok {
-		switch mv := v.(type) {
-		case int:
-			maxTokens = mv
-		case float64:
-			maxTokens = int(mv)
-		}
-	}
-	temperature := 0.7
-	if v, ok := cfg["temperature"]; ok {
-		if tv, ok := v.(float64); ok {
-			temperature = tv
-		}
-	}
-	if req.MaxTokens > 0 {
-		maxTokens = req.MaxTokens
-	}
-	if req.Temperature > 0 {
-		temperature = req.Temperature
-	}
-
-	resolved := resolvedModel{
-		Provider:    provider,
-		APIKey:      apiKey,
-		ModelID:     model,
-		BaseURL:     baseURL,
-		MaxTokens:   maxTokens,
-		Temperature: temperature,
-	}
-
-	switch resolved.Provider {
-	case "openai", "deepseek", "openai_compatible":
-		clientCfg := openai.DefaultConfig(resolved.APIKey)
-		if resolved.BaseURL != "" {
-			clientCfg.BaseURL = resolved.BaseURL
-		}
-		oaiClient := openai.NewClientWithConfig(clientCfg)
-		msgs := make([]openai.ChatCompletionMessage, len(req.Messages))
-		for i, m := range req.Messages {
-			msgs[i] = openai.ChatCompletionMessage{Role: m.Role, Content: m.Content}
-		}
-		resp, err := oaiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-			Model:       resolved.ModelID,
-			Messages:    msgs,
-			MaxTokens:   resolved.MaxTokens,
-			Temperature: float32(resolved.Temperature),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("openai chat (custom config): %w", err)
-		}
-		if len(resp.Choices) == 0 {
-			return nil, errors.New("no choices in response")
-		}
-		return &ChatResponse{
-			Content:      resp.Choices[0].Message.Content,
-			TokensUsed:   resp.Usage.TotalTokens,
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
-		}, nil
-
+	resolved := resolvedFromCfg(cfg, req)
+	switch apiProtocol(resolved.APIStyle, resolved.Provider) {
+	case "openai":
+		return gw.chatOpenAI(ctx, resolved, req.Messages)
 	case "anthropic":
-		anthClient := anthropic.NewClient(resolved.APIKey)
-		var systemMsg string
-		var anthMsgs []anthropic.Message
-		for _, m := range req.Messages {
-			if m.Role == "system" {
-				systemMsg = m.Content
-				continue
-			}
-			if m.Role == "user" {
-				anthMsgs = append(anthMsgs, anthropic.NewUserTextMessage(m.Content))
-			} else if m.Role == "assistant" {
-				anthMsgs = append(anthMsgs, anthropic.NewAssistantTextMessage(m.Content))
-			}
-		}
-		resp, err := anthClient.CreateMessages(ctx, anthropic.MessagesRequest{
-			Model:     resolved.ModelID,
-			MaxTokens: resolved.MaxTokens,
-			Messages:  anthMsgs,
-			System:    systemMsg,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("anthropic chat (custom config): %w", err)
-		}
-		return &ChatResponse{
-			Content:      resp.GetFirstContentText(),
-			TokensUsed:   resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-		}, nil
+		return gw.chatAnthropic(ctx, resolved, req.Messages)
+	case "responses":
+		return gw.chatResponses(ctx, resolved, req.Messages)
+	case "gemini":
+		return gw.chatGemini(ctx, resolved, req.Messages)
 	}
-
-	return nil, fmt.Errorf("unsupported provider: %s", resolved.Provider)
+	return nil, fmt.Errorf("unsupported api_style: %q (provider: %s)", resolved.APIStyle, resolved.Provider)
 }
 
 // ChatStreamWithConfig is the streaming variant of ChatWithConfig.
-// For openai_compatible providers, if the streaming call fails it automatically
-// falls back to a synchronous (non-streamed) completion to handle providers
-// that do not support SSE.
+// For openai-compatible providers, if streaming fails it falls back to sync.
 func (gw *AIGateway) ChatStreamWithConfig(ctx context.Context, req ChatRequest, cfg map[string]interface{}, handler func(chunk string) error) error {
 	if cfg == nil {
 		return gw.ChatStream(ctx, req, handler)
@@ -413,146 +304,438 @@ func (gw *AIGateway) ChatStreamWithConfig(ctx context.Context, req ChatRequest, 
 	if apiKey == "" {
 		return gw.ChatStream(ctx, req, handler)
 	}
-
-	model, _ := cfg["model"].(string)
-	baseURL, _ := cfg["base_url"].(string)
-	provider, _ := cfg["provider"].(string)
-	if provider == "" {
-		if baseURL == "" {
-			provider = "openai"
-		} else if len(baseURL) >= 25 && baseURL[:25] == "https://api.anthropic.com" {
-			provider = "anthropic"
-		} else {
-			provider = "openai_compatible"
-		}
-	}
-
-	maxTokens := 4096
-	if v, ok := cfg["max_tokens"]; ok {
-		switch mv := v.(type) {
-		case int:
-			maxTokens = mv
-		case float64:
-			maxTokens = int(mv)
-		}
-	}
-	temperature := 0.7
-	if v, ok := cfg["temperature"]; ok {
-		if tv, ok := v.(float64); ok {
-			temperature = tv
-		}
-	}
-	if req.MaxTokens > 0 {
-		maxTokens = req.MaxTokens
-	}
-	if req.Temperature > 0 {
-		temperature = req.Temperature
-	}
-
-	resolved := resolvedModel{
-		Provider:    provider,
-		APIKey:      apiKey,
-		ModelID:     model,
-		BaseURL:     baseURL,
-		MaxTokens:   maxTokens,
-		Temperature: temperature,
-	}
-
-	switch resolved.Provider {
-	case "openai", "deepseek", "openai_compatible":
-		clientCfg := openai.DefaultConfig(resolved.APIKey)
-		if resolved.BaseURL != "" {
-			clientCfg.BaseURL = resolved.BaseURL
-		}
-		oaiClient := openai.NewClientWithConfig(clientCfg)
-		msgs := make([]openai.ChatCompletionMessage, len(req.Messages))
-		for i, m := range req.Messages {
-			msgs[i] = openai.ChatCompletionMessage{Role: m.Role, Content: m.Content}
-		}
-
-		stream, streamErr := oaiClient.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
-			Model:       resolved.ModelID,
-			Messages:    msgs,
-			MaxTokens:   resolved.MaxTokens,
-			Temperature: float32(resolved.Temperature),
-			Stream:      true,
-		})
-		if streamErr != nil {
-			// SSE stream not supported by this provider — fall back to sync completion.
-			gw.logger.Warn("stream not supported by provider, falling back to sync",
-				zap.String("provider", resolved.Provider),
-				zap.Error(streamErr))
-			resp, syncErr := oaiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-				Model:       resolved.ModelID,
-				Messages:    msgs,
-				MaxTokens:   resolved.MaxTokens,
-				Temperature: float32(resolved.Temperature),
-			})
-			if syncErr != nil {
-				return fmt.Errorf("sync fallback failed: %w", syncErr)
-			}
-			if len(resp.Choices) == 0 {
-				return errors.New("no choices in response")
-			}
-			return handler(resp.Choices[0].Message.Content)
-		}
-		defer stream.Close()
-
-		for {
-			resp, err := stream.Recv()
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			if err != nil {
-				return fmt.Errorf("stream recv: %w", err)
-			}
-			if len(resp.Choices) > 0 {
-				delta := resp.Choices[0].Delta.Content
-				if delta != "" {
-					if err := handler(delta); err != nil {
-						return err
-					}
-				}
-			}
-		}
-
+	resolved := resolvedFromCfg(cfg, req)
+	switch apiProtocol(resolved.APIStyle, resolved.Provider) {
+	case "openai":
+		return gw.streamOpenAI(ctx, resolved, req.Messages, handler)
 	case "anthropic":
-		anthClient := anthropic.NewClient(resolved.APIKey)
-		var systemMsg string
-		var anthMsgs []anthropic.Message
-		for _, m := range req.Messages {
-			if m.Role == "system" {
-				systemMsg = m.Content
-				continue
-			}
-			if m.Role == "user" {
-				anthMsgs = append(anthMsgs, anthropic.NewUserTextMessage(m.Content))
-			} else if m.Role == "assistant" {
-				anthMsgs = append(anthMsgs, anthropic.NewAssistantTextMessage(m.Content))
+		return gw.streamAnthropic(ctx, resolved, req.Messages, handler)
+	case "responses":
+		return gw.streamResponses(ctx, resolved, req.Messages, handler)
+	case "gemini":
+		return gw.streamGemini(ctx, resolved, req.Messages, handler)
+	}
+	return fmt.Errorf("unsupported api_style: %q (provider: %s)", resolved.APIStyle, resolved.Provider)
+}
+
+// ── OpenAI / Chat Completions ──────────────────────────────────────────────
+
+func (gw *AIGateway) openaiClient(r resolvedModel) *openai.Client {
+	clientCfg := openai.DefaultConfig(r.APIKey)
+	if r.BaseURL != "" {
+		clientCfg.BaseURL = openaiSDKBase(r.BaseURL, r.APIStyle)
+	}
+	return openai.NewClientWithConfig(clientCfg)
+}
+
+func (gw *AIGateway) chatOpenAI(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
+	oaiMsgs := make([]openai.ChatCompletionMessage, len(msgs))
+	for i, m := range msgs {
+		oaiMsgs[i] = openai.ChatCompletionMessage{Role: m.Role, Content: m.Content}
+	}
+	reqBody := openai.ChatCompletionRequest{Model: r.ModelID, Messages: oaiMsgs}
+	if !r.OmitMaxTokens {
+		reqBody.MaxTokens = r.MaxTokens
+	}
+	if !r.OmitTemperature {
+		reqBody.Temperature = float32(r.Temperature)
+	}
+	resp, err := gw.openaiClient(r).CreateChatCompletion(ctx, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("openai chat: %w", err)
+	}
+	if len(resp.Choices) == 0 {
+		return nil, errors.New("no choices in response")
+	}
+	return &ChatResponse{
+		Content:      resp.Choices[0].Message.Content,
+		Model:        r.ProfileName,
+		TokensUsed:   resp.Usage.TotalTokens,
+		InputTokens:  resp.Usage.PromptTokens,
+		OutputTokens: resp.Usage.CompletionTokens,
+	}, nil
+}
+
+func (gw *AIGateway) streamOpenAI(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
+	oaiMsgs := make([]openai.ChatCompletionMessage, len(msgs))
+	for i, m := range msgs {
+		oaiMsgs[i] = openai.ChatCompletionMessage{Role: m.Role, Content: m.Content}
+	}
+	reqBody := openai.ChatCompletionRequest{Model: r.ModelID, Messages: oaiMsgs, Stream: true}
+	if !r.OmitMaxTokens {
+		reqBody.MaxTokens = r.MaxTokens
+	}
+	if !r.OmitTemperature {
+		reqBody.Temperature = float32(r.Temperature)
+	}
+	client := gw.openaiClient(r)
+	stream, streamErr := client.CreateChatCompletionStream(ctx, reqBody)
+	if streamErr != nil {
+		// Fall back to sync for providers that do not support SSE.
+		gw.logger.Warn("stream not supported by provider, falling back to sync",
+			zap.String("provider", r.Provider),
+			zap.Error(streamErr))
+		reqBody.Stream = false
+		resp, syncErr := client.CreateChatCompletion(ctx, reqBody)
+		if syncErr != nil {
+			return fmt.Errorf("sync fallback: %w", syncErr)
+		}
+		if len(resp.Choices) == 0 {
+			return errors.New("no choices in response")
+		}
+		return handler(resp.Choices[0].Message.Content)
+	}
+	defer stream.Close()
+	for {
+		resp, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("stream recv: %w", err)
+		}
+		if len(resp.Choices) > 0 {
+			if delta := resp.Choices[0].Delta.Content; delta != "" {
+				if err := handler(delta); err != nil {
+					return err
+				}
 			}
 		}
-		var streamErr error
-		_, err := anthClient.CreateMessagesStream(ctx, anthropic.MessagesStreamRequest{
-			MessagesRequest: anthropic.MessagesRequest{
-				Model:     resolved.ModelID,
-				MaxTokens: resolved.MaxTokens,
-				Messages:  anthMsgs,
-				System:    systemMsg,
-			},
-			OnContentBlockDelta: func(data anthropic.MessagesEventContentBlockDeltaData) {
-				text := data.Delta.GetText()
-				if text != "" {
-					if err := handler(text); err != nil {
-						streamErr = err
+	}
+}
+
+// ── Anthropic / Messages ──────────────────────────────────────────────
+
+func (gw *AIGateway) anthropicClient(r resolvedModel) *anthropic.Client {
+	return anthropic.NewClient(r.APIKey, anthropic.WithBaseURL(anthropicSDKBase(r.BaseURL, r.APIStyle)))
+}
+
+func buildAnthropicRequest(r resolvedModel, msgs []ChatMessage) anthropic.MessagesRequest {
+	var systemMsg string
+	var anthMsgs []anthropic.Message
+	for _, m := range msgs {
+		switch m.Role {
+		case "system":
+			systemMsg = m.Content
+		case "user":
+			anthMsgs = append(anthMsgs, anthropic.NewUserTextMessage(m.Content))
+		case "assistant":
+			anthMsgs = append(anthMsgs, anthropic.NewAssistantTextMessage(m.Content))
+		}
+	}
+	maxTokens := r.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 8192
+	}
+	req := anthropic.MessagesRequest{
+		Model:     r.ModelID,
+		MaxTokens: maxTokens,
+		Messages:  anthMsgs,
+		System:    systemMsg,
+	}
+	if !r.OmitTemperature {
+		t := float32(r.Temperature)
+		req.Temperature = &t
+	}
+	return req
+}
+
+func (gw *AIGateway) chatAnthropic(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
+	resp, err := gw.anthropicClient(r).CreateMessages(ctx, buildAnthropicRequest(r, msgs))
+	if err != nil {
+		return nil, fmt.Errorf("anthropic chat: %w", err)
+	}
+	return &ChatResponse{
+		Content:      resp.GetFirstContentText(),
+		Model:        r.ProfileName,
+		TokensUsed:   resp.Usage.InputTokens + resp.Usage.OutputTokens,
+		InputTokens:  resp.Usage.InputTokens,
+		OutputTokens: resp.Usage.OutputTokens,
+	}, nil
+}
+
+func (gw *AIGateway) streamAnthropic(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
+	var streamErr error
+	_, err := gw.anthropicClient(r).CreateMessagesStream(ctx, anthropic.MessagesStreamRequest{
+		MessagesRequest: buildAnthropicRequest(r, msgs),
+		OnContentBlockDelta: func(data anthropic.MessagesEventContentBlockDeltaData) {
+			if text := data.Delta.GetText(); text != "" {
+				if herr := handler(text); herr != nil {
+					streamErr = herr
+				}
+			}
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("anthropic stream: %w", err)
+	}
+	return streamErr
+}
+
+// ── OpenAI Responses API ────────────────────────────────────────────
+
+func buildResponsesBody(r resolvedModel, msgs []ChatMessage) map[string]interface{} {
+	var instructions string
+	var inputParts []map[string]interface{}
+	for _, m := range msgs {
+		if m.Role == "system" {
+			instructions = m.Content
+			continue
+		}
+		inputParts = append(inputParts, map[string]interface{}{"role": m.Role, "content": m.Content})
+	}
+	body := map[string]interface{}{"model": r.ModelID, "input": inputParts}
+	if instructions != "" {
+		body["instructions"] = instructions
+	}
+	if !r.OmitMaxTokens {
+		body["max_output_tokens"] = r.MaxTokens
+	}
+	if !r.OmitTemperature {
+		body["temperature"] = r.Temperature
+	}
+	return body
+}
+
+func (gw *AIGateway) chatResponses(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
+	bodyBytes, err := json.Marshal(buildResponsesBody(r, msgs))
+	if err != nil {
+		return nil, fmt.Errorf("responses marshal: %w", err)
+	}
+	endpoint := strings.TrimRight(r.BaseURL, "/") + r.APIStyle
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+r.APIKey)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("responses api: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("responses api error %d: %s", resp.StatusCode, string(b))
+	}
+	var result struct {
+		Output []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("responses decode: %w", err)
+	}
+	var content string
+	for _, o := range result.Output {
+		for _, c := range o.Content {
+			content += c.Text
+		}
+	}
+	return &ChatResponse{
+		Content:      content,
+		Model:        r.ProfileName,
+		InputTokens:  result.Usage.InputTokens,
+		OutputTokens: result.Usage.OutputTokens,
+		TokensUsed:   result.Usage.InputTokens + result.Usage.OutputTokens,
+	}, nil
+}
+
+func (gw *AIGateway) streamResponses(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
+	body := buildResponsesBody(r, msgs)
+	body["stream"] = true
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("responses stream marshal: %w", err)
+	}
+	endpoint := strings.TrimRight(r.BaseURL, "/") + r.APIStyle
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+r.APIKey)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("responses stream: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("responses stream error %d: %s", resp.StatusCode, string(b))
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			return nil
+		}
+		var event struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+		}
+		if json.Unmarshal([]byte(data), &event) == nil {
+			if event.Type == "response.output_text.delta" && event.Delta != "" {
+				if err := handler(event.Delta); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return scanner.Err()
+}
+
+// ── Google Gemini ───────────────────────────────────────────────
+
+func buildGeminiBody(r resolvedModel, msgs []ChatMessage) map[string]interface{} {
+	var sysInstruction string
+	var contents []map[string]interface{}
+	for _, m := range msgs {
+		if m.Role == "system" {
+			sysInstruction = m.Content
+			continue
+		}
+		role := m.Role
+		if role == "assistant" {
+			role = "model"
+		}
+		contents = append(contents, map[string]interface{}{
+			"role":  role,
+			"parts": []map[string]string{{"text": m.Content}},
+		})
+	}
+	body := map[string]interface{}{"contents": contents}
+	if sysInstruction != "" {
+		body["systemInstruction"] = map[string]interface{}{
+			"parts": []map[string]string{{"text": sysInstruction}},
+		}
+	}
+	if !r.OmitMaxTokens || !r.OmitTemperature {
+		genCfg := map[string]interface{}{}
+		if !r.OmitMaxTokens {
+			genCfg["maxOutputTokens"] = r.MaxTokens
+		}
+		if !r.OmitTemperature {
+			genCfg["temperature"] = r.Temperature
+		}
+		body["generationConfig"] = genCfg
+	}
+	return body
+}
+
+func (gw *AIGateway) chatGemini(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
+	bodyBytes, err := json.Marshal(buildGeminiBody(r, msgs))
+	if err != nil {
+		return nil, fmt.Errorf("gemini marshal: %w", err)
+	}
+	endpoint := strings.TrimRight(r.BaseURL, "/") + "/models/" + r.ModelID + ":generateContent?key=" + r.APIKey
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("gemini api: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gemini error %d: %s", resp.StatusCode, string(b))
+	}
+	var result struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("gemini decode: %w", err)
+	}
+	var content string
+	for _, c := range result.Candidates {
+		for _, p := range c.Content.Parts {
+			content += p.Text
+		}
+	}
+	return &ChatResponse{
+		Content:      content,
+		Model:        r.ProfileName,
+		InputTokens:  result.UsageMetadata.PromptTokenCount,
+		OutputTokens: result.UsageMetadata.CandidatesTokenCount,
+		TokensUsed:   result.UsageMetadata.PromptTokenCount + result.UsageMetadata.CandidatesTokenCount,
+	}, nil
+}
+
+func (gw *AIGateway) streamGemini(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
+	bodyBytes, err := json.Marshal(buildGeminiBody(r, msgs))
+	if err != nil {
+		return fmt.Errorf("gemini stream marshal: %w", err)
+	}
+	// alt=sse requests Server-Sent Events streaming from Gemini
+	endpoint := strings.TrimRight(r.BaseURL, "/") + "/models/" + r.ModelID + ":streamGenerateContent?alt=sse&key=" + r.APIKey
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("gemini stream: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gemini stream error %d: %s", resp.StatusCode, string(b))
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		var chunk struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		if json.Unmarshal([]byte(data), &chunk) == nil {
+			for _, c := range chunk.Candidates {
+				for _, p := range c.Content.Parts {
+					if p.Text != "" {
+						if err := handler(p.Text); err != nil {
+							return err
+						}
 					}
 				}
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("anthropic stream (custom config): %w", err)
+			}
 		}
-		return streamErr
 	}
-
-	return fmt.Errorf("unsupported provider: %s", resolved.Provider)
+	return scanner.Err()
 }

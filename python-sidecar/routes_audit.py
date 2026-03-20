@@ -19,23 +19,9 @@ from analyzers.atmosphere_analyzer import AtmosphereAnalyzer
 from analyzers.plot_extractor import PlotExtractor
 from humanizer.pipeline import HumanizationPipeline
 from humanizer.metrics import PerplexityBurstinessEstimator
+from llm_utils import build_llm
 
 logger = logging.getLogger("python-agent")
-
-
-def _build_chat_openai(llm_config: dict, default_temperature: float = 0.7, default_max_tokens: int = 4096):
-    """Build ChatOpenAI from llm_config, honouring omit_max_tokens / omit_temperature flags."""
-    from langchain_openai import ChatOpenAI
-    kwargs: dict = {
-        "base_url": llm_config.get("base_url", "https://api.openai.com/v1"),
-        "api_key": llm_config.get("api_key") or os.getenv("OPENAI_API_KEY", ""),
-        "model": llm_config.get("model", "gpt-4o"),
-    }
-    if not llm_config.get("omit_temperature"):
-        kwargs["temperature"] = float(llm_config.get("temperature", default_temperature))
-    if not llm_config.get("omit_max_tokens"):
-        kwargs["max_tokens"] = int(llm_config.get("max_tokens", default_max_tokens))
-    return ChatOpenAI(**kwargs)
 
 
 def get_db():
@@ -210,7 +196,7 @@ async def audit_chapter(req: AuditChapterRequest):
         try:
             from langchain.schema import SystemMessage, HumanMessage
 
-            llm = _build_chat_openai(req.llm_config, default_temperature=0.2, default_max_tokens=3000)
+            llm = build_llm(req.llm_config, default_temperature=0.2, default_max_tokens=3000)
 
             context_str = ""
             if req.context.get("outline_hint"):
@@ -349,7 +335,7 @@ async def anti_detect_rewrite(req: AntiDetectRequest):
             + wordlist_note + patterns_note
         )
 
-        llm = _build_chat_openai(req.llm_config, default_temperature=0.85, default_max_tokens=8192)
+        llm = build_llm(req.llm_config, default_temperature=0.85, default_max_tokens=8192)
 
         response = await llm.ainvoke([
             SystemMessage(content=system_prompt),
@@ -417,7 +403,7 @@ async def narrative_revise(req: NarrativeReviseRequest):
         if req.top_issues:
             issues_note = "\n《具体问题》:\n" + "\n".join(f"- {issue}" for issue in req.top_issues[:10])
 
-        llm = _build_chat_openai(req.llm_config, default_temperature=0.5, default_max_tokens=8192)
+        llm = build_llm(req.llm_config, default_temperature=0.5, default_max_tokens=8192)
 
         user_content = (
             f"请根据以下审核问题修改章节内容："
@@ -491,7 +477,7 @@ async def generate_creative_brief(req: CreativeBriefRequest):
     try:
         from langchain.schema import SystemMessage, HumanMessage
 
-        llm = _build_chat_openai(req.llm_config, default_temperature=0.7, default_max_tokens=8192)
+        llm = build_llm(req.llm_config, default_temperature=0.7, default_max_tokens=8192)
 
         human_content = f"【题材】{req.genre}\n\n【创作简报】\n{req.brief_text[:6000]}"
         response = await llm.ainvoke([
@@ -564,7 +550,7 @@ async def import_chapters_analyze(req: ImportChaptersRequest):
 "foreshadowings":[{"content":"","embed_method":"explicit|implicit","priority":5}],
 "glossary":[{"term":"","definition":"","category":"place|item|concept|power"}]}
 只提取明确出现的元素，不要推测。"""
-            llm = _build_chat_openai(req.llm_config, default_temperature=0.2, default_max_tokens=4096)
+            llm = build_llm(req.llm_config, default_temperature=0.2, default_max_tokens=4096)
             response = await llm.ainvoke([
                 SystemMessage(content=_RE_SYSTEM),
                 HumanMessage(content=f"分析以下章节：\n\n{sample_text}"),

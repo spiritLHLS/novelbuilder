@@ -8,9 +8,8 @@ import logging
 import os
 from typing import Any
 
-from langchain_openai import ChatOpenAI
-
 from agent.state import AgentState
+from llm_utils import build_llm
 
 logger = logging.getLogger(__name__)
 
@@ -23,23 +22,6 @@ _SUMMARY_SYSTEM = (
     "请用 3-5 句话概括以下章节内容，包括：主要事件、人物动态、情节推进、伏笔变化。"
     "直接输出摘要，不要任何前缀或格式标记。"
 )
-
-
-def _build_llm(cfg: dict, streaming: bool = False) -> ChatOpenAI:
-    api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("llm_config.api_key is required for generator node")
-    kwargs: dict = {
-        "base_url": cfg.get("base_url", "https://api.openai.com/v1"),
-        "api_key": api_key,
-        "model": cfg.get("model", "gpt-4o"),
-        "streaming": streaming,
-    }
-    if not cfg.get("omit_temperature"):
-        kwargs["temperature"] = float(cfg.get("temperature", 0.85))
-    if not cfg.get("omit_max_tokens"):
-        kwargs["max_tokens"] = int(cfg.get("max_tokens", 4096))
-    return ChatOpenAI(**kwargs)
 
 
 def _build_prompt(state: AgentState) -> str:
@@ -67,7 +49,7 @@ def _build_prompt(state: AgentState) -> str:
 async def generator_node(state: AgentState) -> dict[str, Any]:
     """Call LLM and generate the chapter draft."""
     llm_cfg = state.get("llm_config", {})
-    llm = _build_llm(llm_cfg)
+    llm = build_llm(llm_cfg, default_temperature=0.85, default_max_tokens=4096)
 
     prompt = _build_prompt(state)
 
@@ -98,7 +80,7 @@ async def _generate_summary(text: str, cfg: dict) -> str:
     # Use a cheaper/faster model for summaries
     summary_cfg = {**cfg, "model": cfg.get("summary_model", cfg.get("model", "gpt-4o-mini")),
                    "max_tokens": 256, "temperature": 0.3}
-    llm = _build_llm(summary_cfg)
+    llm = build_llm(summary_cfg, default_temperature=0.3, default_max_tokens=256)
     try:
         resp = await llm.ainvoke([
             {"role": "system", "content": _SUMMARY_SYSTEM},

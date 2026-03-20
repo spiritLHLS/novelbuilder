@@ -9,9 +9,8 @@ import logging
 import os
 from typing import Any
 
-from langchain_openai import ChatOpenAI
-
 from agent.state import AgentState, PlanStep
+from llm_utils import build_llm
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ def planner_node(state: AgentState) -> dict[str, Any]:
     outline_hint = state.get("outline_hint", "")
 
     llm_cfg = state.get("llm_config", {})
-    llm = _build_llm(llm_cfg)
+    llm = build_llm(llm_cfg, default_temperature=0.3, default_max_tokens=512)
 
     task_desc = f"任务类型: {task_type}\n用户提示: {user_prompt}"
     if chapter_num is not None:
@@ -84,18 +83,3 @@ def _default_plan(task_type: str) -> list[PlanStep]:
         PlanStep(step=3, description="质量检查", status="pending"),
     ]
 
-
-def _build_llm(cfg: dict) -> ChatOpenAI:
-    api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("llm_config.api_key is required for planner node")
-    kwargs: dict = {
-        "base_url": cfg.get("base_url", "https://api.openai.com/v1"),
-        "api_key": api_key,
-        "model": cfg.get("model", "gpt-4o-mini"),
-    }
-    if not cfg.get("omit_temperature"):
-        kwargs["temperature"] = float(cfg.get("temperature", 0.3))
-    if not cfg.get("omit_max_tokens"):
-        kwargs["max_tokens"] = int(cfg.get("max_tokens", 512))
-    return ChatOpenAI(**kwargs)
