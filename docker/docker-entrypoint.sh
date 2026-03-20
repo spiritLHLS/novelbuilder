@@ -54,7 +54,7 @@ HBA
     su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
     su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";'"
 
-    echo "==> Running SQL migrations..."
+    echo "==> Running SQL migrations (first init)..."
     for f in /app/migrations/*.sql; do
         echo "   applying $f"
         su - postgres -c "psql -d $DB_NAME -f $f"
@@ -73,6 +73,25 @@ HBA
 
     su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA stop -w"
     echo "==> PostgreSQL ready."
+else
+    # DB already initialised — start PG briefly to apply any new migrations
+    # that were added since the image was first built. All migration files use
+    # IF NOT EXISTS / ADD COLUMN IF NOT EXISTS so they are fully idempotent.
+    echo "==> Existing PostgreSQL data found. Applying any pending migrations..."
+    su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA -l /tmp/pg_migrate.log start -w"
+    su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS vector;'" 2>/dev/null || true
+    su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";'" 2>/dev/null || true
+    for f in /app/migrations/*.sql; do
+        echo "   applying $f"
+        su - postgres -c "psql -d $DB_NAME -f $f" || echo "   WARNING: $f failed (already applied or error — continuing)"
+    done
+    # Re-grant for any newly created tables
+    su - postgres -c "psql -d $DB_NAME -c \"
+        GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA public TO $DB_USER;
+        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO $DB_USER;
+    \"" 2>/dev/null || true
+    su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA stop -w"
+    echo "==> Migrations applied."
 fi
 
 # ── Neo4j init ───────────────────────────────────────────
