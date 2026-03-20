@@ -453,6 +453,33 @@ func (s *ReferenceService) SaveChapter(ctx context.Context, refID, chapterID, ti
 	return err
 }
 
+// GetChaptersContent returns the full text content of all non-deleted chapters of a
+// reference book, concatenated in chapter order. Used by AnalyzeReference when the
+// reference has no file on disk (i.e. was imported via the fetch-download flow).
+func (s *ReferenceService) GetChaptersContent(ctx context.Context, refID string) (string, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT title, content FROM reference_book_chapters
+		 WHERE ref_id = $1 AND NOT is_deleted
+		 ORDER BY chapter_no`, refID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	for rows.Next() {
+		var title, content string
+		if err := rows.Scan(&title, &content); err != nil {
+			return "", err
+		}
+		sb.WriteString(title)
+		sb.WriteRune('\n')
+		sb.WriteString(content)
+		sb.WriteString("\n\n")
+	}
+	return sb.String(), rows.Err()
+}
+
 // ListChapters returns non-deleted chapters of a reference book, ordered by chapter_no.
 // Content is excluded to keep the payload small; use GetChapter for full content.
 func (s *ReferenceService) ListChapters(ctx context.Context, refID string) ([]models.ReferenceChapter, error) {

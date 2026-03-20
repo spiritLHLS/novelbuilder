@@ -640,8 +640,33 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 		sidecarURL = "http://localhost:8081"
 	}
 
+	// For references imported via the download flow, chapters are stored in
+	// reference_book_chapters rather than a physical file. Assemble a temp file so the
+	// sidecar can analyze the content.
+	analysisFilePath := ref.FilePath
+	var tempFilePath string
+	if analysisFilePath == "" {
+		text, err := h.references.GetChaptersContent(c.Request.Context(), refID)
+		if err != nil || text == "" {
+			c.JSON(400, gin.H{"error": "no content to analyze: reference has no file and no downloaded chapters"})
+			return
+		}
+		tmpPath := filepath.Join("/data/uploads", "analyze_"+refID+".txt")
+		if writeErr := os.WriteFile(tmpPath, []byte(text), 0o644); writeErr != nil {
+			c.JSON(500, gin.H{"error": "failed to prepare analysis file: " + writeErr.Error()})
+			return
+		}
+		analysisFilePath = tmpPath
+		tempFilePath = tmpPath
+	}
+	defer func() {
+		if tempFilePath != "" {
+			os.Remove(tempFilePath) //nolint
+		}
+	}()
+
 	reqBody, _ := json.Marshal(map[string]string{
-		"file_path":   ref.FilePath,
+		"file_path":   analysisFilePath,
 		"material_id": refID,
 		"project_id":  ref.ProjectID,
 	})

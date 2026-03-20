@@ -23,6 +23,24 @@ from humanizer.metrics import PerplexityBurstinessEstimator
 logger = logging.getLogger("python-agent")
 
 
+# ── Pydantic request models (must be defined here so FastAPI can resolve them) ─
+class AnalyzeRequest(BaseModel):
+    file_path: str
+    material_id: str
+    project_id: str
+
+class EmbedRequest(BaseModel):
+    text: str
+
+class HumanizeRequest(BaseModel):
+    text: str
+    style_fingerprint: Optional[dict] = None
+    intensity: float = 0.7
+
+class MetricsRequest(BaseModel):
+    text: str
+
+
 def get_db():
     import psycopg2, os
     return psycopg2.connect(
