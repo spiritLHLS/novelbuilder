@@ -17,6 +17,7 @@ type LLMProfile struct {
 	ModelName    string    `json:"model_name"`
 	MaxTokens    int       `json:"max_tokens"`
 	Temperature  float64   `json:"temperature"`
+	RPMLimit     int       `json:"rpm_limit"`
 	IsDefault    bool      `json:"is_default"`
 	HasAPIKey    bool      `json:"has_api_key"`
 	MaskedAPIKey string    `json:"masked_api_key"`
@@ -38,6 +39,7 @@ type CreateLLMProfileRequest struct {
 	ModelName   string  `json:"model_name" binding:"required"`
 	MaxTokens   int     `json:"max_tokens"`
 	Temperature float64 `json:"temperature"`
+	RPMLimit    int     `json:"rpm_limit"`
 	IsDefault   bool    `json:"is_default"`
 }
 
@@ -49,6 +51,7 @@ type UpdateLLMProfileRequest struct {
 	ModelName   string   `json:"model_name"`
 	MaxTokens   int      `json:"max_tokens"`
 	Temperature *float64 `json:"temperature"`
+	RPMLimit    *int     `json:"rpm_limit"`
 	IsDefault   *bool    `json:"is_default"`
 }
 

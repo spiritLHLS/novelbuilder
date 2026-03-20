@@ -49,6 +49,7 @@ class LLMConfig(BaseModel):
     model: str = "gpt-4o"
     max_tokens: int = 4096
     temperature: float = 0.4   # lower for extraction tasks
+    rpm_limit: int = 0         # 0 = unlimited
 
 class ChunkAnalyzeRequest(BaseModel):
     job_id: str
@@ -68,6 +69,39 @@ class MergeRequest(BaseModel):
     project_id: str
     chunks: list[ChunkData]
     llm_config: Optional[LLMConfig] = None
+
+# ── Per-profile sliding-window rate limiter ────────────────────────────────────
+
+# Maps (base_url, model) → {"lock": asyncio.Lock, "timestamps": list[float]}
+_rpm_state: dict[str, dict] = {}
+
+
+async def _rate_limit(cfg: LLMConfig) -> None:
+    """Enforce cfg.rpm_limit requests/minute using a 60-second sliding window.
+    A lock serialises window inspection so only one coroutine enters the
+    critical section at a time, preventing burst over-runs."""
+    if cfg.rpm_limit <= 0:
+        return
+    key = f"{cfg.base_url}|{cfg.model}"
+    if key not in _rpm_state:
+        _rpm_state[key] = {"lock": asyncio.Lock(), "timestamps": []}
+    state = _rpm_state[key]
+
+    async with state["lock"]:
+        while True:
+            now = time.monotonic()
+            cutoff = now - 60.0
+            state["timestamps"] = [t for t in state["timestamps"] if t >= cutoff]
+
+            if len(state["timestamps"]) < cfg.rpm_limit:
+                state["timestamps"].append(now)
+                return
+
+            # Must wait until the oldest request falls outside the 60-second window.
+            wait_secs = state["timestamps"][0] + 60.0 - now + 0.05
+            logger.debug("RPM limit %d reached, waiting %.1fs", cfg.rpm_limit, wait_secs)
+            await asyncio.sleep(max(wait_secs, 0.05))
+
 
 # ── LLM helper (async, with built-in retry) ───────────────────────────────────
 
@@ -104,6 +138,7 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dic
     async with httpx.AsyncClient(timeout=120.0) as client:
         for attempt in range(1, max_retries + 1):
             try:
+                await _rate_limit(cfg)
                 resp = await client.post(f"{base_url}/chat/completions",
                                          headers=headers, json=payload)
                 if resp.status_code in (429, 500, 502, 503, 504):
@@ -296,6 +331,7 @@ async def merge_chunks(req: MergeRequest):
             model=req.llm_config.model,
             max_tokens=req.llm_config.max_tokens,
             temperature=0.3,  # lower for merge/dedup task
+            rpm_limit=req.llm_config.rpm_limit,
         )
     else:
         cfg = LLMConfig(

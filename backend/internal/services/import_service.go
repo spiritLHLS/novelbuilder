@@ -145,15 +145,16 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 	}
 
 	var apiKey, model, baseURL, provider *string
+	var rpmLimit *int
 	if profileID != nil {
-		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url, provider FROM llm_profiles WHERE id = $1`, profileID).
-			Scan(&apiKey, &model, &baseURL, &provider)
+		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url, provider, rpm_limit FROM llm_profiles WHERE id = $1`, profileID).
+			Scan(&apiKey, &model, &baseURL, &provider, &rpmLimit)
 	}
 	if apiKey == nil {
 		// Fall back to default profile
 		err2 := s.db.QueryRow(ctx,
-			`SELECT api_key, model_name, base_url, provider FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
-		).Scan(&apiKey, &model, &baseURL, &provider)
+			`SELECT api_key, model_name, base_url, provider, rpm_limit FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
+		).Scan(&apiKey, &model, &baseURL, &provider, &rpmLimit)
 		if err2 != nil {
 			return nil, nil // No profile at all; caller handles
 		}
@@ -176,6 +177,9 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 	}
 	if provider != nil {
 		cfg["provider"] = *provider
+	}
+	if rpmLimit != nil {
+		cfg["rpm_limit"] = *rpmLimit
 	}
 	return cfg, nil
 }

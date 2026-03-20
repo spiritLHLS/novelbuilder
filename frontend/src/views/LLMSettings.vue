@@ -39,6 +39,11 @@
         </template>
       </el-table-column>
       <el-table-column label="Max Tokens" prop="max_tokens" width="110" align="right" />
+      <el-table-column label="限速 (RPM)" prop="rpm_limit" width="100" align="right">
+        <template #default="{ row }">
+          {{ row.rpm_limit > 0 ? row.rpm_limit : '不限制' }}
+        </template>
+      </el-table-column>
       <el-table-column label="默认" width="80" align="center">
         <template #default="{ row }">
           <el-icon v-if="row.is_default" class="default-icon"><StarFilled /></el-icon>
@@ -106,6 +111,10 @@
         <el-form-item label="Temperature">
           <el-slider v-model="form.temperature" :min="0" :max="2" :step="0.05" show-input />
         </el-form-item>
+        <el-form-item label="限速 (RPM)">
+          <el-input-number v-model="form.rpm_limit" :min="0" :max="1000" :step="5" style="width:100%" />
+          <div class="hint" style="margin-top:4px">每分钟最大请求数，0 表示不限制（适用于受并发上限的中转站）</div>
+        </el-form-item>
         <el-form-item label="设为默认">
           <el-switch v-model="form.is_default" />
           <span class="hint">默认模型用于所有 AI 任务</span>
@@ -136,6 +145,7 @@ interface LLMProfile {
   model_name: string
   max_tokens: number
   temperature: number
+  rpm_limit: number
   is_default: boolean
   has_api_key: boolean
   masked_api_key: string
@@ -156,6 +166,7 @@ const defaultForm = () => ({
   model_name: '',
   max_tokens: 8192,
   temperature: 0.7,
+  rpm_limit: 0,
   is_default: false,
 })
 
@@ -193,6 +204,7 @@ function editProfile(profile: LLMProfile) {
     model_name: profile.model_name,
     max_tokens: profile.max_tokens,
     temperature: profile.temperature,
+    rpm_limit: profile.rpm_limit,
     is_default: profile.is_default,
   })
   showCreateDialog.value = true
