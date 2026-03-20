@@ -1557,6 +1557,7 @@ async def novels_fetch_import(req: NovelFetchImportReq):
 
     Yields NDJSON lines:
       {"type": "progress", "done": N, "total": M, "chapter_title": "..."}
+      {"type": "chapter", "chapter_no": N, "chapter_id": "...", "title": "...", "content": "..."}
       {"type": "done", "file_path": "/data/uploads/xxx.txt", "total_chapters": N, "skipped_chapters": K}
     """
     try:
@@ -1580,10 +1581,11 @@ async def novels_fetch_import(req: NovelFetchImportReq):
                 client = registrar.get_client(req.site, cfg)
                 async with client:
                     for idx, chap_id in enumerate(req.chapter_ids, start=1):
+                        ch_data = None
                         try:
-                            ch = await client.get_chapter(req.book_id, chap_id)
-                            if ch:
-                                all_chapters.append(dict(ch))
+                            ch_data = await client.get_chapter(req.book_id, chap_id)
+                            if ch_data:
+                                all_chapters.append(dict(ch_data))
                         except Exception as exc:
                             logger.warning(
                                 "Skip chapter %s/%s: %s", req.book_id, chap_id, exc
@@ -1591,6 +1593,7 @@ async def novels_fetch_import(req: NovelFetchImportReq):
                         chapter_title = (
                             all_chapters[-1].get("title", "") if all_chapters else ""
                         )
+                        # Emit progress update
                         yield (
                             json.dumps(
                                 {
@@ -1603,6 +1606,21 @@ async def novels_fetch_import(req: NovelFetchImportReq):
                             )
                             + "\n"
                         )
+                        # Emit chapter content so the Go backend can persist it to DB
+                        if ch_data:
+                            yield (
+                                json.dumps(
+                                    {
+                                        "type":       "chapter",
+                                        "chapter_no": idx,
+                                        "chapter_id": chap_id,
+                                        "title":      str(ch_data.get("title", "")),
+                                        "content":    str(ch_data.get("content", "")),
+                                    },
+                                    ensure_ascii=False,
+                                )
+                                + "\n"
+                            )
 
             # Build text file
             upload_dir = os.getenv("UPLOAD_DIR", "/data/uploads")

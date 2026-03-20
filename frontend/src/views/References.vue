@@ -15,43 +15,160 @@
           <el-button type="default"><el-icon><Upload /></el-icon>本地上传</el-button>
         </el-upload>
 
+        <!-- Local bundle import -->
+        <input
+          ref="importFileInput"
+          type="file"
+          accept=".json"
+          style="display:none"
+          @change="handleImportFile"
+        />
+        <el-button type="default" @click="importFileInput?.click()">
+          <el-icon><Download /></el-icon>本地导入
+        </el-button>
+
+        <!-- Batch export selected -->
+        <el-button
+          v-if="selectedIds.length > 0"
+          type="success"
+          @click="exportBatch"
+          :loading="exportingBatch"
+        >
+          <el-icon><DocumentCopy /></el-icon>导出已选 ({{ selectedIds.length }})
+        </el-button>
+
         <!-- Multi-site search & download -->
         <el-button type="primary" @click="openFetchDialog">
           <el-icon><Search /></el-icon>从书库搜索导入
         </el-button>
-
       </div>
     </div>
 
-    <el-table :data="references" v-loading="loading" style="width: 100%">
-      <el-table-column prop="title" label="书名" />
-      <el-table-column prop="author" label="作者" width="120" />
-      <el-table-column prop="genre" label="类型" width="100" />
-      <el-table-column label="来源" width="100">
+    <el-table
+      :data="references"
+      v-loading="loading"
+      style="width: 100%"
+      @selection-change="handleSelectionChange"
+    >
+      <el-table-column type="selection" width="45" />
+      <el-table-column prop="title" label="书名" min-width="140" />
+      <el-table-column prop="author" label="作者" width="110" />
+      <el-table-column prop="genre" label="类型" width="80" />
+      <el-table-column label="来源" width="90">
         <template #default="{ row }">
-          <el-tag v-if="row.source_url" type="success" size="small" title="从网络导入">网络</el-tag>
+          <el-tag v-if="row.source_url" type="success" size="small">网络</el-tag>
           <el-tag v-else-if="row.fetch_site" type="primary" size="small">{{ row.fetch_site }}</el-tag>
           <el-tag v-else type="info" size="small">本地</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="status" label="分析状态" width="110">
+      <el-table-column label="下载状态" width="140">
+        <template #default="{ row }">
+          <template v-if="row.fetch_status === 'downloading'">
+            <el-progress
+              :percentage="row.fetch_total > 0 ? Math.round(row.fetch_done / row.fetch_total * 100) : 0"
+              :stroke-width="6"
+              style="width:100px"
+            />
+            <span class="progress-text">{{ row.fetch_done }}/{{ row.fetch_total }}</span>
+          </template>
+          <el-tag v-else-if="row.fetch_status === 'completed'" type="success" size="small">已下载</el-tag>
+          <el-tag v-else-if="row.fetch_status === 'failed'" type="danger" size="small">下载失败</el-tag>
+          <el-tag v-else type="info" size="small">—</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="status" label="分析状态" width="90">
         <template #default="{ row }">
           <el-tag :type="row.status === 'completed' ? 'success' : 'info'" size="small">
             {{ row.status === 'completed' ? '已分析' : '待分析' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="280">
+      <el-table-column label="操作" width="330" fixed="right">
         <template #default="{ row }">
+          <el-button size="small" @click="openChaptersDialog(row)">章节管理</el-button>
           <el-button size="small" @click="viewAnalysis(row)">查看分析</el-button>
           <el-button size="small" type="primary" @click="startAnalysis(row.id)"
             :loading="analyzing === row.id">分析</el-button>
-          <el-button size="small" type="warning" @click="showMigration(row)">迁移配置</el-button>
+          <el-button size="small" type="success" @click="exportSingle(row)"
+            :loading="exporting === row.id">导出</el-button>
+          <el-button size="small" type="warning" @click="showMigration(row)">迁移</el-button>
           <el-button size="small" type="danger" @click="deleteReference(row.id)"
             :loading="deleting === row.id">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
+
+    <!-- ── Chapter Management Dialog ────────────────────────────────────── -->
+    <el-dialog
+      v-model="showChaptersDialog"
+      :title="`章节管理：${chapterRefTitle}`"
+      width="780px"
+      top="5vh"
+    >
+      <div class="chapter-toolbar">
+        <el-input
+          v-model="chapterSearch"
+          placeholder="搜索章节标题…"
+          clearable
+          style="width:240px"
+          @input="chapterSearchPage = 1"
+        />
+        <div class="chapter-toolbar-right">
+          <el-checkbox
+            v-model="chapterSelectAll"
+            :indeterminate="isChapterIndeterminate"
+            @change="toggleSelectAllChapters"
+          >全选本页</el-checkbox>
+          <el-button
+            size="small"
+            type="danger"
+            :disabled="selectedChapterIds.length === 0"
+            :loading="deletingChapters"
+            @click="batchDeleteChapters"
+          >
+            <el-icon><Delete /></el-icon>删除选中 ({{ selectedChapterIds.length }})
+          </el-button>
+        </div>
+      </div>
+
+      <div v-if="chaptersLoading" class="loading-block">
+        <el-icon class="is-loading"><Loading /></el-icon> 加载章节…
+      </div>
+      <el-table
+        v-else
+        :data="pagedChapters"
+        size="small"
+        style="width:100%"
+        @selection-change="handleChapterSelectionChange"
+        ref="chapterTableRef"
+      >
+        <el-table-column type="selection" width="45" />
+        <el-table-column prop="chapter_no" label="序号" width="60" />
+        <el-table-column prop="title" label="章节标题" min-width="200" />
+        <el-table-column prop="word_count" label="字数" width="70" />
+        <el-table-column label="操作" width="80">
+          <template #default="{ row }">
+            <el-button size="small" type="danger" link @click="deleteSingleChapter(row.id)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div class="chapter-pagination" v-if="filteredChapters.length > CHAPTER_PAGE_SIZE">
+        <el-pagination
+          v-model:current-page="chapterSearchPage"
+          :page-size="CHAPTER_PAGE_SIZE"
+          :total="filteredChapters.length"
+          layout="prev, pager, next"
+          small
+        />
+      </div>
+
+      <div class="chapter-footer-hint" v-if="chapters.length > 0">
+        共 {{ chapters.length }} 章（已删 {{ deletedCount }} 章）
+      </div>
+
+      <el-empty v-if="!chaptersLoading && filteredChapters.length === 0" description="暂无章节" />
+    </el-dialog>
 
     <!-- ── Multi-step Fetch Dialog ─────────────────────────────────────── -->
     <el-dialog
@@ -196,28 +313,17 @@
         </div>
       </div>
 
-      <!-- STEP 4: importing (streaming progress) -->
+      <!-- STEP 4: importing — now background, show brief confirmation -->
       <div v-else-if="fetchStep === 'importing'" class="fetch-step importing-step">
-        <div class="importing-title">{{ importingBookTitle }} 导入中…</div>
-        <el-progress
-          :percentage="importPercent"
-          :stroke-width="14"
-          status="active"
-          style="margin: 16px 0"
-        />
-        <div class="importing-status">
-          {{ importProgress.done }} / {{ importProgress.total }} 章
-          <span v-if="importProgress.chapterTitle" class="chapter-title-hint">
-            — {{ importProgress.chapterTitle }}
-          </span>
-        </div>
-        <el-alert
-          v-if="importError"
-          type="error"
-          :title="importError"
-          :closable="false"
-          style="margin-top: 12px"
-        />
+        <el-result icon="success" title="下载已在后台启动">
+          <template #sub-title>
+            <p>《{{ importingBookTitle }}》正在后台下载，共 {{ importStartedTotal }} 章。</p>
+            <p>您可以切换到其他页面，右下角下载管理器会持续显示进度。</p>
+          </template>
+          <template #extra>
+            <el-button type="primary" @click="showFetchDialog = false">知道了</el-button>
+          </template>
+        </el-result>
       </div>
     </el-dialog>
 
@@ -297,14 +403,16 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
-import { Upload, Link, Search, Loading, Lock } from '@element-plus/icons-vue'
-import { referenceApi, streamFetchImport, streamSearchNovels } from '@/api'
-import type { NovelSearchResult, FetchBookInfo, FetchChapterInfo } from '@/api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Upload, Link, Search, Loading, Lock, Delete, Download, DocumentCopy } from '@element-plus/icons-vue'
+import { referenceApi, streamSearchNovels } from '@/api'
+import type { NovelSearchResult, FetchBookInfo, FetchChapterInfo, ReferenceChapter } from '@/api'
 import VChart from 'vue-echarts'
+import { useDownloadStore } from '@/stores/download'
 
 const route = useRoute()
 const projectId = route.params.projectId as string
+const downloadStore = useDownloadStore()
 
 const genres = ['玄幻', '修真', '西幻', '都市', '历史', '科幻', '悬疑', '武侠', '其他']
 
@@ -313,16 +421,126 @@ const loading = ref(false)
 const references = ref<any[]>([])
 const analyzing = ref<string | null>(null)
 const deleting = ref<string | null>(null)
+const exporting = ref<string | null>(null)
+const exportingBatch = ref(false)
 const showAnalysisDialog = ref(false)
 const showMigrationDialog = ref(false)
 const selectedRef = ref<any>(null)
 const selectedRefId = ref('')
+const selectedIds = ref<string[]>([])
+const importFileInput = ref<HTMLInputElement | null>(null)
 
 const migrationForm = ref({
   intensity: 50,
   layers: ['style', 'atmosphere'],
   forbidden: '',
 })
+
+// ─── chapter management ───────────────────────────────────────────────────────
+const showChaptersDialog = ref(false)
+const chapterRefId = ref('')
+const chapterRefTitle = ref('')
+const chapters = ref<ReferenceChapter[]>([])
+const chaptersLoading = ref(false)
+const chapterSearch = ref('')
+const chapterSearchPage = ref(1)
+const CHAPTER_PAGE_SIZE = 20
+const selectedChapterIds = ref<string[]>([])
+const chapterSelectAll = ref(false)
+const deletingChapters = ref(false)
+const chapterTableRef = ref<any>(null)
+
+const deletedCount = ref(0)
+
+const filteredChapters = computed(() => {
+  const q = chapterSearch.value.trim().toLowerCase()
+  if (!q) return chapters.value
+  return chapters.value.filter(c => c.title.toLowerCase().includes(q))
+})
+
+const pagedChapters = computed(() => {
+  const start = (chapterSearchPage.value - 1) * CHAPTER_PAGE_SIZE
+  return filteredChapters.value.slice(start, start + CHAPTER_PAGE_SIZE)
+})
+
+const isChapterIndeterminate = computed(() => {
+  const pageIds = pagedChapters.value.map(c => c.id)
+  const selected = selectedChapterIds.value.filter(id => pageIds.includes(id))
+  return selected.length > 0 && selected.length < pageIds.length
+})
+
+async function openChaptersDialog(row: any) {
+  chapterRefId.value = row.id
+  chapterRefTitle.value = row.title || row.id
+  chapterSearch.value = ''
+  chapterSearchPage.value = 1
+  selectedChapterIds.value = []
+  deletedCount.value = 0
+  showChaptersDialog.value = true
+  await loadChapters()
+}
+
+async function loadChapters() {
+  chaptersLoading.value = true
+  try {
+    const res = await referenceApi.listChapters(chapterRefId.value)
+    chapters.value = (res.data as any).data || []
+  } catch (e: any) {
+    ElMessage.error('加载章节失败：' + (e?.response?.data?.error || e?.message))
+  } finally {
+    chaptersLoading.value = false
+  }
+}
+
+function handleChapterSelectionChange(rows: ReferenceChapter[]) {
+  selectedChapterIds.value = rows.map(r => r.id)
+  const pageIds = pagedChapters.value.map(c => c.id)
+  chapterSelectAll.value = pageIds.every(id => selectedChapterIds.value.includes(id))
+}
+
+function toggleSelectAllChapters(val: boolean) {
+  if (!chapterTableRef.value) return
+  if (val) {
+    pagedChapters.value.forEach(row => chapterTableRef.value.toggleRowSelection(row, true))
+  } else {
+    pagedChapters.value.forEach(row => chapterTableRef.value.toggleRowSelection(row, false))
+  }
+}
+
+async function deleteSingleChapter(id: string) {
+  try {
+    await referenceApi.deleteChapter(id)
+    chapters.value = chapters.value.filter(c => c.id !== id)
+    deletedCount.value++
+    ElMessage.success('章节已删除')
+  } catch {
+    ElMessage.error('删除失败')
+  }
+}
+
+async function batchDeleteChapters() {
+  if (selectedChapterIds.value.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${selectedChapterIds.value.length} 章吗？`,
+      '批量删除',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch { return }
+  deletingChapters.value = true
+  try {
+    await referenceApi.batchDeleteChapters(chapterRefId.value, selectedChapterIds.value)
+    const deletedSet = new Set(selectedChapterIds.value)
+    deletedCount.value += deletedSet.size
+    chapters.value = chapters.value.filter(c => !deletedSet.has(c.id))
+    selectedChapterIds.value = []
+    ElMessage.success('批量删除成功')
+  } catch {
+    ElMessage.error('批量删除失败')
+  } finally {
+    deletingChapters.value = false
+  }
+}
 
 // ─── multi-step fetch dialog ──────────────────────────────────────────────────
 const showFetchDialog = ref(false)
@@ -333,7 +551,7 @@ const searchKeyword = ref('')
 const searchLoading = ref(false)
 const searchResults = ref<NovelSearchResult[]>([])
 const searchPage = ref(0)
-const searchStreamStatus = ref('')  // e.g. "已从 n个站点获取 N 条结果..."
+const searchStreamStatus = ref('')
 let _searchAbort: AbortController | null = null
 
 const totalPages = computed(() => Math.ceil(searchResults.value.length / PAGE_SIZE))
@@ -347,15 +565,14 @@ const bookInfoLoading = ref(false)
 const fetchGenre = ref('')
 const selectedChapterRange = ref<[number, number]>([0, 0])
 
-const importProgress = ref({ done: 0, total: 0, chapterTitle: '' })
 const importingBookTitle = ref('')
-const importError = ref('')
+const importStartedTotal = ref(0)
 
 const fetchDialogTitle = computed(() => {
   if (fetchStep.value === 'search') return '搜索参考书'
   if (fetchStep.value === 'results') return `搜索结果：${searchKeyword.value}`
   if (fetchStep.value === 'chapters') return bookInfo.value?.title ?? '选择章节'
-  return '正在导入…'
+  return '下载已启动'
 })
 
 const flatChapters = computed((): FetchChapterInfo[] => {
@@ -363,27 +580,14 @@ const flatChapters = computed((): FetchChapterInfo[] => {
   return bookInfo.value.volumes.flatMap(v => v.chapters)
 })
 
-const importPercent = computed(() => {
-  const { done, total } = importProgress.value
-  if (total === 0) return 0
-  return Math.round((done / total) * 100)
-})
-
 const chapterRangeMarks = computed(() => {
   const total = flatChapters.value.length
   if (total === 0) return {}
-  return {
-    0: '1',
-    [total - 1]: String(total),
-  }
+  return { 0: '1', [total - 1]: String(total) }
 })
 
 function openFetchDialog() {
-  // Cancel any in-flight search stream before resetting state
-  if (_searchAbort) {
-    _searchAbort.abort()
-    _searchAbort = null
-  }
+  if (_searchAbort) { _searchAbort.abort(); _searchAbort = null }
   fetchStep.value = 'search'
   searchKeyword.value = ''
   searchResults.value = []
@@ -391,64 +595,45 @@ function openFetchDialog() {
   bookInfo.value = null
   selectedBook.value = null
   fetchGenre.value = ''
-  importError.value = ''
   showFetchDialog.value = true
 }
 
 function handleFetchDialogClose(done: () => void) {
-  if (fetchStep.value === 'importing') {
-    ElMessageBox.confirm('导入正在进行中，确定要关闭吗？', '提示', {
-      confirmButtonText: '关闭',
-      cancelButtonText: '继续等待',
-      type: 'warning',
-    }).then(done).catch(() => {})
-  } else {
-    done()
-  }
+  done()
 }
 
 async function doSearch() {
   const kw = searchKeyword.value.trim()
   if (!kw) return
-
-  // Cancel any previous in-flight search
-  if (_searchAbort) {
-    _searchAbort.abort()
-  }
+  if (_searchAbort) _searchAbort.abort()
   _searchAbort = new AbortController()
   const signal = _searchAbort.signal
-
   searchLoading.value = true
   searchResults.value = []
   searchPage.value = 0
   searchStreamStatus.value = '正在连接各站点…'
   fetchStep.value = 'results'
-
   let siteCount = 0
   try {
     for await (const event of streamSearchNovels(projectId, kw, { signal })) {
       if (event.type === 'batch') {
         searchResults.value.push(...event.results)
         siteCount++
-        searchStreamStatus.value =
-          `已从 ${siteCount} 个站点获取 ${searchResults.value.length} 条结果…`
+        searchStreamStatus.value = `已从 ${siteCount} 个站点获取 ${searchResults.value.length} 条结果…`
       } else if (event.type === 'done') {
-        searchStreamStatus.value =
-          `搜索完成，共 ${siteCount} 个站点，${event.total} 条结果`
+        searchStreamStatus.value = `搜索完成，共 ${siteCount} 个站点，${event.total} 条结果`
       } else if (event.type === 'error') {
         ElMessage.error(`搜索出错：${event.message}`)
       }
     }
   } catch (e: any) {
-    if (signal.aborted) return  // Normal abort on re-search — do not show error
-    // Fallback to non-streaming search if stream endpoint unavailable
+    if (signal.aborted) return
     try {
       const res = await referenceApi.searchNovels(projectId, kw)
       searchResults.value = (res.data as any).results ?? []
       searchStreamStatus.value = `共 ${searchResults.value.length} 条结果`
     } catch (e2: any) {
-      const msg = e2?.response?.data?.error || e2?.response?.data?.detail || '搜索失败，请稍后重试'
-      ElMessage.error(msg)
+      ElMessage.error(e2?.response?.data?.error || '搜索失败，请稍后重试')
     }
   } finally {
     searchLoading.value = false
@@ -466,8 +651,7 @@ async function selectBook(book: NovelSearchResult) {
     const total = bookInfo.value.total_chapters
     selectedChapterRange.value = [0, Math.max(total - 1, 0)]
   } catch (e: any) {
-    const msg = e?.response?.data?.error || e?.response?.data?.detail || '获取章节列表失败'
-    ElMessage.error(msg)
+    ElMessage.error(e?.response?.data?.error || '获取章节列表失败')
   } finally {
     bookInfoLoading.value = false
   }
@@ -478,43 +662,91 @@ async function startFetchImport() {
   const flat = flatChapters.value
   const [startIdx, endIdx] = selectedChapterRange.value
   const chapterIds = flat.slice(startIdx, endIdx + 1).map(c => c.chapter_id)
-  if (chapterIds.length === 0) {
-    ElMessage.warning('请至少选择一章')
-    return
-  }
+  if (chapterIds.length === 0) { ElMessage.warning('请至少选择一章'); return }
 
   importingBookTitle.value = bookInfo.value.title
-  importProgress.value = { done: 0, total: chapterIds.length, chapterTitle: '' }
-  importError.value = ''
+  importStartedTotal.value = chapterIds.length
   fetchStep.value = 'importing'
 
   try {
-    for await (const event of streamFetchImport(projectId, {
+    const res = await referenceApi.startFetchImport(projectId, {
       site: selectedBook.value.site,
       book_id: selectedBook.value.book_id,
       title: bookInfo.value.title,
       author: bookInfo.value.author,
       genre: fetchGenre.value,
       chapter_ids: chapterIds,
-    })) {
-      if (event.type === 'progress') {
-        importProgress.value = {
-          done: event.done,
-          total: event.total,
-          chapterTitle: event.chapter_title,
-        }
-      } else if (event.type === 'done') {
-        ElMessage.success(`《${importingBookTitle.value}》导入完成，共 ${event.total_chapters} 章`)
-        showFetchDialog.value = false
-        await fetchRefs()
-      } else if (event.type === 'error') {
-        importError.value = event.message
-        fetchStep.value = 'chapters'
-      }
-    }
+    })
+    const data: any = res.data
+    // Register with download store so the floating widget tracks it
+    downloadStore.addTask(
+      data.ref_id,
+      projectId,
+      bookInfo.value.title,
+      data.fetch_total ?? chapterIds.length,
+    )
+    // Refresh reference list to show the new record
+    await fetchRefs()
   } catch (e: any) {
-    importError.value = e?.message || '导入失败，请重试'
+    ElMessage.error(e?.response?.data?.error || '启动下载失败')
     fetchStep.value = 'chapters'
+  }
+}
+
+// ─── export / import ──────────────────────────────────────────────────────────
+function handleSelectionChange(rows: any[]) {
+  selectedIds.value = rows.map(r => r.id)
+}
+
+async function exportSingle(row: any) {
+  exporting.value = row.id
+  try {
+    const res = await referenceApi.exportSingle(row.id)
+    downloadBlob(res.data, `ref_${row.title || row.id}.json`)
+  } catch {
+    ElMessage.error('导出失败')
+  } finally {
+    exporting.value = null
+  }
+}
+
+async function exportBatch() {
+  if (selectedIds.value.length === 0) return
+  exportingBatch.value = true
+  try {
+    const res = await referenceApi.exportBatch(projectId, selectedIds.value)
+    downloadBlob(res.data, 'references_export.json')
+  } catch {
+    ElMessage.error('批量导出失败')
+  } finally {
+    exportingBatch.value = false
+  }
+}
+
+function downloadBlob(data: Blob, filename: string) {
+  const url = URL.createObjectURL(data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function handleImportFile(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  try {
+    const text = await file.text()
+    const bundle = JSON.parse(text)
+    const res = await referenceApi.importLocal(projectId, bundle)
+    const data: any = res.data
+    ElMessage.success(`导入成功，共导入 ${data.count} 本参考书`)
+    await fetchRefs()
+  } catch (e: any) {
+    ElMessage.error('导入失败：' + (e?.response?.data?.error || e?.message || '格式错误'))
+  } finally {
+    // Reset file input so the same file can be re-selected
+    if (importFileInput.value) importFileInput.value.value = ''
   }
 }
 

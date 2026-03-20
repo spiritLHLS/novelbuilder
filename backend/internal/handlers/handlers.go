@@ -199,10 +199,18 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/projects/:id/references/search-stream", h.SearchReferenceNovelsStream)
 	api.POST("/projects/:id/references/book-info", h.GetReferenceBookInfo)
 	api.POST("/projects/:id/references/fetch-import", h.FetchImportReference)
+	api.POST("/projects/:id/references/import-local", h.ImportReferenceLocal)
+	api.POST("/projects/:id/references/export-batch", h.ExportReferenceBatch)
 	api.GET("/references/:id", h.GetReference)
 	api.PUT("/references/:id/migration-config", h.UpdateMigrationConfig)
 	api.POST("/references/:id/analyze", h.AnalyzeReference)
 	api.DELETE("/references/:id", h.DeleteReference)
+	api.GET("/references/:id/export", h.ExportReferenceSingle)
+	api.POST("/references/:id/resume-download", h.ResumeReferenceDownload)
+	// Reference chapter management
+	api.GET("/references/:id/chapters", h.ListReferenceChapters)
+	api.DELETE("/reference-chapters/:id", h.DeleteReferenceChapter)
+	api.POST("/references/:id/chapters/batch-delete", h.BatchDeleteReferenceChapters)
 
 	// RAG knowledge base management
 	api.POST("/projects/:id/rag/rebuild", h.RebuildRAG)
@@ -1265,8 +1273,9 @@ func (h *Handler) GetReferenceBookInfo(c *gin.Context) {
 	c.Data(resp.StatusCode, "application/json", raw)
 }
 
-// FetchImportReference streams chapter download progress from the sidecar and,
-// on the final "done" event, creates a reference_materials DB record.
+// FetchImportReference creates a reference record immediately and starts a background
+// goroutine to download chapters from the sidecar. The response returns instantly with
+// the new ref_id so the frontend can poll progress via GET /references/:id.
 var fetchImportHTTPClient = &http.Client{Timeout: 600 * time.Second}
 
 func (h *Handler) FetchImportReference(c *gin.Context) {
@@ -1283,76 +1292,276 @@ func (h *Handler) FetchImportReference(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	if len(body.ChapterIDs) == 0 {
+		c.JSON(400, gin.H{"error": "chapter_ids must not be empty"})
+		return
+	}
 
+	// Create the DB record immediately so it survives browser disconnection.
+	ref, err := h.references.CreateDownloadTask(c.Request.Context(),
+		projectID, body.Title, body.Author, body.Genre,
+		body.Site, body.BookID, body.ChapterIDs)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to create download task: " + err.Error()})
+		return
+	}
+
+	// Respond immediately so the frontend can start polling.
+	c.JSON(202, gin.H{
+		"ref_id":      ref.ID,
+		"status":      "downloading",
+		"fetch_total": len(body.ChapterIDs),
+	})
+
+	// Background goroutine: download chapters from sidecar, persist to DB.
 	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
 	if sidecarURL == "" {
 		sidecarURL = "http://localhost:8081"
 	}
+	go h.runBackgroundDownload(ref.ID, sidecarURL, body.Site, body.BookID,
+		body.Title, body.Author, body.ChapterIDs)
+}
+
+// runBackgroundDownload calls the sidecar SSE stream and stores each chapter in the DB.
+func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, author string, chapterIDs []string) {
+	ctx := context.Background()
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"site":        body.Site,
-		"book_id":     body.BookID,
-		"title":       body.Title,
-		"author":      body.Author,
-		"chapter_ids": body.ChapterIDs,
+		"site":        site,
+		"book_id":     bookID,
+		"title":       title,
+		"author":      author,
+		"chapter_ids": chapterIDs,
 	})
-	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, sidecarURL+"/novels/fetch-import", bytes.NewReader(reqBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		sidecarURL+"/novels/fetch-import", bytes.NewReader(reqBody))
 	if err != nil {
-		c.JSON(500, gin.H{"error": "failed to build sidecar request"})
+		h.logger.Error("runBackgroundDownload: build request", zap.String("ref_id", refID), zap.Error(err))
+		h.references.MarkFetchFailed(ctx, refID, "failed to build sidecar request: "+err.Error()) //nolint
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := fetchImportHTTPClient.Do(httpReq)
 	if err != nil {
-		c.JSON(502, gin.H{"error": "sidecar unavailable: " + err.Error()})
+		h.logger.Error("runBackgroundDownload: sidecar unavailable", zap.String("ref_id", refID), zap.Error(err))
+		h.references.MarkFetchFailed(ctx, refID, "sidecar unavailable: "+err.Error()) //nolint
 		return
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != 200 {
 		errBody, _ := io.ReadAll(resp.Body)
-		c.JSON(502, gin.H{"error": string(errBody)})
+		h.references.MarkFetchFailed(ctx, refID, string(errBody)) //nolint
 		return
 	}
 
-	c.Header("Content-Type", "application/x-ndjson")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("X-Accel-Buffering", "no")
-
-	flusher, canFlush := c.Writer.(http.Flusher)
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	scanner.Buffer(make([]byte, 4<<20), 4<<20) // 4MB buffer per line
+	progressDone := 0
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
 			continue
 		}
-		// Inspect the "done" event to create reference_materials record.
 		var event map[string]interface{}
-		if json.Unmarshal([]byte(line), &event) == nil {
-			if evType, _ := event["type"].(string); evType == "done" {
-				if filePath, _ := event["file_path"].(string); filePath != "" {
-					ref, err := h.references.Create(c.Request.Context(), projectID,
-						body.Title, body.Author, body.Genre, filePath, "")
-					if err == nil {
-						event["ref_id"] = ref.ID
-					}
-				}
-				augmented, _ := json.Marshal(event)
-				fmt.Fprintf(c.Writer, "%s\n", augmented)
-				if canFlush {
-					flusher.Flush()
-				}
-				continue
-			}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
 		}
-		fmt.Fprintf(c.Writer, "%s\n", line)
-		if canFlush {
-			flusher.Flush()
+		evType, _ := event["type"].(string)
+		switch evType {
+		case "progress":
+			if done, ok := event["done"].(float64); ok {
+				progressDone = int(done)
+				h.references.UpdateFetchProgress(ctx, refID, progressDone) //nolint
+			}
+		case "chapter":
+			chapterNo, _ := event["chapter_no"].(float64)
+			chapterID, _ := event["chapter_id"].(string)
+			chTitle, _ := event["title"].(string)
+			content, _ := event["content"].(string)
+			h.references.SaveChapter(ctx, refID, chapterID, chTitle, content, int(chapterNo)) //nolint
+		case "done":
+			filePath, _ := event["file_path"].(string)
+			totalDownloaded := progressDone
+			if tc, ok := event["total_chapters"].(float64); ok {
+				totalDownloaded = int(tc)
+			}
+			h.references.MarkFetchComplete(ctx, refID, filePath, totalDownloaded) //nolint
+			h.logger.Info("background download complete", zap.String("ref_id", refID), zap.Int("chapters", totalDownloaded))
+			return
+		case "error":
+			msg, _ := event["message"].(string)
+			h.references.MarkFetchFailed(ctx, refID, msg) //nolint
+			h.logger.Error("background download failed", zap.String("ref_id", refID), zap.String("error", msg))
+			return
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		h.references.MarkFetchFailed(ctx, refID, "stream read error: "+err.Error()) //nolint
+	}
+}
+
+// ResumeReferenceDownload restarts a failed or interrupted download for the remaining chapters.
+func (h *Handler) ResumeReferenceDownload(c *gin.Context) {
+	refID := c.Param("id")
+	ref, err := h.references.Get(c.Request.Context(), refID)
+	if err != nil || ref == nil {
+		c.JSON(404, gin.H{"error": "reference not found"})
+		return
+	}
+	if ref.FetchStatus == "completed" {
+		c.JSON(400, gin.H{"error": "download already completed"})
+		return
+	}
+
+	// Determine which chapter IDs have been saved already
+	existing, _ := h.references.ListChapters(c.Request.Context(), refID)
+	doneIDs := make(map[string]bool, len(existing))
+	for _, ch := range existing {
+		doneIDs[ch.ChapterID] = true
+	}
+
+	// Parse the full list from fetch_chapter_ids
+	var allIDs []string
+	if err := json.Unmarshal(ref.FetchChapterIDs, &allIDs); err != nil || len(allIDs) == 0 {
+		c.JSON(400, gin.H{"error": "no chapter_ids recorded for this download; cannot resume"})
+		return
+	}
+
+	var remaining []string
+	for _, id := range allIDs {
+		if !doneIDs[id] {
+			remaining = append(remaining, id)
+		}
+	}
+	if len(remaining) == 0 {
+		// All chapters are already saved — just mark complete.
+		h.references.MarkFetchComplete(c.Request.Context(), refID, ref.FilePath, len(existing)) //nolint
+		c.JSON(200, gin.H{"ref_id": refID, "status": "completed", "message": "all chapters already downloaded"})
+		return
+	}
+
+	// Reset status to downloading and update counter
+	h.references.UpdateFetchProgress(c.Request.Context(), refID, len(existing)) //nolint
+	h.references.SetFetchStatus(c.Request.Context(), refID, "downloading")      //nolint
+
+	c.JSON(202, gin.H{
+		"ref_id":    refID,
+		"status":    "downloading",
+		"remaining": len(remaining),
+	})
+
+	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
+	if sidecarURL == "" {
+		sidecarURL = "http://localhost:8081"
+	}
+	go h.runBackgroundDownload(refID, sidecarURL, ref.FetchSite, ref.FetchBookID,
+		ref.Title, ref.Author, remaining)
+}
+
+// ListReferenceChapters lists non-deleted chapters of a reference book (without content).
+func (h *Handler) ListReferenceChapters(c *gin.Context) {
+	refID := c.Param("id")
+	chapters, err := h.references.ListChapters(c.Request.Context(), refID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if chapters == nil {
+		chapters = []models.ReferenceChapter{}
+	}
+	c.JSON(200, gin.H{"data": chapters})
+}
+
+// DeleteReferenceChapter soft-deletes a single chapter.
+func (h *Handler) DeleteReferenceChapter(c *gin.Context) {
+	chapterID := c.Param("id")
+	if err := h.references.SoftDeleteChapter(c.Request.Context(), chapterID); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "deleted"})
+}
+
+// BatchDeleteReferenceChapters soft-deletes multiple chapters by ID.
+func (h *Handler) BatchDeleteReferenceChapters(c *gin.Context) {
+	refID := c.Param("id")
+	var body struct {
+		IDs []string `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.references.BatchSoftDeleteChapters(c.Request.Context(), refID, body.IDs); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "deleted", "count": len(body.IDs)})
+}
+
+// ExportReferenceSingle exports a single reference book as a JSON bundle download.
+func (h *Handler) ExportReferenceSingle(c *gin.Context) {
+	refID := c.Param("id")
+	bundle, err := h.references.ExportBundle(c.Request.Context(), []string{refID})
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if len(bundle.References) == 0 {
+		c.JSON(404, gin.H{"error": "reference not found"})
+		return
+	}
+	title := bundle.References[0].Material.Title
+	if title == "" {
+		title = refID
+	}
+	filename := fmt.Sprintf("ref_%s.json", strings.ReplaceAll(title, " ", "_"))
+	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
+	c.JSON(200, bundle)
+}
+
+// ExportReferenceBatch exports multiple references as a single JSON bundle.
+func (h *Handler) ExportReferenceBatch(c *gin.Context) {
+	var body struct {
+		IDs []string `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	bundle, err := h.references.ExportBundle(c.Request.Context(), body.IDs)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Content-Disposition", `attachment; filename="references_export.json"`)
+	c.JSON(200, bundle)
+}
+
+// ImportReferenceLocal imports a JSON bundle previously exported from another instance.
+func (h *Handler) ImportReferenceLocal(c *gin.Context) {
+	projectID := c.Param("id")
+	var bundle models.ReferenceExportBundle
+	if err := c.ShouldBindJSON(&bundle); err != nil {
+		c.JSON(400, gin.H{"error": "invalid bundle format: " + err.Error()})
+		return
+	}
+	if bundle.Version != 1 {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("unsupported bundle version %d", bundle.Version)})
+		return
+	}
+	if len(bundle.References) == 0 {
+		c.JSON(400, gin.H{"error": "bundle contains no references"})
+		return
+	}
+	createdIDs, err := h.references.ImportBundle(c.Request.Context(), projectID, &bundle)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"created_ids": createdIDs, "count": len(createdIDs)})
 }
 
 func (h *Handler) UpdateMigrationConfig(c *gin.Context) {

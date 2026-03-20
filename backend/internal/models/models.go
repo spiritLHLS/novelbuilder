@@ -90,7 +90,40 @@ type ReferenceMaterial struct {
 	StyleCollection string          `json:"style_collection" db:"style_collection"`
 	SampleTexts     json.RawMessage `json:"sample_texts,omitempty" db:"sample_texts"`
 	Status          string          `json:"status" db:"status"`
+	// Download task tracking (migration 014)
+	FetchStatus     string          `json:"fetch_status" db:"fetch_status"`
+	FetchDone       int             `json:"fetch_done" db:"fetch_done"`
+	FetchTotal      int             `json:"fetch_total" db:"fetch_total"`
+	FetchError      string          `json:"fetch_error,omitempty" db:"fetch_error"`
+	FetchSite       string          `json:"fetch_site,omitempty" db:"fetch_site"`
+	FetchBookID     string          `json:"fetch_book_id,omitempty" db:"fetch_book_id"`
+	FetchChapterIDs json.RawMessage `json:"fetch_chapter_ids,omitempty" db:"fetch_chapter_ids"`
 	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
+}
+
+// ReferenceChapter stores a single downloaded chapter of a reference book.
+type ReferenceChapter struct {
+	ID        string    `json:"id" db:"id"`
+	RefID     string    `json:"ref_id" db:"ref_id"`
+	ChapterNo int       `json:"chapter_no" db:"chapter_no"`
+	ChapterID string    `json:"chapter_id" db:"chapter_id"`
+	Title     string    `json:"title" db:"title"`
+	Content   string    `json:"content,omitempty" db:"content"`
+	WordCount int       `json:"word_count" db:"word_count"`
+	IsDeleted bool      `json:"is_deleted" db:"is_deleted"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+}
+
+// ReferenceExportBundle is the portable format for single/batch export.
+type ReferenceExportBundle struct {
+	Version    int                   `json:"version"`
+	ExportedAt time.Time             `json:"exported_at"`
+	References []ReferenceExportItem `json:"references"`
+}
+
+type ReferenceExportItem struct {
+	Material ReferenceMaterial  `json:"material"`
+	Chapters []ReferenceChapter `json:"chapters"`
 }
 
 type WorldBible struct {

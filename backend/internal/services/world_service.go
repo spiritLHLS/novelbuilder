@@ -814,13 +814,18 @@ func (s *ReferenceService) Get(ctx context.Context, id string) (*models.Referenc
 		        COALESCE(source_url, ''),
 		        COALESCE(style_layer, '{}'), COALESCE(narrative_layer, '{}'), COALESCE(atmosphere_layer, '{}'),
 		        COALESCE(migration_config, '{}'), COALESCE(style_collection, ''), status, created_at,
-		        sample_texts
+		        sample_texts,
+		        COALESCE(fetch_status,'none'), COALESCE(fetch_done,0), COALESCE(fetch_total,0),
+		        COALESCE(fetch_error,''), COALESCE(fetch_site,''), COALESCE(fetch_book_id,''),
+		        COALESCE(fetch_chapter_ids,'[]'::jsonb)
 		 FROM reference_materials WHERE id = $1`, id).Scan(
 		&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
 		&ref.SourceURL,
 		&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
 		&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
-		&ref.SampleTexts)
+		&ref.SampleTexts,
+		&ref.FetchStatus, &ref.FetchDone, &ref.FetchTotal,
+		&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, &ref.FetchChapterIDs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -836,7 +841,10 @@ func (s *ReferenceService) List(ctx context.Context, projectID string) ([]models
 		        COALESCE(source_url, ''),
 		        COALESCE(style_layer, '{}'), COALESCE(narrative_layer, '{}'), COALESCE(atmosphere_layer, '{}'),
 		        COALESCE(migration_config, '{}'), COALESCE(style_collection, ''), status, created_at,
-		        sample_texts
+		        sample_texts,
+		        COALESCE(fetch_status,'none'), COALESCE(fetch_done,0), COALESCE(fetch_total,0),
+		        COALESCE(fetch_error,''), COALESCE(fetch_site,''), COALESCE(fetch_book_id,''),
+		        COALESCE(fetch_chapter_ids,'[]'::jsonb)
 		 FROM reference_materials WHERE project_id = $1 ORDER BY created_at`, projectID)
 	if err != nil {
 		return nil, err
@@ -850,7 +858,9 @@ func (s *ReferenceService) List(ctx context.Context, projectID string) ([]models
 			&ref.SourceURL,
 			&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
 			&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
-			&ref.SampleTexts); err != nil {
+			&ref.SampleTexts,
+			&ref.FetchStatus, &ref.FetchDone, &ref.FetchTotal,
+			&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, &ref.FetchChapterIDs); err != nil {
 			return nil, err
 		}
 		refs = append(refs, ref)
@@ -1056,4 +1066,294 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		return rebuilt, err
 	}
 	return rebuilt, nil
+}
+
+// ── Download task management (migration 014) ─────────────────────────────────
+
+// CreateDownloadTask inserts a reference_materials record immediately at the start of a download
+// so the task is persisted even if the browser disconnects.
+func (s *ReferenceService) CreateDownloadTask(ctx context.Context,
+	projectID, title, author, genre, site, bookID string, chapterIDs []string,
+) (*models.ReferenceMaterial, error) {
+	chapterIDsJSON, _ := json.Marshal(chapterIDs)
+	var ref models.ReferenceMaterial
+	err := s.db.QueryRow(ctx,
+		`INSERT INTO reference_materials
+		   (project_id, title, author, genre, fetch_status, fetch_total, fetch_done,
+		    fetch_site, fetch_book_id, fetch_chapter_ids, status)
+		 VALUES ($1,$2,$3,$4,'downloading',$5,0,$6,$7,$8,'processing')
+		 RETURNING id, project_id, title, author, genre,
+		           COALESCE(file_path,''), COALESCE(source_url,''), status,
+		           fetch_status, fetch_done, fetch_total,
+		           COALESCE(fetch_error,''), COALESCE(fetch_site,''), COALESCE(fetch_book_id,''),
+		           COALESCE(fetch_chapter_ids,'[]'::jsonb), created_at`,
+		projectID, title, author, genre,
+		len(chapterIDs), site, bookID, chapterIDsJSON,
+	).Scan(
+		&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre,
+		&ref.FilePath, &ref.SourceURL, &ref.Status,
+		&ref.FetchStatus, &ref.FetchDone, &ref.FetchTotal,
+		&ref.FetchError, &ref.FetchSite, &ref.FetchBookID,
+		&ref.FetchChapterIDs, &ref.CreatedAt,
+	)
+	return &ref, err
+}
+
+// UpdateFetchProgress updates the download progress counters.
+func (s *ReferenceService) UpdateFetchProgress(ctx context.Context, id string, done int) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reference_materials SET fetch_done = $1 WHERE id = $2`,
+		done, id)
+	return err
+}
+
+// MarkFetchComplete marks the download as successfully finished and records the file path.
+func (s *ReferenceService) MarkFetchComplete(ctx context.Context, id, filePath string, totalDownloaded int) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reference_materials
+		 SET fetch_status='completed', fetch_done=$2, file_path=$3
+		 WHERE id = $1`,
+		id, totalDownloaded, filePath)
+	return err
+}
+
+// MarkFetchFailed marks the download as failed and stores the error message.
+func (s *ReferenceService) MarkFetchFailed(ctx context.Context, id, errMsg string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reference_materials SET fetch_status='failed', fetch_error=$2 WHERE id=$1`,
+		id, errMsg)
+	return err
+}
+
+// SetFetchStatus updates fetch_status to the given value (e.g. 'downloading').
+func (s *ReferenceService) SetFetchStatus(ctx context.Context, id, status string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reference_materials SET fetch_status=$2 WHERE id=$1`,
+		id, status)
+	return err
+}
+
+// SaveChapter inserts a single downloaded chapter into reference_book_chapters.
+func (s *ReferenceService) SaveChapter(ctx context.Context, refID, chapterID, title, content string, chapterNo int) error {
+	wordCount := len([]rune(content))
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO reference_book_chapters (ref_id, chapter_no, chapter_id, title, content, word_count)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		refID, chapterNo, chapterID, title, content, wordCount)
+	return err
+}
+
+// ListChapters returns non-deleted chapters of a reference book, ordered by chapter_no.
+// Content is excluded to keep the payload small; use GetChapter for full content.
+func (s *ReferenceService) ListChapters(ctx context.Context, refID string) ([]models.ReferenceChapter, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, ref_id, chapter_no, chapter_id, title, word_count, is_deleted, created_at
+		 FROM reference_book_chapters
+		 WHERE ref_id = $1 AND NOT is_deleted
+		 ORDER BY chapter_no`, refID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var chapters []models.ReferenceChapter
+	for rows.Next() {
+		var ch models.ReferenceChapter
+		if err := rows.Scan(&ch.ID, &ch.RefID, &ch.ChapterNo, &ch.ChapterID,
+			&ch.Title, &ch.WordCount, &ch.IsDeleted, &ch.CreatedAt); err != nil {
+			return nil, err
+		}
+		chapters = append(chapters, ch)
+	}
+	return chapters, rows.Err()
+}
+
+// SoftDeleteChapter soft-deletes a chapter by ID.
+func (s *ReferenceService) SoftDeleteChapter(ctx context.Context, chapterID string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reference_book_chapters SET is_deleted=TRUE WHERE id=$1`,
+		chapterID)
+	return err
+}
+
+// BatchSoftDeleteChapters soft-deletes all specified chapter IDs that belong to refID.
+func (s *ReferenceService) BatchSoftDeleteChapters(ctx context.Context, refID string, chapterIDs []string) error {
+	if len(chapterIDs) == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(ctx,
+		`UPDATE reference_book_chapters SET is_deleted=TRUE
+		 WHERE ref_id=$1 AND id = ANY($2::uuid[])`,
+		refID, chapterIDs)
+	return err
+}
+
+// GetChapterFull returns a single chapter with full content.
+func (s *ReferenceService) GetChapterFull(ctx context.Context, chapterID string) (*models.ReferenceChapter, error) {
+	var ch models.ReferenceChapter
+	err := s.db.QueryRow(ctx,
+		`SELECT id, ref_id, chapter_no, chapter_id, title, content, word_count, is_deleted, created_at
+		 FROM reference_book_chapters WHERE id=$1`, chapterID).
+		Scan(&ch.ID, &ch.RefID, &ch.ChapterNo, &ch.ChapterID,
+			&ch.Title, &ch.Content, &ch.WordCount, &ch.IsDeleted, &ch.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &ch, nil
+}
+
+// ExportBundle builds the exportable JSON bundle for one or more references.
+func (s *ReferenceService) ExportBundle(ctx context.Context, refIDs []string) (*models.ReferenceExportBundle, error) {
+	bundle := &models.ReferenceExportBundle{
+		Version:    1,
+		ExportedAt: time.Now().UTC(),
+	}
+	for _, id := range refIDs {
+		ref, err := s.Get(ctx, id)
+		if err != nil || ref == nil {
+			continue
+		}
+		// Fetch all chapters (including content)
+		rows, err := s.db.Query(ctx,
+			`SELECT id, ref_id, chapter_no, chapter_id, title, content, word_count, is_deleted, created_at
+			 FROM reference_book_chapters
+			 WHERE ref_id=$1 AND NOT is_deleted ORDER BY chapter_no`, id)
+		if err != nil {
+			return nil, err
+		}
+		var chapters []models.ReferenceChapter
+		for rows.Next() {
+			var ch models.ReferenceChapter
+			if err := rows.Scan(&ch.ID, &ch.RefID, &ch.ChapterNo, &ch.ChapterID,
+				&ch.Title, &ch.Content, &ch.WordCount, &ch.IsDeleted, &ch.CreatedAt); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			chapters = append(chapters, ch)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		// If no DB chapters, fall back to reading the file (backward compatibility)
+		if len(chapters) == 0 && ref.FilePath != "" {
+			chapters = s.parseFileIntoChapters(ref.FilePath, id)
+		}
+		bundle.References = append(bundle.References, models.ReferenceExportItem{
+			Material: *ref,
+			Chapters: chapters,
+		})
+	}
+	return bundle, nil
+}
+
+// parseFileIntoChapters is a best-effort parser for the sidecar TXT format.
+// It splits on lines that look like chapter headings (第X章...).
+func (s *ReferenceService) parseFileIntoChapters(filePath, refID string) []models.ReferenceChapter {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	chapterHeading := regexp.MustCompile(`^第.{1,6}[章节回]`)
+
+	var chapters []models.ReferenceChapter
+	var currentTitle string
+	var currentLines []string
+	no := 0
+
+	flush := func() {
+		if no == 0 && currentTitle == "" {
+			return
+		}
+		no++
+		content := strings.TrimSpace(strings.Join(currentLines, "\n"))
+		chapters = append(chapters, models.ReferenceChapter{
+			RefID:     refID,
+			ChapterNo: no,
+			Title:     currentTitle,
+			Content:   content,
+			WordCount: len([]rune(content)),
+		})
+		currentLines = currentLines[:0]
+	}
+
+	for _, line := range lines {
+		if chapterHeading.MatchString(line) {
+			flush()
+			currentTitle = strings.TrimSpace(line)
+		} else {
+			currentLines = append(currentLines, line)
+		}
+	}
+	flush()
+	return chapters
+}
+
+// ImportBundle imports an exported bundle into a target project.
+// It creates new reference_materials records (new IDs) and inserts all chapters.
+// Returns the list of newly created reference IDs.
+func (s *ReferenceService) ImportBundle(ctx context.Context, projectID string, bundle *models.ReferenceExportBundle) ([]string, error) {
+	var createdIDs []string
+	for _, item := range bundle.References {
+		m := item.Material
+		// Create new reference record with fresh ID
+		ref, err := s.Create(ctx, projectID, m.Title, m.Author, m.Genre, "", m.SourceURL)
+		if err != nil {
+			return createdIDs, fmt.Errorf("import reference %q: %w", m.Title, err)
+		}
+		// Copy analysis layers if present
+		if len(m.StyleLayer) > 0 || len(m.NarrativeLayer) > 0 {
+			s.UpdateAnalysis(ctx, ref.ID, m.StyleLayer, m.NarrativeLayer, m.AtmosphereLayer) //nolint
+		}
+		// Insert chapters
+		for _, ch := range item.Chapters {
+			s.SaveChapter(ctx, ref.ID, ch.ChapterID, ch.Title, ch.Content, ch.ChapterNo) //nolint
+		}
+		// Mark fetch complete
+		if len(item.Chapters) > 0 {
+			s.db.Exec(ctx, //nolint
+				`UPDATE reference_materials SET fetch_status='completed', fetch_done=$2, fetch_total=$2 WHERE id=$1`,
+				ref.ID, len(item.Chapters))
+		}
+		createdIDs = append(createdIDs, ref.ID)
+	}
+	return createdIDs, nil
+}
+
+// ListDownloadingRefs returns all reference_materials currently in 'downloading' or 'failed' state.
+func (s *ReferenceService) ListDownloadingRefs(ctx context.Context, projectID string) ([]models.ReferenceMaterial, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, project_id, title, author, genre,
+		        COALESCE(file_path,''), COALESCE(source_url,''),
+		        COALESCE(style_layer,'{}'), COALESCE(narrative_layer,'{}'), COALESCE(atmosphere_layer,'{}'),
+		        COALESCE(migration_config,'{}'), COALESCE(style_collection,''), status, created_at,
+		        sample_texts,
+		        COALESCE(fetch_status,'none'), COALESCE(fetch_done,0), COALESCE(fetch_total,0),
+		        COALESCE(fetch_error,''), COALESCE(fetch_site,''), COALESCE(fetch_book_id,''),
+		        COALESCE(fetch_chapter_ids,'[]'::jsonb)
+		 FROM reference_materials
+		 WHERE project_id=$1 AND fetch_status IN ('downloading','failed')
+		 ORDER BY created_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var refs []models.ReferenceMaterial
+	for rows.Next() {
+		var ref models.ReferenceMaterial
+		if err := rows.Scan(
+			&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre,
+			&ref.FilePath, &ref.SourceURL,
+			&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
+			&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
+			&ref.SampleTexts,
+			&ref.FetchStatus, &ref.FetchDone, &ref.FetchTotal,
+			&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, &ref.FetchChapterIDs,
+		); err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, rows.Err()
 }

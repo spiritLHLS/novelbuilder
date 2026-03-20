@@ -172,10 +172,39 @@ export const referenceApi = {
     api.post(`/projects/${projectId}/references/search`, { keyword, sites: sites ?? null, limit: 0, per_site_limit: perSiteLimit }),
   getBookInfo: (projectId: string, site: string, bookId: string) =>
     api.post(`/projects/${projectId}/references/book-info`, { site, book_id: bookId }),
+  /** Start a background download; returns {ref_id, status, fetch_total} immediately. */
+  startFetchImport: (projectId: string, data: {
+    site: string; book_id: string; title: string; author: string; genre: string; chapter_ids: string[]
+  }) => api.post(`/projects/${projectId}/references/fetch-import`, data),
   updateMigrationConfig: (id: string, config: any) =>
     api.put(`/references/${id}/migration-config`, config),
   analyze: (id: string) => api.post(`/references/${id}/analyze`),
   delete: (id: string) => api.delete(`/references/${id}`),
+  // Chapter management
+  listChapters: (refId: string) => api.get(`/references/${refId}/chapters`),
+  deleteChapter: (chapterId: string) => api.delete(`/reference-chapters/${chapterId}`),
+  batchDeleteChapters: (refId: string, ids: string[]) =>
+    api.post(`/references/${refId}/chapters/batch-delete`, { ids }),
+  // Export / import
+  exportSingle: (refId: string) =>
+    api.get(`/references/${refId}/export`, { responseType: 'blob' }),
+  exportBatch: (projectId: string, refIds: string[]) =>
+    api.post(`/projects/${projectId}/references/export-batch`, { ids: refIds }, { responseType: 'blob' }),
+  importLocal: (projectId: string, bundle: any) =>
+    api.post(`/projects/${projectId}/references/import-local`, bundle),
+  // Resume a failed/interrupted download
+  resumeDownload: (refId: string) => api.post(`/references/${refId}/resume-download`),
+}
+
+export interface ReferenceChapter {
+  id: string
+  ref_id: string
+  chapter_no: number
+  chapter_id: string
+  title: string
+  word_count: number
+  is_deleted: boolean
+  created_at: string
 }
 
 export interface NovelSearchResult {

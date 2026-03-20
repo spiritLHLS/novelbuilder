@@ -51,20 +51,26 @@
       <main class="app-main">
         <router-view />
       </main>
+      <DownloadWidget />
     </div>
   </el-config-provider>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useThemeStore } from '@/stores/theme'
+import { useDownloadStore } from '@/stores/download'
+import DownloadWidget from '@/components/DownloadWidget.vue'
 
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
 const themeStore = useThemeStore()
+const downloadStore = useDownloadStore()
+
+onMounted(() => downloadStore.restoreAndPoll())
 
 const isDark = computed(() => themeStore.theme === 'dark')
 const currentProjectId = computed(() => projectStore.currentProjectId)
