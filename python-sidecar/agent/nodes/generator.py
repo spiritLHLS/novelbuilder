@@ -75,7 +75,7 @@ async def generator_node(state: AgentState) -> dict[str, Any]:
         ])
         draft = resp.content.strip()
     except Exception as exc:
-        logger.error("Generator LLM call failed: %s", exc)
+        logger.error("Generator LLM call failed: %s", repr(exc), exc_info=True)
         return {"error": f"LLM generation failed: {exc}", "draft": ""}
 
     # Generate chapter summary for memory
@@ -103,6 +103,6 @@ async def _generate_summary(text: str, cfg: dict) -> str:
         ])
         return resp.content.strip()
     except Exception as exc:
-        logger.warning("Summary generation failed: %s", exc)
+        logger.warning("Summary generation failed: %s", repr(exc), exc_info=True)
         # Fallback: first 200 chars
         return text[:200] + "…"

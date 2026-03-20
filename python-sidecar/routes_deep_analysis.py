@@ -100,8 +100,14 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dic
                 resp = await client.post(f"{base_url}/chat/completions",
                                          headers=headers, json=payload)
                 if resp.status_code in (429, 500, 502, 503, 504):
-                    logger.warning("LLM HTTP %d attempt %d/%d, backing off %.1fs",
-                                   resp.status_code, attempt, max_retries, delay)
+                    try:
+                        body_snippet = resp.text[:400]
+                    except Exception:
+                        body_snippet = "<unreadable>"
+                    logger.warning(
+                        "LLM HTTP %d attempt %d/%d, backing off %.1fs | body: %s",
+                        resp.status_code, attempt, max_retries, delay, body_snippet,
+                    )
                     await asyncio.sleep(delay + (0.5 * attempt))
                     delay = min(delay * 2, 60.0)
                     continue
@@ -110,13 +116,18 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dic
                 raw = data["choices"][0]["message"]["content"]
                 return _parse_json(raw)
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
-                logger.warning("LLM network error attempt %d/%d: %s", attempt, max_retries, exc)
+                logger.warning(
+                    "LLM network error attempt %d/%d: %s | cause: %s",
+                    attempt, max_retries,
+                    repr(exc),
+                    repr(exc.__cause__) if exc.__cause__ else "none",
+                )
                 if attempt == max_retries:
                     break
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60.0)
             except Exception as exc:
-                logger.error("LLM unexpected error attempt %d/%d: %s", attempt, max_retries, exc)
+                logger.error("LLM unexpected error attempt %d/%d: %s", attempt, max_retries, repr(exc), exc_info=True)
                 break
     logger.error("LLM extraction exhausted after %d attempts", max_retries)
     return {}

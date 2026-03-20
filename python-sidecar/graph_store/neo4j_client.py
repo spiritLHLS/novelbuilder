@@ -71,7 +71,7 @@ class Neo4jClient:
             try:
                 await self.execute(stmt)
             except Exception as exc:
-                logger.debug("Constraint already exists or error: %s", exc)
+                logger.debug("Constraint already exists or error: %s", repr(exc), exc_info=True)
 
     # ── Project ───────────────────────────────────────────────────────────────
 

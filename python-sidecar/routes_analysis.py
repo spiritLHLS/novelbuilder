@@ -127,7 +127,7 @@ def _read_file(file_path: str) -> str:
             from pdfminer.high_level import extract_text
             return extract_text(file_path)
         except Exception as e:
-            logger.error("PDF extraction failed: %s", e)
+            logger.error("PDF extraction failed: %s", repr(e), exc_info=True)
             return ""
     elif ext in (".txt", ".md", ".text"):
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -149,7 +149,7 @@ def _read_file(file_path: str) -> str:
                                     text_parts.append(elem.tail)
             return "\n".join(text_parts)
         except Exception as e:
-            logger.error("EPUB extraction failed: %s", e)
+            logger.error("EPUB extraction failed: %s", repr(e), exc_info=True)
             return ""
     else:
         try:

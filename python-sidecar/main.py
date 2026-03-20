@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI):
         await neo4j.ensure_schema()
         logger.info("Neo4j schema ensured")
     except Exception as exc:
-        logger.warning("Neo4j schema init failed (may retry): %s", exc)
+        logger.warning("Neo4j schema init failed (may retry): %s", repr(exc), exc_info=True)
     yield
     logger.info("Agent service shutting down...")
 
@@ -256,6 +256,7 @@ def _repair_json(raw: str) -> dict:
         try:
             return json.loads(raw)
         except Exception:
+            logger.debug("JSON repair also failed, returning empty dict", exc_info=True)
             return {}
 
 def _read_file(file_path: str) -> str:
@@ -267,7 +268,7 @@ def _read_file(file_path: str) -> str:
             from pdfminer.high_level import extract_text
             return extract_text(file_path)
         except Exception as e:
-            logger.error("PDF extraction failed: %s", e)
+            logger.error("PDF extraction failed: %s", repr(e), exc_info=True)
             return ""
     elif ext in (".txt", ".md", ".text"):
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -289,13 +290,14 @@ def _read_file(file_path: str) -> str:
                                     text_parts.append(elem.tail)
             return "\n".join(text_parts)
         except Exception as e:
-            logger.error("EPUB extraction failed: %s", e)
+            logger.error("EPUB extraction failed: %s", repr(e), exc_info=True)
             return ""
     else:
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 return f.read()
         except Exception:
+            logger.warning("Failed to read file %s", file_path, exc_info=True)
             return ""
 
 # ═══════════════════════════════════════════════════════════════════════════════

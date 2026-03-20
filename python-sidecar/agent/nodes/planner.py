@@ -55,7 +55,7 @@ def planner_node(state: AgentState) -> dict[str, Any]:
                 raw = raw[4:]
         steps: list[PlanStep] = json.loads(raw)
     except Exception as exc:
-        logger.warning("Planner LLM failed, using default plan: %s", exc)
+        logger.warning("Planner LLM failed, using default plan: %s", repr(exc), exc_info=True)
         steps = _default_plan(task_type)
 
     logger.info("Plan created: %d steps for task=%s", len(steps), task_type)

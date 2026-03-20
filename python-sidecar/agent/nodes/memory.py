@@ -38,7 +38,7 @@ def load_short_term(project_id: str, n: int = 5) -> list[str]:
         items = r.lrange(_stm_key(project_id), -n, -1)
         return items
     except Exception as exc:
-        logger.warning("Redis STM read failed: %s", exc)
+        logger.warning("Redis STM read failed: %s", repr(exc), exc_info=True)
         return []
 
 
@@ -55,7 +55,7 @@ def save_short_term(project_id: str, paragraphs: list[str]) -> None:
         pipe.ltrim(key, -20, -1)
         pipe.execute()
     except Exception as exc:
-        logger.warning("Redis STM write failed: %s", exc)
+        logger.warning("Redis STM write failed: %s", repr(exc), exc_info=True)
 
 
 # ── graphiti long-term memory ─────────────────────────────────────────────────
@@ -99,7 +99,7 @@ def _build_graphiti(llm_cfg: dict[str, Any] | None = None):
         return Graphiti(neo4j_uri, neo4j_user, neo4j_pw,
                         llm_client=llm_client, embedder=embedder)
     except Exception as exc:
-        logger.warning("graphiti init failed (Neo4j may be warming up): %s", exc)
+        logger.warning("graphiti init failed (Neo4j may be warming up): %s", repr(exc), exc_info=True)
         return None
 
 
@@ -144,7 +144,7 @@ async def recall_long_term(project_id: str, query: str, limit: int = 8,
             ))
         return entities
     except Exception as exc:
-        logger.warning("graphiti recall failed: %s", exc)
+        logger.warning("graphiti recall failed: %s", repr(exc), exc_info=True)
         return []
 
 
@@ -164,7 +164,7 @@ async def update_long_term(project_id: str, chapter_num: int,
         )
         logger.info("graphiti updated for project=%s chapter=%d", project_id, chapter_num)
     except Exception as exc:
-        logger.warning("graphiti update failed: %s", exc)
+        logger.warning("graphiti update failed: %s", repr(exc), exc_info=True)
 
 
 # ── LangGraph nodes ───────────────────────────────────────────────────────────

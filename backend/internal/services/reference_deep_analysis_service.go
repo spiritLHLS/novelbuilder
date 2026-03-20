@@ -108,9 +108,11 @@ func NewReferenceDeepAnalysisService(
 // It returns 202 immediately; actual progress is tracked in reference_analysis_jobs.
 func (s *ReferenceDeepAnalysisService) StartDeepAnalysis(ctx context.Context, refID, projectID string) (*AnalysisJob, error) {
 	// Cancel any existing running/pending job for this reference
-	_, _ = s.db.Exec(ctx,
+	if _, dbErr := s.db.Exec(ctx,
 		`UPDATE reference_analysis_jobs SET status='cancelled', updated_at=NOW()
-		 WHERE ref_id = $1 AND status IN ('pending','running')`, refID)
+		 WHERE ref_id = $1 AND status IN ('pending','running')`, refID); dbErr != nil {
+		s.logger.Warn("could not cancel previous analysis jobs", zap.String("ref_id", refID), zap.Error(dbErr))
+	}
 
 	jobID := uuid.New().String()
 	var job AnalysisJob
@@ -128,7 +130,9 @@ func (s *ReferenceDeepAnalysisService) StartDeepAnalysis(ctx context.Context, re
 	}
 
 	// Link the new job to the reference row
-	_, _ = s.db.Exec(ctx, `UPDATE reference_materials SET analysis_job_id=$1 WHERE id=$2`, jobID, refID)
+	if _, dbErr := s.db.Exec(ctx, `UPDATE reference_materials SET analysis_job_id=$1 WHERE id=$2`, jobID, refID); dbErr != nil {
+		s.logger.Warn("could not link analysis job to reference", zap.String("ref_id", refID), zap.String("job_id", jobID), zap.Error(dbErr))
+	}
 
 	payload, _ := json.Marshal(map[string]string{
 		"job_id":     jobID,
@@ -241,11 +245,13 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 				}
 				profileJSON, _ := json.Marshal(profileData)
 				// Insert; ignore conflict (duplicate name+project)
-				_, _ = s.db.Exec(ctx,
+				if _, dbErr := s.db.Exec(ctx,
 					`INSERT INTO characters (project_id, name, role_type, profile)
 					 VALUES ($1, $2, $3, $4)
 					 ON CONFLICT DO NOTHING`,
-					projectID, name, normalizeRole(roleType), profileJSON)
+					projectID, name, normalizeRole(roleType), profileJSON); dbErr != nil {
+					s.logger.Warn("import character failed", zap.String("name", name), zap.Error(dbErr))
+				}
 			}
 		}
 	}
@@ -258,15 +264,19 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 			worldData["imported_from"] = "reference_analysis"
 			worldJSON, _ := json.Marshal(worldData)
 			// Try update first; if no row create one
-			tag, _ := s.db.Exec(ctx,
+			tag, dbErr := s.db.Exec(ctx,
 				`UPDATE world_bibles SET content = content || $1::jsonb, version = version + 1
 				 WHERE project_id = $2`,
 				worldJSON, projectID)
-			if tag.RowsAffected() == 0 {
-				_, _ = s.db.Exec(ctx,
+			if dbErr != nil {
+				s.logger.Warn("world bible update failed", zap.String("project_id", projectID), zap.Error(dbErr))
+			} else if tag.RowsAffected() == 0 {
+				if _, dbErr2 := s.db.Exec(ctx,
 					`INSERT INTO world_bibles (project_id, content, version)
 					 VALUES ($1, $2, 1) ON CONFLICT DO NOTHING`,
-					projectID, worldJSON)
+					projectID, worldJSON); dbErr2 != nil {
+					s.logger.Warn("world bible insert failed", zap.String("project_id", projectID), zap.Error(dbErr2))
+				}
 			}
 		}
 	}
@@ -292,10 +302,12 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 					"ref_id":  job.RefID,
 				}
 				contentJSON, _ := json.Marshal(contentData)
-				_, _ = s.db.Exec(ctx,
+				if _, dbErr := s.db.Exec(ctx,
 					`INSERT INTO outlines (project_id, level, order_num, title, content)
 					 VALUES ($1, $2, $3, $4, $5)`,
-					projectID, level, i+1, title, contentJSON)
+					projectID, level, i+1, title, contentJSON); dbErr != nil {
+					s.logger.Warn("import outline node failed", zap.String("title", title), zap.Error(dbErr))
+				}
 			}
 		}
 	}
@@ -348,9 +360,11 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 	chunks := splitIntoChunks(text, chunkSize)
 	totalChunks := len(chunks)
 
-	_, _ = s.db.Exec(ctx,
+	if _, dbErr := s.db.Exec(ctx,
 		`UPDATE reference_analysis_jobs SET total_chunks=$1, updated_at=NOW() WHERE id=$2`,
-		totalChunks, jobID)
+		totalChunks, jobID); dbErr != nil {
+		s.logger.Warn("could not update total_chunks", zap.String("job_id", jobID), zap.Error(dbErr))
+	}
 
 	s.logger.Info("deep analysis started",
 		zap.String("job_id", jobID),
@@ -378,9 +392,11 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 		}
 
 		// Update progress
-		_, _ = s.db.Exec(ctx,
+		if _, dbErr := s.db.Exec(ctx,
 			`UPDATE reference_analysis_jobs SET done_chunks=$1, updated_at=NOW() WHERE id=$2`,
-			i+1, jobID)
+			i+1, jobID); dbErr != nil {
+			s.logger.Warn("could not update done_chunks", zap.String("job_id", jobID), zap.Error(dbErr))
+		}
 	}
 
 	// Merge all chunk results
@@ -445,9 +461,11 @@ func (s *ReferenceDeepAnalysisService) isJobCancelled(ctx context.Context, jobID
 }
 
 func (s *ReferenceDeepAnalysisService) failJob(ctx context.Context, jobID, msg string) {
-	_, _ = s.db.Exec(ctx,
+	if _, dbErr := s.db.Exec(ctx,
 		`UPDATE reference_analysis_jobs SET status='failed', error_message=$1, updated_at=NOW() WHERE id=$2`,
-		msg, jobID)
+		msg, jobID); dbErr != nil {
+		s.logger.Error("could not mark job as failed", zap.String("job_id", jobID), zap.String("msg", msg), zap.Error(dbErr))
+	}
 }
 
 type chunkResult = map[string]interface{}

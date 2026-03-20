@@ -243,7 +243,7 @@ async def audit_chapter(req: AuditChapterRequest):
             top_issues = data.get("top_issues", [])
 
         except Exception as exc:
-            logger.warning("LLM audit failed, using heuristic only: %s", exc)
+            logger.warning("LLM audit failed, using heuristic only: %s", repr(exc), exc_info=True)
 
     # Merge: LLM dims override heuristic where available
     merged = {**heuristic_dims, **llm_dims}
@@ -373,6 +373,7 @@ async def anti_detect_rewrite(req: AntiDetectRequest):
         rewritten = response.content.strip()  # type: ignore[possibly-undefined]
         changes = ["格式解析失败，使用原始输出"]
     except Exception as exc:
+        logger.error("Anti-detect rewrite failed: %s", repr(exc), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Anti-detect rewrite failed: {exc}")
 
     metrics_after = metrics_estimator.estimate(rewritten)
@@ -446,6 +447,7 @@ async def narrative_revise(req: NarrativeReviseRequest):
             changes = [str(changes)]
 
     except Exception as exc:
+        logger.error("Narrative revision failed: %s", repr(exc), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Narrative revision failed: {exc}")
 
     return {
@@ -522,6 +524,7 @@ async def generate_creative_brief(req: CreativeBriefRequest):
         return json.loads(raw)
 
     except Exception as exc:
+        logger.error("Creative brief generation failed: %s", repr(exc), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Creative brief generation failed: {exc}")
 
 
@@ -592,7 +595,7 @@ async def import_chapters_analyze(req: ImportChaptersRequest):
             ])
             reverse_engineered = _repair_json(response.content)
         except Exception as exc:
-            logger.warning("reverse engineering LLM call failed: %s", exc)
+            logger.warning("reverse engineering LLM call failed: %s", repr(exc), exc_info=True)
 
     return {
         "import_id": req.import_id,

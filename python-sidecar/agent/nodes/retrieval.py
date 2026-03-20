@@ -99,7 +99,7 @@ async def retrieve_world_node(state: AgentState) -> dict[str, Any]:
         world_track["world_bible_summary"] = ""  # populated separately if needed
 
     except Exception as exc:
-        logger.warning("Neo4j world retrieval failed: %s", exc)
+        logger.warning("Neo4j world retrieval failed: %s", repr(exc), exc_info=True)
         # Graceful degradation — return empty world context
         world_track["character_cores"] = []
         world_track["constitution_rules"] = []
@@ -163,7 +163,7 @@ async def retrieve_narrative_node(state: AgentState) -> dict[str, Any]:
         hits = summary_hits + style_hits
 
     except Exception as exc:
-        logger.warning("Qdrant narrative retrieval failed: %s", exc)
+        logger.warning("Qdrant narrative retrieval failed: %s", repr(exc), exc_info=True)
         narrative_track["recent_chapter_summaries"] = state.get("short_term_paragraphs", [])
         narrative_track["style_samples"] = []
 

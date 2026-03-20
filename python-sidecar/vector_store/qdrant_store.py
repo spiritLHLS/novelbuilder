@@ -41,7 +41,7 @@ def _get_embedder():
         from sentence_transformers import SentenceTransformer
         return SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
     except Exception as exc:
-        logger.warning("sentence-transformers unavailable: %s", exc)
+        logger.warning("sentence-transformers unavailable: %s", repr(exc), exc_info=True)
         return None
 
 
@@ -103,7 +103,7 @@ class QdrantStore:
                 )
                 logger.info("Created Qdrant collection: %s", name)
         except Exception as exc:
-            logger.warning("ensure_collection failed for %s: %s", name, exc)
+            logger.warning("ensure_collection failed for %s: %s", name, repr(exc), exc_info=True)
 
     async def upsert(
         self,
@@ -130,7 +130,7 @@ class QdrantStore:
                 points=[PointStruct(id=pid, vector=vec, payload=payload)],
             )
         except Exception as exc:
-            logger.error("Qdrant upsert failed: %s", exc)
+            logger.error("Qdrant upsert failed: %s", repr(exc), exc_info=True)
             return ""
         return pid
 
@@ -169,7 +169,7 @@ class QdrantStore:
                 await self._client.upsert(collection_name=col, points=points)
                 logger.info("Batch upsert %d points to %s", len(points), col)
             except Exception as exc:
-                logger.error("Qdrant batch upsert failed: %s", exc)
+                logger.error("Qdrant batch upsert failed: %s", repr(exc), exc_info=True)
 
     async def search(
         self,
@@ -201,7 +201,7 @@ class QdrantStore:
                 for r in results
             ]
         except Exception as exc:
-            logger.warning("Qdrant search failed on %s: %s", col, exc)
+            logger.warning("Qdrant search failed on %s: %s", col, repr(exc), exc_info=True)
             return []
 
     async def delete_project_collection(self, project_id: str, collection: str) -> None:
@@ -215,7 +215,7 @@ class QdrantStore:
                 ),
             )
         except Exception as exc:
-            logger.warning("Qdrant delete failed: %s", exc)
+            logger.warning("Qdrant delete failed: %s", repr(exc), exc_info=True)
 
     async def delete_by_source_id(self, project_id: str, source_id: str) -> None:
         """Delete all points with a specific source_id across all collections."""
@@ -229,7 +229,7 @@ class QdrantStore:
                     ),
                 )
             except Exception as exc:
-                logger.warning("Qdrant delete_by_source_id failed for %s: %s", col_name, exc)
+                logger.warning("Qdrant delete_by_source_id failed for %s: %s", col_name, repr(exc), exc_info=True)
 
     async def get_collection_stats(self, project_id: str) -> list[dict]:
         """Return count for each logical collection for the given project."""
