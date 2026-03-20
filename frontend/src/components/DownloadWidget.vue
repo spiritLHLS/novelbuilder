@@ -58,7 +58,7 @@
                 @click="resumeDownload(task)"
               >继续下载</el-button>
               <el-button
-                v-if="task.fetchStatus !== 'downloading'"
+                v-if="task.fetchStatus === 'completed' || task.fetchStatus === 'failed'"
                 size="small"
                 type="info"
                 link

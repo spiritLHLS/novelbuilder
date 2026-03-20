@@ -101,7 +101,8 @@ export const useDownloadStore = defineStore('download', () => {
     for (const task of active) {
       try {
         const res = await referenceApi.get(task.refId)
-        const ref: any = res.data
+        // GET /references/:id returns { data: ref }, so unwrap one level
+        const ref: any = res.data?.data ?? res.data
         updateFromRef(ref)
       } catch { /* silently ignore transient errors */ }
     }
