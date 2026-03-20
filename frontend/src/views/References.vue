@@ -3,28 +3,16 @@
     <div class="page-header">
       <h1>参考书管理</h1>
       <div class="header-actions">
-        <!-- Upload from local file -->
-        <el-upload
-          :action="`/api/projects/${projectId}/references/upload`"
-          :on-success="handleUploadSuccess"
-          :on-error="handleUploadError"
-          :show-file-list="false"
-          :data="{ title: '', author: '', genre: '' }"
-          accept=".txt,.md,.html,.htm"
-        >
-          <el-button type="default"><el-icon><Upload /></el-icon>本地上传</el-button>
-        </el-upload>
-
-        <!-- Local bundle import -->
+        <!-- Local file: raw text or exported JSON bundle (auto-detected) -->
         <input
-          ref="importFileInput"
+          ref="localFileInput"
           type="file"
-          accept=".json"
+          accept=".txt,.md,.html,.htm,.json"
           style="display:none"
-          @change="handleImportFile"
+          @change="handleLocalFile"
         />
-        <el-button type="default" @click="importFileInput?.click()">
-          <el-icon><Download /></el-icon>本地导入
+        <el-button type="default" @click="localFileInput?.click()">
+          <el-icon><Upload /></el-icon>本地添加
         </el-button>
 
         <!-- Batch export selected -->
@@ -404,7 +392,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Upload, Link, Search, Loading, Lock, Delete, Download, DocumentCopy } from '@element-plus/icons-vue'
+import { Upload, Link, Search, Loading, Lock, Delete, DocumentCopy } from '@element-plus/icons-vue'
 import { referenceApi, streamSearchNovels } from '@/api'
 import type { NovelSearchResult, FetchBookInfo, FetchChapterInfo, ReferenceChapter } from '@/api'
 import VChart from 'vue-echarts'
@@ -428,7 +416,7 @@ const showMigrationDialog = ref(false)
 const selectedRef = ref<any>(null)
 const selectedRefId = ref('')
 const selectedIds = ref<string[]>([])
-const importFileInput = ref<HTMLInputElement | null>(null)
+const localFileInput = ref<HTMLInputElement | null>(null)
 
 const migrationForm = ref({
   intensity: 50,
@@ -732,21 +720,33 @@ function downloadBlob(data: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-async function handleImportFile(event: Event) {
+async function handleLocalFile(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
   if (!file) return
   try {
-    const text = await file.text()
-    const bundle = JSON.parse(text)
-    const res = await referenceApi.importLocal(projectId, bundle)
-    const data: any = res.data
-    ElMessage.success(`导入成功，共导入 ${data.count} 本参考书`)
+    if (file.name.toLowerCase().endsWith('.json')) {
+      // JSON bundle exported from this app → restore via import-local
+      const text = await file.text()
+      const bundle = JSON.parse(text)
+      const res = await referenceApi.importLocal(projectId, bundle)
+      const data: any = res.data
+      ElMessage.success(`导入成功，共导入 ${data.count} 本参考书`)
+    } else {
+      // Raw text file (.txt / .md / .html / .htm) → upload as new reference
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('title', file.name.replace(/\.[^.]+$/, ''))
+      formData.append('author', '')
+      formData.append('genre', '')
+      const res = await referenceApi.upload(projectId, formData)
+      if ((res.data as any).data) references.value.push((res.data as any).data)
+      ElMessage.success('上传成功')
+    }
     await fetchRefs()
   } catch (e: any) {
-    ElMessage.error('导入失败：' + (e?.response?.data?.error || e?.message || '格式错误'))
+    ElMessage.error('操作失败：' + (e?.response?.data?.error || e?.message || '未知错误'))
   } finally {
-    // Reset file input so the same file can be re-selected
-    if (importFileInput.value) importFileInput.value.value = ''
+    if (localFileInput.value) localFileInput.value.value = ''
   }
 }
 
@@ -824,16 +824,7 @@ async function fetchRefs() {
   }
 }
 
-function handleUploadSuccess(response: any) {
-  ElMessage.success('上传成功')
-  if (response.data) {
-    references.value.push(response.data)
-  }
-}
 
-function handleUploadError() {
-  ElMessage.error('上传失败，请重试')
-}
 
 async function startAnalysis(id: string) {
   analyzing.value = id
