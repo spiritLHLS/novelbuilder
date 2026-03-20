@@ -20,11 +20,8 @@ logger = logging.getLogger(__name__)
 # ── Redis short-term memory ───────────────────────────────────────────────────
 
 def _get_redis() -> redis.Redis:
-    return redis.Redis(
-        host=os.getenv("REDIS_HOST", "127.0.0.1"),
-        port=int(os.getenv("REDIS_PORT", "6379")),
-        decode_responses=True,
-    )
+    redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
+    return redis.from_url(redis_url, decode_responses=True)
 
 
 def _stm_key(project_id: str) -> str:

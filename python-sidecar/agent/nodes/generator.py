@@ -29,14 +29,17 @@ def _build_llm(cfg: dict, streaming: bool = False) -> ChatOpenAI:
     api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("llm_config.api_key is required for generator node")
-    return ChatOpenAI(
-        base_url=cfg.get("base_url", "https://api.openai.com/v1"),
-        api_key=api_key,
-        model=cfg.get("model", "gpt-4o"),
-        max_tokens=cfg.get("max_tokens", 4096),
-        temperature=cfg.get("temperature", 0.85),
-        streaming=streaming,
-    )
+    kwargs: dict = {
+        "base_url": cfg.get("base_url", "https://api.openai.com/v1"),
+        "api_key": api_key,
+        "model": cfg.get("model", "gpt-4o"),
+        "streaming": streaming,
+    }
+    if not cfg.get("omit_temperature"):
+        kwargs["temperature"] = float(cfg.get("temperature", 0.85))
+    if not cfg.get("omit_max_tokens"):
+        kwargs["max_tokens"] = int(cfg.get("max_tokens", 4096))
+    return ChatOpenAI(**kwargs)
 
 
 def _build_prompt(state: AgentState) -> str:

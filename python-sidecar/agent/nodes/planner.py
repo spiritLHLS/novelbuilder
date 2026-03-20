@@ -89,10 +89,13 @@ def _build_llm(cfg: dict) -> ChatOpenAI:
     api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("llm_config.api_key is required for planner node")
-    return ChatOpenAI(
-        base_url=cfg.get("base_url", "https://api.openai.com/v1"),
-        api_key=api_key,
-        model=cfg.get("model", "gpt-4o-mini"),
-        max_tokens=512,
-        temperature=0.3,
-    )
+    kwargs: dict = {
+        "base_url": cfg.get("base_url", "https://api.openai.com/v1"),
+        "api_key": api_key,
+        "model": cfg.get("model", "gpt-4o-mini"),
+    }
+    if not cfg.get("omit_temperature"):
+        kwargs["temperature"] = float(cfg.get("temperature", 0.3))
+    if not cfg.get("omit_max_tokens"):
+        kwargs["max_tokens"] = int(cfg.get("max_tokens", 512))
+    return ChatOpenAI(**kwargs)

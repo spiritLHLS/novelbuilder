@@ -389,12 +389,16 @@ func (h *Handler) resolveLLMConfig(ctx context.Context) (map[string]interface{},
 		return nil, errors.New("no default AI model configured: please set one in 设置 → AI 模型配置")
 	}
 	return map[string]interface{}{
-		"api_key":     profile.APIKey,
-		"model":       profile.ModelName,
-		"base_url":    profile.BaseURL,
-		"provider":    profile.Provider,
-		"max_tokens":  profile.MaxTokens,
-		"temperature": profile.Temperature,
+		"api_key":          profile.APIKey,
+		"model":            profile.ModelName,
+		"base_url":         profile.BaseURL,
+		"provider":         profile.Provider,
+		"max_tokens":       profile.MaxTokens,
+		"temperature":      profile.Temperature,
+		"rpm_limit":        profile.RPMLimit,
+		"omit_max_tokens":  profile.OmitMaxTokens,
+		"omit_temperature": profile.OmitTemperature,
+		"api_style":        profile.APIStyle,
 	}, nil
 }
 
@@ -416,6 +420,10 @@ func (h *Handler) resolveAgentLLMConfig(ctx context.Context, agentType, projectI
 		if defCfg, defErr := h.resolveLLMConfig(ctx); defErr == nil && defCfg != nil {
 			cfg["temperature"] = defCfg["temperature"]
 			cfg["max_tokens"] = defCfg["max_tokens"]
+			cfg["rpm_limit"] = defCfg["rpm_limit"]
+			cfg["omit_max_tokens"] = defCfg["omit_max_tokens"]
+			cfg["omit_temperature"] = defCfg["omit_temperature"]
+			cfg["api_style"] = defCfg["api_style"]
 		}
 	}
 	return cfg, nil
