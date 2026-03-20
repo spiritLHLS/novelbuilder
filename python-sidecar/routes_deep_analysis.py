@@ -78,6 +78,9 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dic
     with an empty result rather than failing the whole job.
     """
     api_key = cfg.api_key or os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        logger.error("LLM extraction failed: no API key configured (set api_key in llm_config or OPENAI_API_KEY env var)")
+        return {}
     base_url = cfg.base_url.rstrip("/")
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -111,6 +114,17 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dic
                     await asyncio.sleep(delay + (0.5 * attempt))
                     delay = min(delay * 2, 60.0)
                     continue
+                if resp.status_code in (400, 401, 403):
+                    try:
+                        body_snippet = resp.text[:400]
+                    except Exception:
+                        body_snippet = "<unreadable>"
+                    label = {400: "Bad Request (check model name)", 401: "Unauthorized (invalid API key)", 403: "Forbidden (API key rejected by gateway)"}
+                    logger.error(
+                        "LLM HTTP %d %s — will not retry | body: %s",
+                        resp.status_code, label.get(resp.status_code, ""), body_snippet,
+                    )
+                    break
                 resp.raise_for_status()
                 data = resp.json()
                 raw = data["choices"][0]["message"]["content"]

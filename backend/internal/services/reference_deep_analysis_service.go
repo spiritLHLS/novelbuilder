@@ -104,32 +104,71 @@ func NewReferenceDeepAnalysisService(
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-// StartDeepAnalysis creates an analysis job + task-queue entry.
-// It returns 202 immediately; actual progress is tracked in reference_analysis_jobs.
+// StartDeepAnalysis creates (or resumes) an analysis job + task-queue entry.
+// If there is a cancelled or failed job for this reference that has partial
+// chunk results, it is resumed from its last checkpoint instead of starting
+// from scratch.  Returns 202 immediately; poll GetDeepAnalysisJob for progress.
 func (s *ReferenceDeepAnalysisService) StartDeepAnalysis(ctx context.Context, refID, projectID string) (*AnalysisJob, error) {
-	// Cancel any existing running/pending job for this reference
-	if _, dbErr := s.db.Exec(ctx,
-		`UPDATE reference_analysis_jobs SET status='cancelled', updated_at=NOW()
-		 WHERE ref_id = $1 AND status IN ('pending','running')`, refID); dbErr != nil {
-		s.logger.Warn("could not cancel previous analysis jobs", zap.String("ref_id", refID), zap.Error(dbErr))
-	}
+	// Look for a resumable job (cancelled or failed) that has partial work.
+	var resumableID string
+	var resumableDone int
+	var resumableTotal int
+	_ = s.db.QueryRow(ctx,
+		`SELECT id, done_chunks, total_chunks
+		 FROM reference_analysis_jobs
+		 WHERE ref_id = $1
+		   AND status IN ('cancelled','failed')
+		   AND done_chunks > 0
+		 ORDER BY created_at DESC LIMIT 1`, refID,
+	).Scan(&resumableID, &resumableDone, &resumableTotal)
 
-	jobID := uuid.New().String()
+	var jobID string
 	var job AnalysisJob
-	err := s.db.QueryRow(ctx,
-		`INSERT INTO reference_analysis_jobs (id, ref_id, project_id, status)
-		 VALUES ($1, $2, $3, 'pending')
-		 RETURNING id, ref_id, project_id, status, total_chunks, done_chunks,
-		           COALESCE(error_message,''), created_at, updated_at`,
-		jobID, refID, projectID).Scan(
-		&job.ID, &job.RefID, &job.ProjectID, &job.Status,
-		&job.TotalChunks, &job.DoneChunks, &job.ErrorMessage,
-		&job.CreatedAt, &job.UpdatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("create analysis job: %w", err)
+
+	if resumableID != "" {
+		// Resume the existing job: mark it pending again, preserve chunk_results.
+		s.logger.Info("resuming deep analysis from checkpoint",
+			zap.String("job_id", resumableID),
+			zap.Int("done_chunks", resumableDone),
+			zap.Int("total_chunks", resumableTotal))
+		err := s.db.QueryRow(ctx,
+			`UPDATE reference_analysis_jobs
+			 SET status='pending', error_message=NULL, updated_at=NOW()
+			 WHERE id=$1
+			 RETURNING id, ref_id, project_id, status, total_chunks, done_chunks,
+			           COALESCE(error_message,''), created_at, updated_at`,
+			resumableID).Scan(
+			&job.ID, &job.RefID, &job.ProjectID, &job.Status,
+			&job.TotalChunks, &job.DoneChunks, &job.ErrorMessage,
+			&job.CreatedAt, &job.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("resume analysis job: %w", err)
+		}
+		jobID = resumableID
+	} else {
+		// Cancel any orphaned running/pending jobs first.
+		if _, dbErr := s.db.Exec(ctx,
+			`UPDATE reference_analysis_jobs SET status='cancelled', updated_at=NOW()
+			 WHERE ref_id = $1 AND status IN ('pending','running')`, refID); dbErr != nil {
+			s.logger.Warn("could not cancel previous analysis jobs", zap.String("ref_id", refID), zap.Error(dbErr))
+		}
+		// Create a fresh job.
+		jobID = uuid.New().String()
+		err := s.db.QueryRow(ctx,
+			`INSERT INTO reference_analysis_jobs (id, ref_id, project_id, status)
+			 VALUES ($1, $2, $3, 'pending')
+			 RETURNING id, ref_id, project_id, status, total_chunks, done_chunks,
+			           COALESCE(error_message,''), created_at, updated_at`,
+			jobID, refID, projectID).Scan(
+			&job.ID, &job.RefID, &job.ProjectID, &job.Status,
+			&job.TotalChunks, &job.DoneChunks, &job.ErrorMessage,
+			&job.CreatedAt, &job.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("create analysis job: %w", err)
+		}
 	}
 
-	// Link the new job to the reference row
+	// Link the job to the reference row.
 	if _, dbErr := s.db.Exec(ctx, `UPDATE reference_materials SET analysis_job_id=$1 WHERE id=$2`, jobID, refID); dbErr != nil {
 		s.logger.Warn("could not link analysis job to reference", zap.String("ref_id", refID), zap.String("job_id", jobID), zap.Error(dbErr))
 	}
@@ -366,15 +405,34 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 		s.logger.Warn("could not update total_chunks", zap.String("job_id", jobID), zap.Error(dbErr))
 	}
 
+	// Load any previously completed chunk results (checkpoint resume).
+	var existingResultsRaw []byte
+	_ = s.db.QueryRow(ctx,
+		`SELECT COALESCE(chunk_results, '[]'::jsonb) FROM reference_analysis_jobs WHERE id=$1`, jobID,
+	).Scan(&existingResultsRaw)
+	var chunkResults []chunkResult
+	if len(existingResultsRaw) > 2 { // more than empty array []
+		_ = json.Unmarshal(existingResultsRaw, &chunkResults)
+	}
+	skipChunks := len(chunkResults) // skip chunks already saved
+	if skipChunks > totalChunks {
+		skipChunks = 0 // guard: text may have changed, restart
+		chunkResults = nil
+	}
+
 	s.logger.Info("deep analysis started",
 		zap.String("job_id", jobID),
 		zap.String("ref_id", refID),
 		zap.Int("total_chunks", totalChunks),
+		zap.Int("resuming_from_chunk", skipChunks),
 		zap.Int("text_length", len(text)))
 
-	var chunkResults []chunkResult
-
 	for i, chunk := range chunks {
+		// Skip chunks already completed in a previous run.
+		if i < skipChunks {
+			continue
+		}
+
 		// Check cancellation between chunks
 		if cancelled, _ := s.isJobCancelled(ctx, jobID); cancelled {
 			s.logger.Info("deep analysis cancelled", zap.String("job_id", jobID))
@@ -383,7 +441,7 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 
 		result, err := s.analyzeChunk(ctx, jobID, projectID, chunk, i, totalChunks, llmCfg)
 		if err != nil {
-			// Non-fatal: skip chunk and continue
+			// Non-fatal: record empty result for this chunk and continue.
 			s.logger.Warn("chunk analysis failed, skipping",
 				zap.Int("chunk", i), zap.Error(err))
 			chunkResults = append(chunkResults, chunkResult{})
@@ -391,11 +449,14 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 			chunkResults = append(chunkResults, result)
 		}
 
-		// Update progress
+		// Persist progress: done_chunks + the latest chunk_results snapshot.
+		resultsJSON, _ := json.Marshal(chunkResults)
 		if _, dbErr := s.db.Exec(ctx,
-			`UPDATE reference_analysis_jobs SET done_chunks=$1, updated_at=NOW() WHERE id=$2`,
-			i+1, jobID); dbErr != nil {
-			s.logger.Warn("could not update done_chunks", zap.String("job_id", jobID), zap.Error(dbErr))
+			`UPDATE reference_analysis_jobs
+			 SET done_chunks=$1, chunk_results=$2, updated_at=NOW()
+			 WHERE id=$3`,
+			i+1, resultsJSON, jobID); dbErr != nil {
+			s.logger.Warn("could not update progress", zap.String("job_id", jobID), zap.Error(dbErr))
 		}
 	}
 

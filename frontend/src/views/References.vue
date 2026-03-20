@@ -397,7 +397,11 @@
             type="success" title="深度分析完成，可将提取结果导入项目" :closable="false"
             style="margin-top:12px" show-icon />
           <el-alert v-else-if="deepAnalysisJob.status === 'cancelled'"
-            type="info" title="分析已取消" :closable="false"
+            type="info"
+            :title="deepAnalysisJob.done_chunks > 0
+              ? `分析已取消（已完成 ${deepAnalysisJob.done_chunks}/${deepAnalysisJob.total_chunks} 块），点击「继续分析」可从断点续跑`
+              : '分析已取消'"
+            :closable="false"
             style="margin-top:12px" />
         </div>
         <div v-else class="da-empty">
@@ -412,7 +416,7 @@
           type="primary"
           :loading="deepAnalysisStarting"
           @click="doStartDeepAnalysis"
-        >开始深度分析</el-button>
+        >{{ deepAnalysisJob?.done_chunks > 0 ? '继续分析' : '开始深度分析' }}</el-button>
         <el-button
           v-if="deepAnalysisJob?.status === 'pending' || deepAnalysisJob?.status === 'running'"
           type="warning"
