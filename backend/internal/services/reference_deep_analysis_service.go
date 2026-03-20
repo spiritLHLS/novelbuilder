@@ -395,8 +395,17 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 		return fmt.Errorf("no content: %w", err)
 	}
 
+	// Compute dynamic chunk size based on the model's context window so we
+	// maximize coverage per API call while avoiding context overflow.
+	chunkSz := chunkSize // default fallback (80_000 chars)
+	if llmCfg != nil {
+		if model, ok := llmCfg["model"].(string); ok && model != "" {
+			chunkSz = computeChunkChars(model, 4096)
+		}
+	}
+
 	// Split into chunks
-	chunks := splitIntoChunks(text, chunkSize)
+	chunks := splitIntoChunks(text, chunkSz)
 	totalChunks := len(chunks)
 
 	if _, dbErr := s.db.Exec(ctx,
@@ -405,7 +414,9 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 		s.logger.Warn("could not update total_chunks", zap.String("job_id", jobID), zap.Error(dbErr))
 	}
 
-	// Load any previously completed chunk results (checkpoint resume).
+	// Load previously saved chunk results for checkpoint resume.
+	// A nil entry (JSON null) means that chunk failed last time and must be retried.
+	// An empty map {} means the LLM returned no data but the call succeeded.
 	var existingResultsRaw []byte
 	_ = s.db.QueryRow(ctx,
 		`SELECT COALESCE(chunk_results, '[]'::jsonb) FROM reference_analysis_jobs WHERE id=$1`, jobID,
@@ -414,21 +425,39 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 	if len(existingResultsRaw) > 2 { // more than empty array []
 		_ = json.Unmarshal(existingResultsRaw, &chunkResults)
 	}
-	skipChunks := len(chunkResults) // skip chunks already saved
+
+	// Count consecutive non-nil entries from the start — these are the successfully
+	// completed chunks we can skip.  The first nil marks where the run broke.
+	skipChunks := 0
+	for _, r := range chunkResults {
+		if r == nil {
+			break
+		}
+		skipChunks++
+	}
 	if skipChunks > totalChunks {
-		skipChunks = 0 // guard: text may have changed, restart
-		chunkResults = nil
+		skipChunks = 0 // guard: text changed between runs
+	}
+	// Discard the failed tail so we only keep the verified-successful prefix.
+	chunkResults = chunkResults[:skipChunks]
+
+	// Sync done_chunks to the actual checkpoint so the UI shows correct progress.
+	if _, dbErr := s.db.Exec(ctx,
+		`UPDATE reference_analysis_jobs SET done_chunks=$1, updated_at=NOW() WHERE id=$2`,
+		skipChunks, jobID); dbErr != nil {
+		s.logger.Warn("could not sync done_chunks", zap.String("job_id", jobID), zap.Error(dbErr))
 	}
 
 	s.logger.Info("deep analysis started",
 		zap.String("job_id", jobID),
 		zap.String("ref_id", refID),
 		zap.Int("total_chunks", totalChunks),
+		zap.Int("chunk_chars", chunkSz),
 		zap.Int("resuming_from_chunk", skipChunks),
 		zap.Int("text_length", len(text)))
 
 	for i, chunk := range chunks {
-		// Skip chunks already completed in a previous run.
+		// Skip chunks already successfully completed in a previous run.
 		if i < skipChunks {
 			continue
 		}
@@ -441,15 +470,15 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 
 		result, err := s.analyzeChunk(ctx, jobID, projectID, chunk, i, totalChunks, llmCfg)
 		if err != nil {
-			// Non-fatal: record empty result for this chunk and continue.
-			s.logger.Warn("chunk analysis failed, skipping",
+			// Non-fatal: store nil (serialises as JSON null) so this chunk is retried on resume.
+			s.logger.Warn("chunk analysis failed, will retry on resume",
 				zap.Int("chunk", i), zap.Error(err))
-			chunkResults = append(chunkResults, chunkResult{})
+			chunkResults = append(chunkResults, nil)
 		} else {
 			chunkResults = append(chunkResults, result)
 		}
 
-		// Persist progress: done_chunks + the latest chunk_results snapshot.
+		// Persist progress: done_chunks + checkpoint snapshot.
 		resultsJSON, _ := json.Marshal(chunkResults)
 		if _, dbErr := s.db.Exec(ctx,
 			`UPDATE reference_analysis_jobs
@@ -460,8 +489,16 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 		}
 	}
 
+	// Filter out nil (failed) chunks before merging — they carry no usable data.
+	validChunks := make([]chunkResult, 0, len(chunkResults))
+	for _, r := range chunkResults {
+		if r != nil {
+			validChunks = append(validChunks, r)
+		}
+	}
+
 	// Merge all chunk results
-	merged, err := s.mergeChunks(ctx, jobID, projectID, chunkResults, llmCfg)
+	merged, err := s.mergeChunks(ctx, jobID, projectID, validChunks, llmCfg)
 	if err != nil {
 		s.failJob(ctx, jobID, "merge failed: "+err.Error())
 		return fmt.Errorf("merge: %w", err)
@@ -679,6 +716,50 @@ func splitIntoChunks(text string, maxRunes int) []string {
 		start = cut
 	}
 	return chunks
+}
+
+// modelContextTokens returns the approximate input context window (in tokens) for a model.
+func modelContextTokens(m string) int {
+	m = strings.ToLower(m)
+	switch {
+	case strings.Contains(m, "gpt-4o"):
+		return 128_000
+	case strings.Contains(m, "gpt-4-turbo"):
+		return 128_000
+	case strings.Contains(m, "gpt-4"):
+		return 8_192
+	case strings.Contains(m, "gpt-3.5"):
+		return 16_385
+	case strings.Contains(m, "deepseek-r1"):
+		return 65_536
+	case strings.Contains(m, "deepseek"):
+		return 65_536
+	case strings.Contains(m, "claude-3"):
+		return 200_000
+	case strings.Contains(m, "qwen"):
+		return 131_072
+	case strings.Contains(m, "doubao"):
+		return 131_072
+	default:
+		return 32_768
+	}
+}
+
+// computeChunkChars returns the number of characters per analysis chunk, sized to fit
+// inside the model's input window minus the output budget and prompt overhead.
+// Assumes ~1.5 chars/token for Chinese prose (conservative).
+func computeChunkChars(modelName string, maxOutputTokens int) int {
+	ctxTokens := modelContextTokens(modelName)
+	promptOverhead := 800 // tokens for system prompt + JSON formatting
+	available := ctxTokens - maxOutputTokens - promptOverhead
+	if available < 2000 {
+		available = 2000
+	}
+	chars := available * 3 / 2
+	if chars > 400_000 {
+		chars = 400_000
+	}
+	return chars
 }
 
 func mustMarshal(v interface{}) json.RawMessage {

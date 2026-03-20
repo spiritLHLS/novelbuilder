@@ -67,6 +67,7 @@ class MergeRequest(BaseModel):
     job_id: str
     project_id: str
     chunks: list[ChunkData]
+    llm_config: Optional[LLMConfig] = None
 
 # ── LLM helper (async, with built-in retry) ───────────────────────────────────
 
@@ -82,6 +83,9 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dic
         logger.error("LLM extraction failed: no API key configured (set api_key in llm_config or OPENAI_API_KEY env var)")
         return {}
     base_url = cfg.base_url.rstrip("/")
+    # Normalize: strip trailing /chat/completions that some provider UIs include in the URL.
+    # Without this, the constructed URL becomes /v1/chat/completions/chat/completions (404).
+    base_url = re.sub(r"/chat/completions$", "", base_url, flags=re.IGNORECASE)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -212,7 +216,7 @@ async def analyze_chunk(req: ChunkAnalyzeRequest):
     prompt = _CHUNK_PROMPT.format(
         chunk_index=req.chunk_index + 1,
         total_chunks=req.total_chunks,
-        text=req.chunk_text[:12000],  # guard against oversized chunks
+        text=req.chunk_text,  # chunk size is calibrated by Go based on model context window
     )
 
     logger.info("deep-analyze chunk %d/%d job=%s", req.chunk_index + 1, req.total_chunks, req.job_id)
@@ -283,14 +287,24 @@ async def merge_chunks(req: MergeRequest):
             all_worlds.append(chunk.world)
         all_outlines.extend(chunk.outline or [])
 
-    # Use the default LLM config (no per-call override for merge)
-    cfg = LLMConfig(
-        api_key=os.getenv("OPENAI_API_KEY", ""),
-        base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        model=os.getenv("OPENAI_MODEL", "gpt-4o"),
-        max_tokens=4096,
-        temperature=0.3,
-    )
+    # Prefer the llm_config forwarded by the Go service (contains the user's configured key).
+    # Fall back to environment variables only when no config is provided.
+    if req.llm_config and req.llm_config.api_key:
+        cfg = LLMConfig(
+            api_key=req.llm_config.api_key,
+            base_url=req.llm_config.base_url,
+            model=req.llm_config.model,
+            max_tokens=req.llm_config.max_tokens,
+            temperature=0.3,  # lower for merge/dedup task
+        )
+    else:
+        cfg = LLMConfig(
+            api_key=os.getenv("OPENAI_API_KEY", ""),
+            base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+            max_tokens=4096,
+            temperature=0.3,
+        )
 
     chars_data = json.dumps(all_chars, ensure_ascii=False)[:8000]
     world_data = json.dumps(all_worlds, ensure_ascii=False)[:6000]
