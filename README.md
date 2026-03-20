@@ -140,8 +140,8 @@ novelbuilder/
 ## 启动
 
 ```bash
-docker volume rm novelbuilder-data
 docker rm -f nb
+docker volume rm novelbuilder-data
 docker system prune -a
 ```
 
