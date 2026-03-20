@@ -125,14 +125,16 @@
           <el-input-number v-model="form.rpm_limit" :min="0" :max="1000" :step="5" style="width:100%" />
           <div class="hint" style="margin-top:4px">每分钟最大请求数，0 表示不限制（适用于受并发上限的中转站）</div>
         </el-form-item>
-        <el-form-item label="API 调用格式">
+        <el-form-item label="API 调用路径">
           <el-select v-model="form.api_style" style="width:100%">
-            <el-option label="Chat Completions（/v1/chat/completions，默认）" value="chat_completions" />
-            <el-option label="OpenAI Responses API（/v1/responses）" value="responses" />
-            <el-option label="Anthropic Messages API（/v1/messages）" value="claude" />
-            <el-option label="Google Gemini REST API（/v1beta/models/…）" value="gemini" />
+            <el-option label="/chat/completions" value="/chat/completions" />
+            <el-option label="/v1/chat/completions" value="/v1/chat/completions" />
+            <el-option label="/messages" value="/messages" />
+            <el-option label="/responses" value="/responses" />
+            <el-option label="/v1/responses" value="/v1/responses" />
+            <el-option label="gemini（Google Gemini REST）" value="gemini" />
           </el-select>
-          <div class="hint" style="margin-top:4px">填写 Base URL 或模型名后可自动识别；选择提供商也会自动切换</div>
+          <div class="hint" style="margin-top:4px">路径直接拼接到 Base URL 后面；填写 Base URL 或选择提供商可自动识别</div>
         </el-form-item>
         <el-form-item label="省略参数">
           <el-checkbox v-model="form.omit_max_tokens">不传入 max_tokens</el-checkbox>
@@ -226,7 +228,7 @@ const defaultForm = () => ({
   rpm_limit: 0,
   omit_max_tokens: false,
   omit_temperature: false,
-  api_style: 'chat_completions',
+  api_style: '/chat/completions',
   is_default: false,
 })
 
@@ -283,7 +285,7 @@ function autoDetect() {
 function applyProviderDefaults(provider: string, modelHint = '') {
   switch (provider) {
     case 'anthropic':
-      form.api_style = 'claude'
+      form.api_style = '/messages'
       form.omit_max_tokens = false
       form.omit_temperature = false
       if (!form.base_url || form.base_url === 'https://api.openai.com/v1') {
@@ -302,17 +304,17 @@ function applyProviderDefaults(provider: string, modelHint = '') {
       // OpenAI o-series / codex → Responses API; others → Chat Completions
       const responsesPatterns = [/^o\d/, /^codex/, /gpt-4o-realtime/, /gpt-4o-audio/]
       if (responsesPatterns.some(p => p.test(modelHint))) {
-        form.api_style = 'responses'
+        form.api_style = '/responses'
         form.omit_temperature = true
       } else {
-        form.api_style = 'chat_completions'
+        form.api_style = '/chat/completions'
         form.omit_temperature = false
       }
       form.omit_max_tokens = false
       break
     }
     default: // openai_compatible and fallback
-      form.api_style = 'chat_completions'
+      form.api_style = '/chat/completions'
       form.omit_max_tokens = false
       form.omit_temperature = false
   }

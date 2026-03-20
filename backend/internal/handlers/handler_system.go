@@ -239,12 +239,22 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 	if req.APIStyle == "" {
 		switch req.Provider {
 		case "anthropic":
-			req.APIStyle = "claude"
+			req.APIStyle = "/messages"
 		case "gemini":
 			req.APIStyle = "gemini"
 		default:
-			req.APIStyle = "chat_completions"
+			req.APIStyle = "/chat/completions"
 		}
+	}
+
+	// Normalize legacy style names (stored before path-based values were introduced).
+	switch req.APIStyle {
+	case "chat_completions":
+		req.APIStyle = "/chat/completions"
+	case "responses":
+		req.APIStyle = "/responses"
+	case "claude":
+		req.APIStyle = "/messages"
 	}
 
 	baseURL := strings.TrimRight(req.BaseURL, "/")
@@ -255,10 +265,10 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 		bodyMap  map[string]any
 	)
 
-	switch req.APIStyle {
-	case "responses":
-		// OpenAI Responses API: POST /v1/responses
-		endpoint = baseURL + "/responses"
+	switch {
+	case strings.HasSuffix(req.APIStyle, "/responses"):
+		// OpenAI Responses API: POST {base_url}/responses  or  {base_url}/v1/responses
+		endpoint = baseURL + req.APIStyle
 		bodyMap = map[string]any{
 			"model": req.ModelName,
 			"input": "Reply with the single word: ok",
@@ -266,9 +276,9 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 		if req.MaxTokens > 0 {
 			bodyMap["max_output_tokens"] = req.MaxTokens
 		}
-	case "claude":
-		// Anthropic Messages API: POST /v1/messages
-		endpoint = baseURL + "/messages"
+	case strings.HasSuffix(req.APIStyle, "/messages"):
+		// Anthropic Messages API: POST {base_url}/messages  or  {base_url}/v1/messages
+		endpoint = baseURL + req.APIStyle
 		bodyMap = map[string]any{
 			"model":      req.ModelName,
 			"max_tokens": 16,
@@ -276,10 +286,8 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 				{"role": "user", "content": "Reply with the single word: ok"},
 			},
 		}
-	case "gemini":
-		// Google Gemini REST API: POST /v1beta/models/{model}:generateContent
-		// Base URL is typically https://generativelanguage.googleapis.com
-		// Auth uses ?key= query param, not Authorization header.
+	case req.APIStyle == "gemini":
+		// Google Gemini REST API: POST {base_url}/models/{model}:generateContent?key=…
 		endpoint = baseURL + "/models/" + req.ModelName + ":generateContent?key=" + req.APIKey
 		bodyMap = map[string]any{
 			"contents": []map[string]any{
@@ -290,9 +298,9 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 			},
 			"generationConfig": map[string]any{"maxOutputTokens": 16},
 		}
-	default: // chat_completions
-		// Standard OpenAI Chat Completions: POST /v1/chat/completions
-		endpoint = baseURL + "/chat/completions"
+	default:
+		// Chat Completions: POST {base_url}/chat/completions  or  {base_url}/v1/chat/completions
+		endpoint = baseURL + req.APIStyle
 		bodyMap = map[string]any{
 			"model":      req.ModelName,
 			"max_tokens": 16,
@@ -309,15 +317,15 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	// Gemini uses API key in query string; other providers use Bearer token.
-	if req.APIStyle != "gemini" {
-		httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
-	}
-	// Anthropic requires additional version header.
-	if req.APIStyle == "claude" {
+	// Auth: Gemini uses key in query string; Anthropic uses x-api-key; others use Bearer.
+	switch {
+	case req.APIStyle == "gemini":
+		// no Authorization header — key already embedded in URL
+	case strings.HasSuffix(req.APIStyle, "/messages"):
 		httpReq.Header.Set("x-api-key", req.APIKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
-		httpReq.Header.Del("Authorization") // Anthropic does not use Bearer
+	default:
+		httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -365,8 +373,8 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 
 	// Extract model name from response — each provider uses a different field.
 	modelName := req.ModelName
-	switch req.APIStyle {
-	case "claude":
+	switch {
+	case strings.HasSuffix(req.APIStyle, "/messages"):
 		// Anthropic: {"model":"claude-...", ...}
 		var parsed struct {
 			Model string `json:"model"`
@@ -374,8 +382,8 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 		if json.Unmarshal(rawBody, &parsed) == nil && parsed.Model != "" {
 			modelName = parsed.Model
 		}
-	case "gemini":
-		// Gemini response does not echo back model name in body; use the requested name.
+	case req.APIStyle == "gemini":
+		// Gemini does not echo back model name; use the requested name.
 	default:
 		var parsed struct {
 			Model string `json:"model"`
