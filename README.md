@@ -142,6 +142,7 @@ novelbuilder/
 ```bash
 docker rm -f nb
 docker volume rm novelbuilder-data
+rm -rf novelbuilder
 docker system prune -a
 ```
 
