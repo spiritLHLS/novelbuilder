@@ -1347,7 +1347,7 @@ class NovelFetchImportReq(BaseModel):
     chapter_ids: list[str]
 
 
-def _make_nd_cfg(tmpdir: str):
+def _make_nd_cfg(tmpdir: str, workers: int = 3):
     from novel_downloader.schemas import ClientConfig
     return ClientConfig(
         request_interval=float(os.getenv("ND_REQUEST_INTERVAL", "1.0")),
@@ -1356,7 +1356,7 @@ def _make_nd_cfg(tmpdir: str):
         output_dir=tmpdir,
         cache_book_info=False,
         cache_chapter=False,
-        workers=1,
+        workers=workers,
     )
 
 
@@ -1553,14 +1553,18 @@ async def novels_book_info(req: NovelBookInfoReq):
 @app.post("/novels/fetch-import")
 async def novels_fetch_import(req: NovelFetchImportReq):
     """
-    Stream-download selected chapters and save them as a single .txt file.
+    Stream-download selected chapters with 3-concurrent workers and
+    exponential-backoff retry (up to 3 attempts per chapter).
 
     Yields NDJSON lines:
+      {"type": "log",      "level": "info"|"warn"|"error", "message": "..."}
       {"type": "progress", "done": N, "total": M, "chapter_title": "..."}
-      {"type": "chapter", "chapter_no": N, "chapter_id": "...", "title": "...", "content": "..."}
-      {"type": "done", "file_path": "/data/uploads/xxx.txt", "total_chapters": N, "skipped_chapters": K}
+      {"type": "chapter",  "chapter_no": N, "chapter_id": "...", "title": "...", "content": "..."}
+      {"type": "done",     "file_path": "...", "total_chapters": N, "skipped_chapters": K}
+      {"type": "error",    "message": "..."}  -- only on fatal failure
     """
     try:
+        import asyncio
         import tempfile
         from novel_downloader.plugins import registrar
     except ImportError:
@@ -1571,96 +1575,143 @@ async def novels_fetch_import(req: NovelFetchImportReq):
 
     import uuid as _uuid
 
+    # How many chapters to fetch in parallel
+    CONCURRENCY = int(os.getenv("ND_CONCURRENCY", "3"))
+    # Max retry attempts per chapter (after the initial attempt)
+    MAX_RETRIES = int(os.getenv("ND_MAX_RETRIES", "3"))
+
     async def event_generator():
         total = len(req.chapter_ids)
-        all_chapters: list[dict] = []
+        # chapter_no (1-based) -> dict with title/content
+        results: dict[int, dict] = {}
+        skipped: set[int] = set()
+
+        # Queue used to stream events from concurrent tasks back to the generator
+        queue: asyncio.Queue = asyncio.Queue()
+        # Semaphore caps concurrent in-flight chapter fetches
+        sem = asyncio.Semaphore(CONCURRENCY)
+        completed_count = 0
+
+        def _log(level: str, msg: str) -> str:
+            logger.info("fetch-import [%s] %s", level, msg)
+            return json.dumps({"type": "log", "level": level, "message": msg}, ensure_ascii=False) + "\n"
 
         try:
             with tempfile.TemporaryDirectory(prefix="nb_fetch_") as tmpdir:
-                cfg = _make_nd_cfg(tmpdir)
+                cfg = _make_nd_cfg(tmpdir, workers=CONCURRENCY)
                 client = registrar.get_client(req.site, cfg)
+
                 async with client:
-                    for idx, chap_id in enumerate(req.chapter_ids, start=1):
-                        ch_data = None
-                        try:
-                            ch_data = await client.get_chapter(req.book_id, chap_id)
+                    async def fetch_one(idx: int, chap_id: str) -> None:
+                        """Download one chapter with retry and post result to queue."""
+                        async with sem:
+                            ch_data = None
+                            last_exc: Optional[Exception] = None
+                            for attempt in range(MAX_RETRIES + 1):
+                                try:
+                                    ch_data = await client.get_chapter(req.book_id, chap_id)
+                                    break  # success
+                                except Exception as exc:
+                                    last_exc = exc
+                                    if attempt < MAX_RETRIES:
+                                        delay = 2 ** attempt  # 1s, 2s, 4s
+                                        await queue.put(("log", "warn",
+                                            f"章节 {chap_id}(序{idx}) 第{attempt+1}次失败，{delay}s后重试: {exc}"))
+                                        await asyncio.sleep(delay)
+                                    else:
+                                        await queue.put(("log", "error",
+                                            f"章节 {chap_id}(序{idx}) 已重试{MAX_RETRIES}次，跳过: {last_exc}"))
+                            # Post the result (chapter data or None for skip)
+                            await queue.put(("result", idx, chap_id, ch_data))
+
+                    # Kick off all chapter fetch tasks concurrently
+                    tasks = [
+                        asyncio.create_task(fetch_one(idx, chap_id))
+                        for idx, chap_id in enumerate(req.chapter_ids, start=1)
+                    ]
+
+                    # Drain events from queue until all tasks are done
+                    pending = total
+                    while pending > 0:
+                        item = await queue.get()
+                        if item[0] == "log":
+                            _, level, msg = item
+                            yield json.dumps({"type": "log", "level": level, "message": msg}, ensure_ascii=False) + "\n"
+
+                        elif item[0] == "result":
+                            _, idx, chap_id, ch_data = item
+                            pending -= 1
+                            completed_count += 1
+
                             if ch_data:
-                                all_chapters.append(dict(ch_data))
-                        except Exception as exc:
-                            logger.warning(
-                                "Skip chapter %s/%s: %s", req.book_id, chap_id, exc
-                            )
-                        chapter_title = (
-                            all_chapters[-1].get("title", "") if all_chapters else ""
-                        )
-                        # Emit progress update
-                        yield (
-                            json.dumps(
-                                {
-                                    "type": "progress",
-                                    "done": idx,
-                                    "total": total,
-                                    "chapter_title": chapter_title,
-                                },
-                                ensure_ascii=False,
-                            )
-                            + "\n"
-                        )
-                        # Emit chapter content so the Go backend can persist it to DB
-                        if ch_data:
-                            yield (
-                                json.dumps(
-                                    {
-                                        "type":       "chapter",
-                                        "chapter_no": idx,
-                                        "chapter_id": chap_id,
-                                        "title":      str(ch_data.get("title", "")),
-                                        "content":    str(ch_data.get("content", "")),
-                                    },
-                                    ensure_ascii=False,
-                                )
-                                + "\n"
-                            )
+                                ch_dict = dict(ch_data)
+                                results[idx] = ch_dict
+                                ch_title = str(ch_dict.get("title", ""))
+                            else:
+                                skipped.add(idx)
+                                ch_title = ""
 
-            # Build text file
-            upload_dir = os.getenv("UPLOAD_DIR", "/data/uploads")
-            os.makedirs(upload_dir, exist_ok=True)
-            file_name = str(_uuid.uuid4()) + ".txt"
-            file_path = os.path.join(upload_dir, file_name)
+                            yield json.dumps({
+                                "type":          "progress",
+                                "done":          completed_count,
+                                "total":         total,
+                                "chapter_title": ch_title,
+                            }, ensure_ascii=False) + "\n"
 
-            lines: list[str] = []
-            if req.title:
-                lines += [req.title, ""]
-            if req.author:
-                lines += [f"作者：{req.author}", ""]
-            lines.append("")
-            for ch in all_chapters:
-                lines.append(ch.get("title", ""))
-                lines.append(ch.get("content", ""))
-                lines.append("")
+                            if ch_data:
+                                ch_dict = results[idx]
+                                yield json.dumps({
+                                    "type":       "chapter",
+                                    "chapter_no": idx,
+                                    "chapter_id": chap_id,
+                                    "title":      str(ch_dict.get("title", "")),
+                                    "content":    str(ch_dict.get("content", "")),
+                                }, ensure_ascii=False) + "\n"
 
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines))
+                    # Ensure all tasks are properly awaited
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as exc:
-            logger.exception("fetch-import failed")
+            logger.exception("fetch-import: fatal error")
             yield json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
             return
 
-        yield (
-            json.dumps(
-                {
-                    "type":             "done",
-                    "file_path":        file_path,
-                    "total_chapters":   len(all_chapters),
-                    "skipped_chapters": total - len(all_chapters),
-                },
-                ensure_ascii=False,
-            )
-            + "\n"
-        )
+        # Build the combined text file (chapters sorted by original order)
+        upload_dir = os.getenv("UPLOAD_DIR", "/data/uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        file_name = str(_uuid.uuid4()) + ".txt"
+        file_path = os.path.join(upload_dir, file_name)
 
-    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+        lines: list[str] = []
+        if req.title:
+            lines += [req.title, ""]
+        if req.author:
+            lines += [f"作者：{req.author}", ""]
+        lines.append("")
+        for idx in sorted(results.keys()):
+            ch = results[idx]
+            lines.append(ch.get("title", ""))
+            lines.append(ch.get("content", ""))
+            lines.append("")
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+        downloaded = len(results)
+        n_skipped = len(skipped)
+        logger.info("fetch-import done: %d downloaded, %d skipped", downloaded, n_skipped)
+        yield json.dumps({
+            "type":             "done",
+            "file_path":        file_path,
+            "total_chapters":   downloaded,
+            "skipped_chapters": n_skipped,
+        }, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":

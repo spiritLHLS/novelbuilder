@@ -1,4 +1,3 @@
--- Migration 013: add source_url to reference_materials
--- Tracks the originating URL when a reference book is imported from the network.
-ALTER TABLE reference_materials
-    ADD COLUMN IF NOT EXISTS source_url VARCHAR(2000);
+-- Migration 013: (consolidated into 014_reference_chapters.sql)
+-- source_url is now part of reference_materials in 002_core_entities.sql (fresh installs)
+-- and added via ADD COLUMN IF NOT EXISTS in 014_reference_chapters.sql (existing DBs).

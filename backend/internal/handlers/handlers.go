@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1276,7 +1277,19 @@ func (h *Handler) GetReferenceBookInfo(c *gin.Context) {
 // FetchImportReference creates a reference record immediately and starts a background
 // goroutine to download chapters from the sidecar. The response returns instantly with
 // the new ref_id so the frontend can poll progress via GET /references/:id.
-var fetchImportHTTPClient = &http.Client{Timeout: 600 * time.Second}
+// fetchImportHTTPClient is used for the long-lived SSE stream from the sidecar.
+// No overall Timeout is set — large books can take many minutes.
+// Only the dial and response-header phases are bounded.
+var fetchImportHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ResponseHeaderTimeout: 60 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	},
+}
 
 func (h *Handler) FetchImportReference(c *gin.Context) {
 	projectID := c.Param("id")
@@ -1356,8 +1369,15 @@ func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, 
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 4<<20), 4<<20) // 4MB buffer per line
+	scanner.Buffer(make([]byte, 8<<20), 8<<20) // 8 MB buffer — chapters can be large
 	progressDone := 0
+	totalChapters := len(chapterIDs)
+
+	h.logger.Info("background download started",
+		zap.String("ref_id", refID),
+		zap.String("title", title),
+		zap.Int("total_chapters", totalChapters),
+	)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -1366,6 +1386,7 @@ func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, 
 		}
 		var event map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			h.logger.Warn("runBackgroundDownload: unparseable line", zap.String("ref_id", refID), zap.String("line", line))
 			continue
 		}
 		evType, _ := event["type"].(string)
@@ -1374,30 +1395,69 @@ func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, 
 			if done, ok := event["done"].(float64); ok {
 				progressDone = int(done)
 				h.references.UpdateFetchProgress(ctx, refID, progressDone) //nolint
+				chTitle, _ := event["chapter_title"].(string)
+				h.logger.Info("download progress",
+					zap.String("ref_id", refID),
+					zap.Int("done", progressDone),
+					zap.Int("total", totalChapters),
+					zap.String("chapter_title", chTitle),
+				)
 			}
 		case "chapter":
 			chapterNo, _ := event["chapter_no"].(float64)
 			chapterID, _ := event["chapter_id"].(string)
 			chTitle, _ := event["title"].(string)
 			content, _ := event["content"].(string)
-			h.references.SaveChapter(ctx, refID, chapterID, chTitle, content, int(chapterNo)) //nolint
+			if err := h.references.SaveChapter(ctx, refID, chapterID, chTitle, content, int(chapterNo)); err != nil {
+				h.logger.Warn("runBackgroundDownload: failed to save chapter",
+					zap.String("ref_id", refID),
+					zap.String("chapter_id", chapterID),
+					zap.Error(err),
+				)
+			}
+		case "log":
+			// Informational/warning messages from the sidecar (e.g. retry attempts)
+			msg, _ := event["message"].(string)
+			level, _ := event["level"].(string)
+			if level == "error" {
+				h.logger.Error("sidecar-download", zap.String("ref_id", refID), zap.String("msg", msg))
+			} else {
+				h.logger.Warn("sidecar-download", zap.String("ref_id", refID), zap.String("msg", msg))
+			}
 		case "done":
 			filePath, _ := event["file_path"].(string)
 			totalDownloaded := progressDone
 			if tc, ok := event["total_chapters"].(float64); ok {
 				totalDownloaded = int(tc)
 			}
+			skipped := 0
+			if sk, ok := event["skipped_chapters"].(float64); ok {
+				skipped = int(sk)
+			}
 			h.references.MarkFetchComplete(ctx, refID, filePath, totalDownloaded) //nolint
-			h.logger.Info("background download complete", zap.String("ref_id", refID), zap.Int("chapters", totalDownloaded))
+			h.logger.Info("background download complete",
+				zap.String("ref_id", refID),
+				zap.String("title", title),
+				zap.Int("downloaded", totalDownloaded),
+				zap.Int("skipped", skipped),
+			)
 			return
 		case "error":
 			msg, _ := event["message"].(string)
 			h.references.MarkFetchFailed(ctx, refID, msg) //nolint
-			h.logger.Error("background download failed", zap.String("ref_id", refID), zap.String("error", msg))
+			h.logger.Error("background download failed",
+				zap.String("ref_id", refID),
+				zap.String("title", title),
+				zap.String("error", msg),
+			)
 			return
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		h.logger.Error("runBackgroundDownload: stream read error",
+			zap.String("ref_id", refID),
+			zap.Error(err),
+		)
 		h.references.MarkFetchFailed(ctx, refID, "stream read error: "+err.Error()) //nolint
 	}
 }

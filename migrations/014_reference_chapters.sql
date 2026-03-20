@@ -1,7 +1,8 @@
 -- NovelBuilder Migration 014: Reference book chapter management + download task tracking
 
--- Add per-download fetch tracking fields to reference_materials
+-- Add source URL (consolidated from 013) and per-download fetch tracking fields
 ALTER TABLE reference_materials
+    ADD COLUMN IF NOT EXISTS source_url        VARCHAR(2000),
     ADD COLUMN IF NOT EXISTS fetch_status      VARCHAR(20) DEFAULT 'none',
     ADD COLUMN IF NOT EXISTS fetch_done        INT DEFAULT 0,
     ADD COLUMN IF NOT EXISTS fetch_total       INT DEFAULT 0,
