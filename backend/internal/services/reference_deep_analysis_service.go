@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -664,7 +665,7 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 			return nil
 		}
 
-		result, err := s.analyzeChunk(ctx, jobID, projectID, chunk, i, totalChunks, llmCfg)
+		result, err := s.analyzeChunk(ctx, jobID, projectID, chunk, i, totalChunks, llmCfg, buildPriorContext(chunkResults))
 		if err != nil {
 			// Non-fatal: store nil (serialises as JSON null) so this chunk is retried on resume.
 			s.logger.Warn("chunk analysis failed, will retry on resume",
@@ -772,6 +773,7 @@ func (s *ReferenceDeepAnalysisService) analyzeChunk(
 	jobID, projectID, chunk string,
 	chunkIndex, totalChunks int,
 	llmCfg interface{},
+	priorContext map[string]interface{},
 ) (chunkResult, error) {
 	body := map[string]interface{}{
 		"job_id":       jobID,
@@ -782,6 +784,9 @@ func (s *ReferenceDeepAnalysisService) analyzeChunk(
 	}
 	if llmCfg != nil {
 		body["llm_config"] = llmCfg
+	}
+	if len(priorContext) > 0 {
+		body["prior_context"] = priorContext
 	}
 	bodyJSON, _ := json.Marshal(body)
 
@@ -875,6 +880,97 @@ func (s *ReferenceDeepAnalysisService) mergeChunks(
 		return false, nil
 	})
 	return merged, err
+}
+
+// buildPriorContext extracts a compact list of entity names already found in
+// completed chunks.  Passed to subsequent chunks so the LLM skips known entities
+// and only extracts new ones (or supplements existing ones with fresh details).
+func buildPriorContext(completed []chunkResult) map[string]interface{} {
+	if len(completed) == 0 {
+		return nil
+	}
+	charSet := map[string]bool{}
+	locSet := map[string]bool{}
+	sysSet := map[string]bool{}
+	glossSet := map[string]bool{}
+
+	for _, r := range completed {
+		if r == nil {
+			continue
+		}
+		if chars, ok := r["characters"].([]interface{}); ok {
+			for _, c := range chars {
+				if cmap, ok := c.(map[string]interface{}); ok {
+					name, _ := cmap["name"].(string)
+					role, _ := cmap["role"].(string)
+					if name != "" {
+						entry := name
+						if role != "" {
+							entry = name + "(" + role + ")"
+						}
+						charSet[entry] = true
+					}
+				}
+			}
+		}
+		if world, ok := r["world"].(map[string]interface{}); ok {
+			if locs, ok := world["locations"].([]interface{}); ok {
+				for _, l := range locs {
+					if s, ok := l.(string); ok && s != "" {
+						locSet[s] = true
+					}
+				}
+			}
+			if systems, ok := world["systems"].([]interface{}); ok {
+				for _, sys := range systems {
+					if s, ok := sys.(string); ok && s != "" {
+						sysSet[s] = true
+					}
+				}
+			}
+		}
+		if gloss, ok := r["glossary"].([]interface{}); ok {
+			for _, g := range gloss {
+				if gmap, ok := g.(map[string]interface{}); ok {
+					term, _ := gmap["term"].(string)
+					if term != "" {
+						glossSet[term] = true
+					}
+				}
+			}
+		}
+	}
+
+	toSlice := func(set map[string]bool) []string {
+		s := make([]string, 0, len(set))
+		for k := range set {
+			s = append(s, k)
+		}
+		sort.Strings(s)
+		return s
+	}
+
+	ctx := map[string]interface{}{}
+	if len(charSet) > 0 {
+		ctx["characters"] = toSlice(charSet)
+	}
+	if len(locSet) > 0 {
+		ctx["locations"] = toSlice(locSet)
+	}
+	if len(sysSet) > 0 {
+		ctx["systems"] = toSlice(sysSet)
+	}
+	if len(glossSet) > 0 {
+		g := toSlice(glossSet)
+		if len(g) > 80 { // cap to avoid bloating the prompt
+			g = g[:80]
+		}
+		ctx["glossary"] = g
+	}
+	if len(ctx) == 0 {
+		return nil
+	}
+	return ctx
 }
 
 func (s *ReferenceDeepAnalysisService) resolveLLMConfig(ctx context.Context, projectID string) (map[string]interface{}, error) {
