@@ -1,8 +1,11 @@
 """Shared LLM builder: dispatches to the correct LangChain model class based on api_style."""
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import threading
+import time
 
 # Map legacy api_style strings to the canonical path-based values.
 _LEGACY: dict[str, str] = {
@@ -52,6 +55,75 @@ def _apply_max_completion_tokens_fallback(primary, fallback):
     return primary
 
 
+# ── Per-profile sliding-window rate limiter ───────────────────────────────────
+# Async state: key → {"lock": asyncio.Lock, "timestamps": list[float]}
+_rpm_async_state: dict[str, dict] = {}
+# Sync state: separate timestamps dict + threading locks
+_rpm_sync_timestamps: dict[str, list[float]] = {}
+_rpm_sync_locks: dict[str, threading.Lock] = {}
+
+
+async def _rate_limit_async(key: str, rpm_limit: int) -> None:
+    """Enforce rpm_limit req/min using a 60-second sliding window (async version)."""
+    if rpm_limit <= 0:
+        return
+    if key not in _rpm_async_state:
+        _rpm_async_state[key] = {"lock": asyncio.Lock(), "timestamps": []}
+    state = _rpm_async_state[key]
+    async with state["lock"]:
+        while True:
+            now = time.monotonic()
+            cutoff = now - 60.0
+            state["timestamps"] = [t for t in state["timestamps"] if t >= cutoff]
+            if len(state["timestamps"]) < rpm_limit:
+                state["timestamps"].append(now)
+                return
+            wait_secs = state["timestamps"][0] + 60.0 - now + 0.05
+            await asyncio.sleep(max(wait_secs, 0.05))
+
+
+def _rate_limit_sync(key: str, rpm_limit: int) -> None:
+    """Enforce rpm_limit req/min using a 60-second sliding window (sync version)."""
+    if rpm_limit <= 0:
+        return
+    if key not in _rpm_sync_locks:
+        _rpm_sync_locks[key] = threading.Lock()
+    lock = _rpm_sync_locks[key]
+    while True:
+        with lock:
+            if key not in _rpm_sync_timestamps:
+                _rpm_sync_timestamps[key] = []
+            ts = _rpm_sync_timestamps[key]
+            now = time.monotonic()
+            cutoff = now - 60.0
+            _rpm_sync_timestamps[key] = [t for t in ts if t >= cutoff]
+            ts = _rpm_sync_timestamps[key]
+            if len(ts) < rpm_limit:
+                ts.append(now)
+                return
+            wait_secs = ts[0] + 60.0 - now + 0.05
+        # Release lock before sleeping so other threads can check state
+        time.sleep(max(wait_secs, 0.05))
+
+
+def _apply_rpm_limit(llm, key: str, rpm_limit: int):
+    """Wrap a LangChain model's invoke/ainvoke to enforce RPM rate limiting."""
+    _orig_invoke = llm.invoke
+    _orig_ainvoke = llm.ainvoke
+
+    def _invoke(input, config=None, **kwargs):
+        _rate_limit_sync(key, rpm_limit)
+        return _orig_invoke(input, config=config, **kwargs)
+
+    async def _ainvoke(input, config=None, **kwargs):
+        await _rate_limit_async(key, rpm_limit)
+        return await _orig_ainvoke(input, config=config, **kwargs)
+
+    llm.invoke = _invoke
+    llm.ainvoke = _ainvoke
+    return llm
+
+
 def build_llm(
     cfg: dict,
     default_temperature: float = 0.7,
@@ -74,6 +146,16 @@ def build_llm(
     omit_temperature = cfg.get("omit_temperature", False)
     omit_max_tokens  = cfg.get("omit_max_tokens", False)
 
+    rpm_limit = int(cfg.get("rpm_limit", 0) or 0)
+    # Key uses the original base_url (before any SDK-specific stripping) + model.
+    rpm_key = f"{base_url}|{model}"
+
+    def _maybe_rpm(llm):
+        """Apply sliding-window RPM limiter if configured."""
+        if rpm_limit > 0:
+            return _apply_rpm_limit(llm, rpm_key, rpm_limit)
+        return llm
+
     # ── Anthropic ─────────────────────────────────────────────────────────────
     if api_style.endswith("/messages"):
         from langchain_anthropic import ChatAnthropic
@@ -91,7 +173,7 @@ def build_llm(
             kwargs["temperature"] = float(cfg.get("temperature", default_temperature))
         if not omit_max_tokens:
             kwargs["max_tokens"] = int(cfg.get("max_tokens", default_max_tokens))
-        return ChatAnthropic(**kwargs)
+        return _maybe_rpm(ChatAnthropic(**kwargs))
 
     # ── Google Gemini ─────────────────────────────────────────────────────────
     if api_style == "gemini":
@@ -102,7 +184,7 @@ def build_llm(
             kwargs["temperature"] = float(cfg.get("temperature", default_temperature))
         if not omit_max_tokens:
             kwargs["max_output_tokens"] = int(cfg.get("max_tokens", default_max_tokens))
-        return ChatGoogleGenerativeAI(**kwargs)
+        return _maybe_rpm(ChatGoogleGenerativeAI(**kwargs))
 
     # ── OpenAI / OpenAI-compatible (default) ──────────────────────────────────
     from langchain_openai import ChatOpenAI
@@ -138,6 +220,6 @@ def build_llm(
         fallback_kwargs.pop("max_tokens", None)
         fallback_kwargs["max_completion_tokens"] = tokens_val
         fallback = ChatOpenAI(**fallback_kwargs)
-        return _apply_max_completion_tokens_fallback(primary, fallback)
+        return _maybe_rpm(_apply_max_completion_tokens_fallback(primary, fallback))
 
-    return primary
+    return _maybe_rpm(primary)

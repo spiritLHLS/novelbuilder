@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	anthropic "github.com/liushuangls/go-anthropic/v2"
 	"github.com/novelbuilder/backend/internal/models"
@@ -70,6 +72,65 @@ type resolvedModel struct {
 	OmitMaxTokens   bool
 	OmitTemperature bool
 	ProfileName     string
+	RPMLimit        int // 0 = unlimited
+}
+
+// ── Sliding-window RPM rate limiter ──────────────────────────────────────────
+
+var (
+	rpmMu      sync.Mutex
+	rpmBuckets = map[string]*rpmBucket{}
+)
+
+type rpmBucket struct {
+	mu         sync.Mutex
+	timestamps []time.Time
+}
+
+// rpmWait blocks until a request slot is available within the rpm limit.
+// key should be "baseURL|modelID" to scope the counter per endpoint+model.
+func rpmWait(key string, limit int, logger *zap.Logger) {
+	if limit <= 0 {
+		return
+	}
+	rpmMu.Lock()
+	b, ok := rpmBuckets[key]
+	if !ok {
+		b = &rpmBucket{}
+		rpmBuckets[key] = b
+	}
+	rpmMu.Unlock()
+
+	for {
+		b.mu.Lock()
+		now := time.Now()
+		cutoff := now.Add(-60 * time.Second)
+		var fresh []time.Time
+		for _, t := range b.timestamps {
+			if t.After(cutoff) {
+				fresh = append(fresh, t)
+			}
+		}
+		b.timestamps = fresh
+
+		if len(b.timestamps) < limit {
+			b.timestamps = append(b.timestamps, now)
+			b.mu.Unlock()
+			return
+		}
+
+		// Wait until the oldest timestamp exits the 60-second window.
+		waitDur := b.timestamps[0].Add(60*time.Second).Sub(now) + 50*time.Millisecond
+		b.mu.Unlock()
+
+		if logger != nil {
+			logger.Debug("RPM limit reached, waiting",
+				zap.String("key", key),
+				zap.Int("limit", limit),
+				zap.Duration("wait", waitDur))
+		}
+		time.Sleep(waitDur)
+	}
 }
 
 func NewAIGateway(profiles ProfileResolver, logger *zap.Logger) *AIGateway {
@@ -161,6 +222,7 @@ func (gw *AIGateway) resolveModel(ctx context.Context, req ChatRequest) (resolve
 		OmitMaxTokens:   profile.OmitMaxTokens,
 		OmitTemperature: profile.OmitTemperature,
 		ProfileName:     profile.Name,
+		RPMLimit:        profile.RPMLimit,
 	}
 	if req.MaxTokens > 0 {
 		resolved.MaxTokens = req.MaxTokens
@@ -257,6 +319,16 @@ func resolvedFromCfg(cfg map[string]interface{}, req ChatRequest) resolvedModel 
 	if req.Temperature > 0 {
 		temperature = req.Temperature
 	}
+	rpmLimit := 0
+	if v, ok := cfg["rpm_limit"]; ok {
+		switch rv := v.(type) {
+		case int:
+			rpmLimit = rv
+		case float64:
+			rpmLimit = int(rv)
+		}
+	}
+
 	return resolvedModel{
 		Provider:        provider,
 		APIStyle:        apiStyle,
@@ -267,6 +339,7 @@ func resolvedFromCfg(cfg map[string]interface{}, req ChatRequest) resolvedModel 
 		Temperature:     temperature,
 		OmitMaxTokens:   omitMaxTokens,
 		OmitTemperature: omitTemperature,
+		RPMLimit:        rpmLimit,
 	}
 }
 
@@ -329,6 +402,7 @@ func (gw *AIGateway) openaiClient(r resolvedModel) *openai.Client {
 }
 
 func (gw *AIGateway) chatOpenAI(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
+	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
 	oaiMsgs := make([]openai.ChatCompletionMessage, len(msgs))
 	for i, m := range msgs {
 		oaiMsgs[i] = openai.ChatCompletionMessage{Role: m.Role, Content: m.Content}
@@ -357,6 +431,7 @@ func (gw *AIGateway) chatOpenAI(ctx context.Context, r resolvedModel, msgs []Cha
 }
 
 func (gw *AIGateway) streamOpenAI(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
+	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
 	oaiMsgs := make([]openai.ChatCompletionMessage, len(msgs))
 	for i, m := range msgs {
 		oaiMsgs[i] = openai.ChatCompletionMessage{Role: m.Role, Content: m.Content}
@@ -441,6 +516,7 @@ func buildAnthropicRequest(r resolvedModel, msgs []ChatMessage) anthropic.Messag
 }
 
 func (gw *AIGateway) chatAnthropic(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
+	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
 	resp, err := gw.anthropicClient(r).CreateMessages(ctx, buildAnthropicRequest(r, msgs))
 	if err != nil {
 		return nil, fmt.Errorf("anthropic chat: %w", err)
@@ -455,6 +531,7 @@ func (gw *AIGateway) chatAnthropic(ctx context.Context, r resolvedModel, msgs []
 }
 
 func (gw *AIGateway) streamAnthropic(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
+	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
 	var streamErr error
 	_, err := gw.anthropicClient(r).CreateMessagesStream(ctx, anthropic.MessagesStreamRequest{
 		MessagesRequest: buildAnthropicRequest(r, msgs),
@@ -498,6 +575,7 @@ func buildResponsesBody(r resolvedModel, msgs []ChatMessage) map[string]interfac
 }
 
 func (gw *AIGateway) chatResponses(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
+	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
 	bodyBytes, err := json.Marshal(buildResponsesBody(r, msgs))
 	if err != nil {
 		return nil, fmt.Errorf("responses marshal: %w", err)
@@ -549,6 +627,7 @@ func (gw *AIGateway) chatResponses(ctx context.Context, r resolvedModel, msgs []
 }
 
 func (gw *AIGateway) streamResponses(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
+	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
 	body := buildResponsesBody(r, msgs)
 	body["stream"] = true
 	bodyBytes, err := json.Marshal(body)
@@ -637,6 +716,7 @@ func buildGeminiBody(r resolvedModel, msgs []ChatMessage) map[string]interface{}
 }
 
 func (gw *AIGateway) chatGemini(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
+	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
 	bodyBytes, err := json.Marshal(buildGeminiBody(r, msgs))
 	if err != nil {
 		return nil, fmt.Errorf("gemini marshal: %w", err)
@@ -688,6 +768,7 @@ func (gw *AIGateway) chatGemini(ctx context.Context, r resolvedModel, msgs []Cha
 }
 
 func (gw *AIGateway) streamGemini(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
+	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
 	bodyBytes, err := json.Marshal(buildGeminiBody(r, msgs))
 	if err != nil {
 		return fmt.Errorf("gemini stream marshal: %w", err)
