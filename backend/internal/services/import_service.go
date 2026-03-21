@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -145,18 +146,18 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 	}
 
 	var apiKey, model, baseURL, provider *string
-	var rpmLimit *int
+	var maxTokens, rpmLimit *int
 	var omitMaxTokens, omitTemperature *bool
 	var apiStyle *string
 	if profileID != nil {
-		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url, provider, rpm_limit, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE id = $1`, profileID).
-			Scan(&apiKey, &model, &baseURL, &provider, &rpmLimit, &omitMaxTokens, &omitTemperature, &apiStyle)
+		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url, provider, max_tokens, rpm_limit, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE id = $1`, profileID).
+			Scan(&apiKey, &model, &baseURL, &provider, &maxTokens, &rpmLimit, &omitMaxTokens, &omitTemperature, &apiStyle)
 	}
 	if apiKey == nil {
 		// Fall back to default profile
 		err2 := s.db.QueryRow(ctx,
-			`SELECT api_key, model_name, base_url, provider, rpm_limit, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
-		).Scan(&apiKey, &model, &baseURL, &provider, &rpmLimit, &omitMaxTokens, &omitTemperature, &apiStyle)
+			`SELECT api_key, model_name, base_url, provider, max_tokens, rpm_limit, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
+		).Scan(&apiKey, &model, &baseURL, &provider, &maxTokens, &rpmLimit, &omitMaxTokens, &omitTemperature, &apiStyle)
 		if err2 != nil {
 			return nil, nil // No profile at all; caller handles
 		}
@@ -180,6 +181,9 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 	if provider != nil {
 		cfg["provider"] = *provider
 	}
+	if maxTokens != nil {
+		cfg["max_tokens"] = *maxTokens
+	}
 	if rpmLimit != nil {
 		cfg["rpm_limit"] = *rpmLimit
 	}
@@ -192,6 +196,16 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 	if apiStyle != nil {
 		cfg["api_style"] = *apiStyle
 	}
+	// json_mode: enable JSON-structured output for extraction tasks.
+	// Disabled automatically for reasoning/thinking models that reject response_format.
+	jsonMode := true
+	if model != nil {
+		m := strings.ToLower(*model)
+		if strings.Contains(m, "reasoner") || strings.Contains(m, "o1") || strings.Contains(m, "o3") {
+			jsonMode = false
+		}
+	}
+	cfg["json_mode"] = jsonMode
 	return cfg, nil
 }
 
