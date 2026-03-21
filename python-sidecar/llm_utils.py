@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 # Map legacy api_style strings to the canonical path-based values.
 _LEGACY: dict[str, str] = {
@@ -9,6 +10,46 @@ _LEGACY: dict[str, str] = {
     "claude":           "/messages",
     "responses":        "/responses",
 }
+
+# Models that require max_completion_tokens instead of max_tokens (e.g. o1, o3, o4-mini).
+_O_SERIES_RE = re.compile(r"\bo[1-9](-mini|-preview|-pro)?\b", re.IGNORECASE)
+
+
+def _needs_completion_tokens(model: str, cfg: dict) -> bool:
+    """Return True when max_completion_tokens should be used instead of max_tokens."""
+    return cfg.get("use_max_completion_tokens", False) or bool(_O_SERIES_RE.search(model))
+
+
+def _is_max_tokens_unsupported(exc: Exception) -> bool:
+    """Detect the specific 400 error: 'max_tokens is not supported, use max_completion_tokens'."""
+    msg = str(exc)
+    return "max_tokens" in msg and "max_completion_tokens" in msg
+
+
+def _apply_max_completion_tokens_fallback(primary, fallback):
+    """Patch invoke/ainvoke on *primary* to transparently retry via *fallback* on the token-param error."""
+    _orig_invoke = primary.invoke
+    _orig_ainvoke = primary.ainvoke
+
+    def _invoke(input, config=None, **kwargs):
+        try:
+            return _orig_invoke(input, config=config, **kwargs)
+        except Exception as exc:
+            if _is_max_tokens_unsupported(exc):
+                return fallback.invoke(input, config=config, **kwargs)
+            raise
+
+    async def _ainvoke(input, config=None, **kwargs):
+        try:
+            return await _orig_ainvoke(input, config=config, **kwargs)
+        except Exception as exc:
+            if _is_max_tokens_unsupported(exc):
+                return await fallback.ainvoke(input, config=config, **kwargs)
+            raise
+
+    primary.invoke = _invoke
+    primary.ainvoke = _ainvoke
+    return primary
 
 
 def build_llm(
@@ -73,11 +114,30 @@ def build_llm(
         if full.endswith("/chat/completions"):
             base_url = full.removesuffix("/chat/completions")
 
+    tokens_val = int(cfg.get("max_tokens", default_max_tokens))
+    use_completion_tokens = _needs_completion_tokens(model, cfg)
+
     kwargs = {"api_key": api_key, "model": model, "streaming": streaming}
     if base_url:
         kwargs["base_url"] = base_url
     if not omit_temperature:
         kwargs["temperature"] = float(cfg.get("temperature", default_temperature))
     if not omit_max_tokens:
-        kwargs["max_tokens"] = int(cfg.get("max_tokens", default_max_tokens))
-    return ChatOpenAI(**kwargs)
+        if use_completion_tokens:
+            kwargs["max_completion_tokens"] = tokens_val
+        else:
+            kwargs["max_tokens"] = tokens_val
+
+    primary = ChatOpenAI(**kwargs)
+
+    # For models where we used max_tokens (unknown/generic models), attach a dynamic
+    # fallback: if the API responds with 400 "max_tokens not supported, use
+    # max_completion_tokens", transparently rebuild and retry.
+    if not omit_max_tokens and not use_completion_tokens:
+        fallback_kwargs = {**kwargs}
+        fallback_kwargs.pop("max_tokens", None)
+        fallback_kwargs["max_completion_tokens"] = tokens_val
+        fallback = ChatOpenAI(**fallback_kwargs)
+        return _apply_max_completion_tokens_fallback(primary, fallback)
+
+    return primary

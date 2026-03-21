@@ -22,7 +22,7 @@ type Config struct {
 
 // DefaultConfig suits LLM / sidecar HTTP calls.
 var DefaultConfig = Config{
-	MaxAttempts: 5,
+	MaxAttempts: 7,
 	BaseDelay:   2 * time.Second,
 	MaxDelay:    60 * time.Second,
 	Jitter:      0.3,
