@@ -110,7 +110,7 @@ async def _rate_limit(cfg: LLMConfig) -> None:
 
 # ── LLM helper (async, with built-in retry) ───────────────────────────────────
 
-async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dict:
+async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dict:
     """
     Call an OpenAI-compatible endpoint and return parsed JSON.
     Supports two API styles:
