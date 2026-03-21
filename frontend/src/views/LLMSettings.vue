@@ -74,6 +74,7 @@
       :title="editingProfile ? '编辑模型配置' : '添加模型配置'"
       width="600px"
       destroy-on-close
+      @closed="onDialogClosed"
     >
       <el-form
         ref="formRef"
@@ -394,17 +395,34 @@ function editProfile(profile: LLMProfile) {
     rpm_limit: profile.rpm_limit,
     omit_max_tokens: profile.omit_max_tokens,
     omit_temperature: profile.omit_temperature,
-    api_style: profile.api_style || 'chat_completions',
+    api_style: normalizeAPIStyle(profile.api_style),
     is_default: profile.is_default,
   })
   showCreateDialog.value = true
 }
 
-function cancelDialog() {
-  showCreateDialog.value = false
+// Reset all dialog state — called by @closed event (fires after animation on any close path:
+// X button, Escape, backdrop click, or explicit cancelDialog). This ensures editingProfile
+// is always null before the next open, preventing a create form from submitting as an update.
+function onDialogClosed() {
   editingProfile.value = null
   dialogTestResult.value = null
   Object.assign(form, defaultForm())
+}
+
+function cancelDialog() {
+  showCreateDialog.value = false
+  // State reset is handled by @closed handler above
+}
+
+// Map legacy api_style codes (stored pre-refactor) to path-based values used by the dropdown.
+function normalizeAPIStyle(s: string): string {
+  const legacy: Record<string, string> = {
+    chat_completions: '/chat/completions',
+    messages: '/messages',
+    responses: '/responses',
+  }
+  return legacy[s] ?? s ?? '/chat/completions'
 }
 
 async function submitForm() {
