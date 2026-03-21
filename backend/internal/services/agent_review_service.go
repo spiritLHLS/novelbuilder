@@ -270,7 +270,10 @@ func (s *AgentReviewService) GetSession(ctx context.Context, sessionID string) (
 		if err := rows.Scan(&m.Round, &m.Agent, &m.AgentName, &m.Content, &tagsJSON); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(tagsJSON, &m.Tags)
+		if err := json.Unmarshal(tagsJSON, &m.Tags); err != nil {
+			s.logger.Warn("GetSession: failed to unmarshal message tags",
+				zap.String("session_id", sessionID), zap.Error(err))
+		}
 		sess.Messages = append(sess.Messages, m)
 	}
 	if err := rows.Err(); err != nil {

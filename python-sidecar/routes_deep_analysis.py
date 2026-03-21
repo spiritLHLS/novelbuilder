@@ -376,6 +376,23 @@ _CHUNK_PROMPT = """请从以下小说片段中提取结构化信息，严格按�
 """
 
 
+def _split_delimited(s: str, sep: str = ",") -> list[str]:
+    """Split a delimted string on both Chinese and English comma or semicolon variants.
+
+    sep="," → split on Chinese '，' and English ','
+    sep=";" → split on Chinese '；' and English ';'
+    """
+    if not s:
+        return []
+    if sep in (",", "，"):
+        normalized = s.replace("，", ",")
+        parts = normalized.split(",")
+    else:
+        normalized = s.replace("；", ";")
+        parts = normalized.split(";")
+    return [p.strip() for p in parts if p.strip()]
+
+
 @router.post("/deep-analyze/chunk")
 async def analyze_chunk(req: ChunkAnalyzeRequest):
     """Analyze a single chunk of text and return extracted entities."""
@@ -395,7 +412,7 @@ async def analyze_chunk(req: ChunkAnalyzeRequest):
         # traits: "特点1，特点2" -> ["特点1", "特点2"]
         traits_raw = ch.pop("traits", "")
         if isinstance(traits_raw, str):
-            ch["traits"] = [t.strip() for t in traits_raw.split("，") if t.strip()]
+            ch["traits"] = _split_delimited(traits_raw, ",")
         elif not isinstance(traits_raw, list):
             ch["traits"] = []
         else:
@@ -404,12 +421,14 @@ async def analyze_chunk(req: ChunkAnalyzeRequest):
         rel_raw = ch.pop("relationships", "")
         if isinstance(rel_raw, str):
             rel_list = []
-            for item in rel_raw.split("；"):
-                item = item.strip()
+            for item in _split_delimited(rel_raw, ";"):
                 if "：" in item:
                     parts = item.split("：", 1)
                     rel_list.append({"name": parts[0].strip(), "description": parts[1].strip()})
-                elif item:
+                elif ":" in item:
+                    parts = item.split(":", 1)
+                    rel_list.append({"name": parts[0].strip(), "description": parts[1].strip()})
+                else:
                     rel_list.append({"name": item, "description": ""})
             ch["relationships"] = rel_list
         elif not isinstance(rel_raw, list):
@@ -419,8 +438,8 @@ async def analyze_chunk(req: ChunkAnalyzeRequest):
     world = {
         "setting": result.get("world_setting", ""),
         "time_period": result.get("world_time_period", ""),
-        "locations": [l.strip() for l in result.get("world_locations", "").split("；") if l.strip()],
-        "systems": [s.strip() for s in result.get("world_systems", "").split("；") if s.strip()],
+        "locations": _split_delimited(result.get("world_locations", ""), ";"),
+        "systems": _split_delimited(result.get("world_systems", ""), ";"),
     }
 
     # Convert outline.characters string to involved_characters list
@@ -428,7 +447,7 @@ async def analyze_chunk(req: ChunkAnalyzeRequest):
     for node in outline:
         chars_str = node.pop("characters", "")
         if isinstance(chars_str, str):
-            node["involved_characters"] = [c.strip() for c in chars_str.split("，") if c.strip()]
+            node["involved_characters"] = _split_delimited(chars_str, ",")
         elif "involved_characters" not in node:
             node["involved_characters"] = []
 
@@ -437,7 +456,7 @@ async def analyze_chunk(req: ChunkAnalyzeRequest):
     for f in foreshadowings:
         chars_str = f.pop("characters", "")
         if isinstance(chars_str, str):
-            f["related_characters"] = [c.strip() for c in chars_str.split("，") if c.strip()]
+            f["related_characters"] = _split_delimited(chars_str, ",")
         elif "related_characters" not in f:
             f["related_characters"] = []
 
@@ -606,18 +625,20 @@ async def merge_chunks(req: MergeRequest):
     for ch in final_chars_raw:
         traits_raw = ch.pop("traits", "")
         if isinstance(traits_raw, str):
-            ch["traits"] = [t.strip() for t in traits_raw.split("，") if t.strip()]
+            ch["traits"] = _split_delimited(traits_raw, ",")
         elif not isinstance(traits_raw, list):
             ch["traits"] = []
         rel_raw = ch.pop("relationships", "")
         if isinstance(rel_raw, str):
             rel_list = []
-            for item in rel_raw.split("；"):
-                item = item.strip()
+            for item in _split_delimited(rel_raw, ";"):
                 if "：" in item:
                     parts = item.split("：", 1)
                     rel_list.append({"name": parts[0].strip(), "description": parts[1].strip()})
-                elif item:
+                elif ":" in item:
+                    parts = item.split(":", 1)
+                    rel_list.append({"name": parts[0].strip(), "description": parts[1].strip()})
+                else:
                     rel_list.append({"name": item, "description": ""})
             ch["relationships"] = rel_list
         elif not isinstance(rel_raw, list):

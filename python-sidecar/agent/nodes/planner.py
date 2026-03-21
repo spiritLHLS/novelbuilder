@@ -9,6 +9,7 @@ import logging
 import os
 from typing import Any
 
+from json_repair import repair_json
 from agent.state import AgentState, PlanStep
 from llm_utils import build_llm
 
@@ -52,7 +53,15 @@ def planner_node(state: AgentState) -> dict[str, Any]:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        steps: list[PlanStep] = json.loads(raw)
+        parsed = repair_json(raw)
+        if not isinstance(parsed, list):
+            logger.warning(
+                "Planner: LLM response is not a JSON array after repair, falling back "
+                "| task=%s | raw snippet: %.300s", task_type, raw
+            )
+            steps = _default_plan(task_type)
+        else:
+            steps = parsed
     except Exception as exc:
         logger.warning("Planner LLM failed, using default plan: %s", repr(exc), exc_info=True)
         steps = _default_plan(task_type)

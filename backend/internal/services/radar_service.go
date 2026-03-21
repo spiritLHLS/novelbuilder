@@ -101,6 +101,14 @@ func (s *RadarService) Scan(ctx context.Context, projectID *string, req RadarSca
 	// Validate JSON
 	var rr RadarResult
 	if err := json.Unmarshal([]byte(rawContent), &rr); err != nil {
+		snippet := rawContent
+		if len(snippet) > 300 {
+			snippet = snippet[:300]
+		}
+		s.logger.Warn("radar scan: LLM response is not valid JSON, storing raw text",
+			zap.Error(err),
+			zap.String("raw_snippet", snippet),
+		)
 		// Return as-is in a wrapper so front-end can still display it
 		rr = RadarResult{OpportunityNote: rawContent}
 	}

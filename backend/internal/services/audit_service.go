@@ -142,7 +142,13 @@ func (s *AuditService) GetLatestReport(ctx context.Context, chapterID string) (*
 		}
 		return nil, err
 	}
-	json.Unmarshal(dimsJSON, &r.Dimensions)
-	json.Unmarshal(issuesJSON, &r.Issues)
+	if err := json.Unmarshal(dimsJSON, &r.Dimensions); err != nil {
+		s.logger.Warn("GetLatestReport: failed to unmarshal dimensions",
+			zap.String("chapter_id", chapterID), zap.Error(err))
+	}
+	if err := json.Unmarshal(issuesJSON, &r.Issues); err != nil {
+		s.logger.Warn("GetLatestReport: failed to unmarshal issues",
+			zap.String("chapter_id", chapterID), zap.Error(err))
+	}
 	return &r, nil
 }

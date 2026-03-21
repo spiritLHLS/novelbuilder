@@ -221,6 +221,7 @@ func (s *QualityService) reviewAsAntiAIExpert(ctx context.Context, content strin
 		Temperature: 0.3,
 	})
 	if err != nil {
+		s.logger.Warn("AI detection: LLM call failed", zap.Error(err))
 		return nil, 50
 	}
 
@@ -237,6 +238,14 @@ func (s *QualityService) reviewAsAntiAIExpert(ctx context.Context, content strin
 		Issues  []models.QualityIssue `json:"issues"`
 	}
 	if err := json.Unmarshal([]byte(respContent), &result); err != nil {
+		snippet := respContent
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		s.logger.Warn("AI detection: failed to parse LLM response",
+			zap.Error(err),
+			zap.String("raw_snippet", snippet),
+		)
 		return nil, 50
 	}
 

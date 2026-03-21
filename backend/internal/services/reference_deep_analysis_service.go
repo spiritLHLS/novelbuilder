@@ -616,7 +616,10 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 	).Scan(&existingResultsRaw)
 	var chunkResults []chunkResult
 	if len(existingResultsRaw) > 2 { // more than empty array []
-		_ = json.Unmarshal(existingResultsRaw, &chunkResults)
+		if err := json.Unmarshal(existingResultsRaw, &chunkResults); err != nil {
+			s.logger.Warn("runAnalysisTask: failed to load chunk_results checkpoint",
+				zap.String("job_id", jobID), zap.Error(err))
+		}
 	}
 
 	// Count consecutive non-nil entries from the start — these are the successfully

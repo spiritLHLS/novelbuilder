@@ -76,10 +76,10 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
    - social_structure: 社会结构
    - power_system: 力量体系
    - core_conflict: 核心冲突
-2. characters: 角色列表，每个角色包含 name, role_type(protagonist/supporting/antagonist/mentor/minor), profile(性格、背景、动机、能力等JSON对象)
-3. master_outline: 主线大纲，包含每卷的主题、核心冲突、高潮点
-4. relation_graph: 角色关系图，描述角色间的关系
-5. global_timeline: 全局时间线，重要事件节点
+2. characters: 角色列表，每个角色包含 name, role_type(protagonist/supporting/antagonist/mentor/minor), profile（用一段连续文字描述该角色的性格、背景、动机、能力，100字以内的纯字符串，禁止嵌套JSON）
+3. master_outline: 用分号分隔的字符串，每条格式为"第N卷:主题/核心冲突/高潮点"，例如"第1卷:少年崛起/腥风血雨的首战/突破境界"
+4. relation_graph: 用分号分隔的角色关系描述字符串，格式为"角色A-角色B:关系描述"，例如"主角-师傅:师徒相授；主角-反派:宿命对手"
+5. global_timeline: 用分号分隔的时间线字符串，格式为"时间节点:事件描述"，例如"修炼第1年:入门拜师；修炼第3年:首次大战"
 6. foreshadowings: 初始伏笔设置列表
 7. volumes: 卷级结构，每卷的标题和章节范围
 

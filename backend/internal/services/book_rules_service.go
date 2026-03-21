@@ -132,8 +132,14 @@ func (s *BookRulesService) AntiDetectRewrite(
 	var antiAI []string
 	var banned []string
 	if rules != nil {
-		json.Unmarshal(rules.AntiAIWordlist, &antiAI)
-		json.Unmarshal(rules.BannedPatterns, &banned)
+		if err := json.Unmarshal(rules.AntiAIWordlist, &antiAI); err != nil {
+			s.logger.Warn("AntiDetectRewrite: failed to unmarshal anti_ai_wordlist",
+				zap.String("chapter_id", chapterID), zap.Error(err))
+		}
+		if err := json.Unmarshal(rules.BannedPatterns, &banned); err != nil {
+			s.logger.Warn("AntiDetectRewrite: failed to unmarshal banned_patterns",
+				zap.String("chapter_id", chapterID), zap.Error(err))
+		}
 	}
 
 	styleGuide := ""

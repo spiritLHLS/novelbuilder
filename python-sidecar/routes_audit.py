@@ -194,8 +194,6 @@ async def audit_chapter(req: AuditChapterRequest):
     Phase 1: fast heuristic (no LLM).
     Phase 2: LLM deep eval (if llm_config provided).
     """
-    import json
-    
     heuristic_dims = _heuristic_audit(req.chapter_text, req.context)
 
     llm_dims: dict = {}
@@ -237,7 +235,12 @@ async def audit_chapter(req: AuditChapterRequest):
                 raw = re.sub(r"^```[a-z]*\n?", "", raw)
                 raw = re.sub(r"\n?```$", "", raw)
 
-            data = json.loads(raw)
+            data = repair_json(raw)
+            if not data:
+                logger.warning(
+                    "audit_chapter: repair_json returned empty, raw snippet: %.500s", raw
+                )
+                data = {}
             # Convert flat array format to the map format expected by Go
             raw_dims = data.get("dimensions", [])
             llm_dims = {}
@@ -333,8 +336,6 @@ _ANTI_DETECT_SYSTEM = """你是一位专业的中文小说改写编辑，擅长�
 @router.post("/anti-detect/rewrite")
 async def anti_detect_rewrite(req: AntiDetectRequest):
     """Anti-AI rewrite: de-flavor AI-generated chapter text."""
-    import json
-
     if not req.llm_config.get("api_key"):
         raise HTTPException(status_code=400, detail="llm_config.api_key is required for anti-detect rewrite")
 
@@ -372,18 +373,18 @@ async def anti_detect_rewrite(req: AntiDetectRequest):
             raw = re.sub(r"^```[a-z]*\n?", "", raw)
             raw = re.sub(r"\n?```$", "", raw)
 
-        data = json.loads(raw)
-        rewritten = data.get("rewritten_text", req.text)
-        changes = data.get("changes_made", [])
-
-    except json.JSONDecodeError:
-        # LLM didn't return JSON — treat entire response as rewritten text
-        rewritten = response.content.strip()  # type: ignore[possibly-undefined]
-        logger.warning(
-            "Anti-detect LLM returned non-JSON, using raw output | raw_content: %.500s",
-            rewritten,
-        )
-        changes = ["格式解析失败，使用原始输出"]
+        data = repair_json(raw)
+        if data and data.get("rewritten_text"):
+            rewritten = data["rewritten_text"]
+            changes_val = data.get("changes_made", [])
+            changes = changes_val if isinstance(changes_val, list) else ["格式解析部分失败"]
+        else:
+            logger.warning(
+                "Anti-detect rewrite: JSON repair failed or missing rewritten_text, using raw LLM output "
+                "| raw snippet: %.500s", raw
+            )
+            rewritten = raw
+            changes = ["格式解析失败，使用原始输出"]
     except Exception as exc:
         logger.error("Anti-detect rewrite failed: %s", repr(exc), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Anti-detect rewrite failed: {exc}")
@@ -498,8 +499,6 @@ _BRIEF_SYSTEM = """你是一位资深网文策划，擅长从零碎的创意简�
 @router.post("/creative-brief")
 async def generate_creative_brief(req: CreativeBriefRequest):
     """Generate story_bible + book_rules from a creative brief document."""
-    import json
-
     if not req.llm_config.get("api_key"):
         raise HTTPException(status_code=400, detail="llm_config.api_key is required")
 
@@ -519,8 +518,16 @@ async def generate_creative_brief(req: CreativeBriefRequest):
             raw = re.sub(r"^```[a-z]*\n?", "", raw)
             raw = re.sub(r"\n?```$", "", raw)
 
-        return json.loads(raw)
+        result = repair_json(raw)
+        if not result:
+            logger.error(
+                "generate_creative_brief: repair_json returned empty | raw snippet: %.500s", raw
+            )
+            raise HTTPException(status_code=502, detail="LLM returned invalid JSON for creative brief")
+        return result
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Creative brief generation failed: %s", repr(exc), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Creative brief generation failed: {exc}")
