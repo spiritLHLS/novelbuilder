@@ -146,7 +146,7 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 		}
 	}
 
-	// Store characters (batch insert)
+	// Store characters (batch upsert — ON CONFLICT handles blueprint re-generation)
 	if len(blueprint.Characters) > 0 {
 		chBatch := &pgx.Batch{}
 		for _, ch := range blueprint.Characters {
@@ -156,7 +156,11 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 			}
 			chBatch.Queue(
 				`INSERT INTO characters (id, project_id, name, role_type, profile, created_at, updated_at)
-				 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+				 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+				 ON CONFLICT (project_id, name) DO UPDATE
+				     SET role_type = EXCLUDED.role_type,
+				         profile   = EXCLUDED.profile,
+				         updated_at = NOW()`,
 				uuid.New().String(), projectID, ch.Name, ch.RoleType, profileJSON)
 		}
 		br := tx.SendBatch(ctx, chBatch)

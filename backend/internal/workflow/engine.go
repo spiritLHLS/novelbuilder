@@ -239,7 +239,7 @@ func (e *Engine) CheckIdempotency(ctx context.Context, key, action string) (bool
 func (e *Engine) SaveIdempotency(ctx context.Context, key, action, requestHash string, statusCode int, responseBody []byte) {
 	_, err := e.db.Exec(ctx,
 		`INSERT INTO idempotency_keys (idempotency_key, action, request_hash, status_code, response_body, created_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW()) ON CONFLICT DO NOTHING`,
+		 VALUES ($1, $2, $3, $4, $5, NOW()) ON CONFLICT (idempotency_key, action) DO NOTHING`,
 		key, action, requestHash, statusCode, responseBody)
 	if err != nil {
 		e.logger.Warn("failed to save idempotency key", zap.Error(err))
