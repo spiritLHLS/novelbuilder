@@ -22,6 +22,13 @@ Design
   here through httpx retries so that transient OpenAI errors are absorbed.
 * The LLM config is forwarded per-call so the Go gateway routing (by agent type
   "reference_analyzer") is respected.
+
+JSON Repair Strategy
+--------------------
+* Automatic repair of truncated/malformed JSON responses from LLM
+* Multi-strategy approach: direct parse → strip fences → close unclosed → extract JSON-like
+* Response completeness validation to detect truncation
+* Automatic retry on transient failures (429, 5xx)
 """
 from __future__ import annotations
 
@@ -37,6 +44,8 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from json_repair import repair_json, is_response_complete
+
 logger = logging.getLogger("python-agent")
 
 router = APIRouter()
@@ -47,7 +56,7 @@ class LLMConfig(BaseModel):
     api_key: str = ""
     base_url: str = "https://api.openai.com/v1"
     model: str = "gpt-4o"
-    max_tokens: int = 4096
+    max_tokens: int = 6000  # Increased to prevent truncation of complex responses
     temperature: float = 0.4   # lower for extraction tasks
     rpm_limit: int = 0         # 0 = unlimited
     omit_max_tokens: bool = False   # skip max_tokens field (some providers reject it)
@@ -170,7 +179,7 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
         if not cfg.omit_temperature:
             payload["temperature"] = cfg.temperature
 
-    delay = 2.0
+    delay = 10.0
     async with httpx.AsyncClient(timeout=120.0) as client:
         for attempt in range(1, max_retries + 1):
             try:
@@ -224,6 +233,25 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
                     raw = data["output"][0]["content"][0]["text"]
                 else:
                     raw = data["choices"][0]["message"]["content"]
+                
+                # Check response completeness and attempt retry if incomplete
+                is_complete, issues = is_response_complete(raw)
+                if not is_complete and attempt < max_retries:
+                    logger.warning(
+                        "LLM response incomplete on attempt %d/%d: %s. Retrying...",
+                        attempt, max_retries, issues
+                    )
+                    # Reduce max_tokens and retry
+                    reduced_tokens = max(int(cfg.max_tokens * 0.7), 2048)
+                    if use_responses_api:
+                        payload["max_output_tokens"] = reduced_tokens
+                    else:
+                        payload["max_tokens"] = reduced_tokens
+                    
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 1.5, 30.0)
+                    continue
+                
                 return _parse_json(raw)
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 logger.warning(
@@ -254,27 +282,26 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
 
 
 def _parse_json(raw: str) -> dict:
-    """Strip markdown fences, repair truncated JSON, return dict."""
-    original_raw = raw
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw.strip())
-    raw = raw.strip()
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        # Try to close unclosed structures from truncated output
-        raw += "]" * (raw.count("[") - raw.count("]"))
-        raw += "}" * (raw.count("{") - raw.count("}"))
-        try:
-            return json.loads(raw)
-        except Exception:
-            logger.warning(
-                "LLM JSON parse failed after repair, returning empty dict | raw_content: %.500s",
-                original_raw,
-            )
-            return {}
+    """Strip markdown fences, repair truncated JSON, return dict.
+    
+    Uses intelligent repair strategies to handle:
+    - Truncated responses
+    - Incomplete nested structures
+    - Unclosed strings and objects
+    """
+    # First check if response appears complete
+    is_complete, issues = is_response_complete(raw)
+    if not is_complete:
+        logger.warning("Response appears incomplete: %s", issues)
+    
+    # Use advanced repair logic
+    result = repair_json(raw)
+    if not result:
+        logger.warning(
+            "LLM JSON parse failed after repair, returning empty dict | raw_content: %.1000s",
+            raw,
+        )
+    return result
 
 
 # ── Chunk analysis ────────────────────────────────────────────────────────────

@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
+from json_repair import repair_json
 from analyzers.style_analyzer import StyleAnalyzer
 from analyzers.narrative_analyzer import NarrativeAnalyzer
 from analyzers.atmosphere_analyzer import AtmosphereAnalyzer
@@ -98,31 +99,18 @@ def _extract_sensory_samples(sentences: list, max_samples: int = 15) -> list:
 
 
 def _repair_json(raw: str) -> dict:
-    """Strip markdown fences and attempt basic repair of truncated/malformed LLM JSON output."""
-    original_raw = raw
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw)
-    raw = raw.strip()
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        # Try to close unclosed braces/brackets from truncated output
-        open_b = raw.count("{") - raw.count("}")
-        open_sq = raw.count("[") - raw.count("]")
-        if open_sq > 0:
-            raw += "]" * open_sq
-        if open_b > 0:
-            raw += "}" * open_b
-        try:
-            return json.loads(raw)
-        except Exception:
-            logger.warning(
-                "JSON repair failed, returning empty dict | raw_content: %.500s",
-                original_raw,
-            )
-            return {}
+    """Strip markdown fences and attempt basic repair of truncated/malformed LLM JSON output.
+    
+    Uses centralized repair logic with multiple strategies.
+    """
+    result = repair_json(raw)
+    if not result:
+        logger.warning(
+            "JSON repair failed, returning empty dict | raw_content: %.800s",
+            raw,
+        )
+    return result
+
 
 def _read_file(file_path: str) -> str:
     if not os.path.exists(file_path):

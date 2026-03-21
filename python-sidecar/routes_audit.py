@@ -19,6 +19,7 @@ from analyzers.atmosphere_analyzer import AtmosphereAnalyzer
 from analyzers.plot_extractor import PlotExtractor
 from humanizer.pipeline import HumanizationPipeline
 from humanizer.metrics import PerplexityBurstinessEstimator
+from json_repair import repair_json
 from llm_utils import build_llm
 
 logger = logging.getLogger("python-agent")
@@ -114,6 +115,15 @@ _AI_FLAVOR_WORDS = [
     "另一方面","从某种程度上说","在某种意义上","不可否认","可以肯定的是",
     "正如","诚然","固然","况且","何况","由此可见","据此","基于此",
 ]
+
+
+def _repair_json(raw: str) -> dict:
+    """Wrapper around centralized repair_json for backward compatibility.
+    
+    Handles truncated/malformed LLM JSON responses with intelligent repair.
+    """
+    return repair_json(raw)
+
 
 def _heuristic_audit(text: str, context: dict) -> dict:
     """Fast heuristic pass — runs without LLM, fills in obvious issues."""
