@@ -909,6 +909,21 @@ func (h *Handler) CancelDeepAnalysisJob(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "cancelled", "job_id": job.ID})
 }
 
+// ResetDeepAnalysis cancels any running job and deletes all prior analysis records
+// for a reference so the next StartDeepAnalysis call begins completely from scratch.
+func (h *Handler) ResetDeepAnalysis(c *gin.Context) {
+	refID := c.Param("id")
+	if h.deepAnalysis == nil {
+		c.JSON(503, gin.H{"error": "deep analysis service not configured"})
+		return
+	}
+	if err := h.deepAnalysis.ResetAnalysis(c.Request.Context(), refID); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "reset", "ref_id": refID})
+}
+
 // ImportDeepAnalysisResult imports the extracted entities from a completed deep analysis job
 // into the current project's world_bibles, characters, and outlines tables.
 func (h *Handler) ImportDeepAnalysisResult(c *gin.Context) {

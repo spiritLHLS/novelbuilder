@@ -32,6 +32,7 @@ def get_db():
         dbname=os.getenv("DB_NAME", "novelbuilder"),
         user=os.getenv("DB_USER", "novelbuilder"),
         password=os.getenv("DB_PASSWORD", "novelbuilder"),
+        options="-c client_encoding=UTF8",
     )
 
 

@@ -453,6 +453,13 @@
           @click="doStartDeepAnalysis"
         >{{ deepAnalysisJob?.done_chunks > 0 ? '继续分析' : '开始深度分析' }}</el-button>
         <el-button
+          v-if="deepAnalysisJob && ['failed','cancelled','completed'].includes(deepAnalysisJob.status)"
+          type="danger"
+          plain
+          :loading="deepAnalysisResetting"
+          @click="doResetDeepAnalysis"
+        >重新分析</el-button>
+        <el-button
           v-if="deepAnalysisJob?.status === 'pending' || deepAnalysisJob?.status === 'running'"
           type="warning"
           @click="cancelDeepAnalysis"
@@ -531,6 +538,7 @@ const deepAnalysisJob = ref<any>(null)
 const deepAnalysisDialogLoading = ref(false)
 const deepAnalysisStarting = ref(false)
 const deepAnalysisImporting = ref(false)
+const deepAnalysisResetting = ref(false)
 let deepAnalysisPollTimer: ReturnType<typeof setInterval> | null = null
 
 const daStatusType = computed(() => {
@@ -664,6 +672,22 @@ async function importDeepAnalysisResult() {
     ElMessage.error(e?.response?.data?.error || '导入失败')
   } finally {
     deepAnalysisImporting.value = false
+  }
+}
+
+// Reset all deep analysis data and start fresh
+async function doResetDeepAnalysis() {
+  if (!deepAnalysisRef.value) return
+  deepAnalysisResetting.value = true
+  try {
+    stopDeepAnalysisPoll()
+    await referenceApi.resetDeepAnalysis(deepAnalysisRef.value.id)
+    deepAnalysisJob.value = null
+    ElMessage.success('已清除历史分析记录，点击「开始深度分析」重新开始')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '重置失败')
+  } finally {
+    deepAnalysisResetting.value = false
   }
 }
 

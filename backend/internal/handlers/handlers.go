@@ -202,6 +202,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/references/:id/deep-analyze", h.StartDeepAnalysis)
 	api.GET("/references/:id/deep-analyze/job", h.GetDeepAnalysisJob)
 	api.POST("/references/:id/deep-analyze/cancel", h.CancelDeepAnalysisJob)
+	api.POST("/references/:id/deep-analyze/reset", h.ResetDeepAnalysis)
 	api.POST("/references/:id/deep-analyze/import", h.ImportDeepAnalysisResult)
 	api.DELETE("/references/:id", h.DeleteReference)
 	api.GET("/references/:id/export", h.ExportReferenceSingle)

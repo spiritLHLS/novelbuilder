@@ -199,6 +199,7 @@ export const referenceApi = {
   startDeepAnalysis: (id: string) => api.post(`/references/${id}/deep-analyze`),
   getDeepAnalysisJob: (id: string) => api.get(`/references/${id}/deep-analyze/job`),
   cancelDeepAnalysis: (id: string) => api.post(`/references/${id}/deep-analyze/cancel`),
+  resetDeepAnalysis: (id: string) => api.post(`/references/${id}/deep-analyze/reset`),
   importDeepAnalysisResult: (id: string) => api.post(`/references/${id}/deep-analyze/import`),
 }
 

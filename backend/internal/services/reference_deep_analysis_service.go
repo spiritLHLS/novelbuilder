@@ -257,6 +257,24 @@ func (s *ReferenceDeepAnalysisService) CancelJob(ctx context.Context, jobID stri
 	return nil
 }
 
+// ResetAnalysis cancels any running/pending job for the reference, then deletes all
+// analysis job records so the next StartDeepAnalysis begins completely from scratch.
+func (s *ReferenceDeepAnalysisService) ResetAnalysis(ctx context.Context, refID string) error {
+	// First mark any live jobs as cancelled so background goroutines stop at the
+	// next isJobCancelled check.
+	if _, err := s.db.Exec(ctx,
+		`UPDATE reference_analysis_jobs SET status='cancelled', updated_at=NOW()
+		 WHERE ref_id=$1 AND status IN ('pending','running')`, refID); err != nil {
+		s.logger.Warn("reset: could not cancel live jobs", zap.String("ref_id", refID), zap.Error(err))
+	}
+	// Delete all jobs for this reference (cascade nulls analysis_job_id on reference_materials).
+	if _, err := s.db.Exec(ctx,
+		`DELETE FROM reference_analysis_jobs WHERE ref_id=$1`, refID); err != nil {
+		return fmt.Errorf("reset analysis jobs: %w", err)
+	}
+	return nil
+}
+
 // ImportResult writes the extracted entities from a completed job into the project's
 // world_bibles / characters / outlines tables.  Only call after job is 'completed'.
 func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, projectID string) error {
