@@ -109,7 +109,7 @@ func (s *ReferenceService) Create(ctx context.Context, projectID, title, author,
 	var ref models.ReferenceMaterial
 	err := s.db.QueryRow(ctx,
 		`INSERT INTO reference_materials (project_id, title, author, genre, file_path, source_url, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, 'processing')
+		 VALUES ($1, $2, $3, $4, $5, $6, 'pending')
 		 RETURNING id, project_id, title, author, genre, file_path, COALESCE(source_url,''), status, created_at`,
 		projectID, title, author, genre, filePath, sourceURL).Scan(
 		&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
@@ -391,7 +391,7 @@ func (s *ReferenceService) CreateDownloadTask(ctx context.Context,
 		`INSERT INTO reference_materials
 		   (project_id, title, author, genre, fetch_status, fetch_total, fetch_done,
 		    fetch_site, fetch_book_id, fetch_chapter_ids, status)
-		 VALUES ($1,$2,$3,$4,'downloading',$5,0,$6,$7,$8,'processing')
+		 VALUES ($1,$2,$3,$4,'downloading',$5,0,$6,$7,$8,'pending')
 		 RETURNING id, project_id, title, author, genre,
 		           COALESCE(file_path,''), COALESCE(source_url,''), status,
 		           fetch_status, fetch_done, fetch_total,

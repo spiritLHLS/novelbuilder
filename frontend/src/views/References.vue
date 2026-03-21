@@ -67,16 +67,13 @@
       <el-table-column prop="status" label="分析状态" width="90">
         <template #default="{ row }">
           <el-tag :type="row.status === 'completed' ? 'success' : 'info'" size="small">
-            {{ row.status === 'completed' ? '已分析' : '待分析' }}
+            {{ row.status === 'completed' ? '已分析' : '未分析' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="420" fixed="right">
+      <el-table-column label="操作" width="340" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openChaptersDialog(row)">章节管理</el-button>
-          <el-button size="small" @click="viewAnalysis(row)">查看分析</el-button>
-          <el-button size="small" type="primary" @click="startAnalysis(row.id)"
-            :loading="analyzing === row.id">分析</el-button>
           <el-button size="small" type="primary" plain @click="openDeepAnalysisDialog(row)">深度分析</el-button>
           <el-button size="small" type="success" @click="exportSingle(row)"
             :loading="exporting === row.id">导出</el-button>
@@ -316,58 +313,11 @@
       </div>
     </el-dialog>
 
-    <!-- ── Analysis Result Dialog ─────────────────────────────────────────── -->
-    <el-dialog v-model="showAnalysisDialog" title="四层分析报告" width="800px" top="5vh">
-      <template v-if="selectedRef">
-        <div v-if="selectedRef.source_url" class="source-url-info">
-          <el-icon><Link /></el-icon>
-          <a :href="selectedRef.source_url" target="_blank" rel="noopener noreferrer">{{ selectedRef.source_url }}</a>
-        </div>
-        <el-tabs>
-          <el-tab-pane label="风格指纹层">
-            <div class="analysis-section">
-              <h3>Layer 1: 风格指纹</h3>
-              <div v-if="selectedRef.style_layer && Object.keys(selectedRef.style_layer).length > 0" class="chart-container">
-                <v-chart :option="styleChartOption" style="height: 300px" autoresize />
-                <pre class="json-view">{{ JSON.stringify(selectedRef.style_layer, null, 2) }}</pre>
-              </div>
-              <el-empty v-else description="尚未分析" />
-            </div>
-          </el-tab-pane>
-          <el-tab-pane label="叙事结构层">
-            <div class="analysis-section">
-              <h3>Layer 2: 叙事结构</h3>
-              <pre class="json-view" v-if="selectedRef.narrative_layer && Object.keys(selectedRef.narrative_layer).length > 0">{{ JSON.stringify(selectedRef.narrative_layer, null, 2) }}</pre>
-              <el-empty v-else description="尚未分析" />
-            </div>
-          </el-tab-pane>
-          <el-tab-pane label="氛围萃取层">
-            <div class="analysis-section">
-              <h3>Layer 3: 氛围萃取</h3>
-              <div v-if="selectedRef.atmosphere_layer && Object.keys(selectedRef.atmosphere_layer).length > 0" class="chart-container">
-                <v-chart :option="atmosphereChartOption" style="height: 300px" autoresize />
-                <pre class="json-view">{{ JSON.stringify(selectedRef.atmosphere_layer, null, 2) }}</pre>
-              </div>
-              <el-empty v-else description="尚未分析" />
-            </div>
-          </el-tab-pane>
-          <el-tab-pane label="隔离区">
-            <div class="analysis-section">
-              <h3>Layer 4: 情节元素隔离区</h3>
-              <el-alert type="warning" :closable="false" show-icon>
-                隔离区中的情节元素被锁定，不会直接用于生成，仅提供结构参考。
-              </el-alert>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
-      </template>
-    </el-dialog>
-
     <!-- ── Deep Analysis Dialog ─────────────────────────────────────────── -->
     <el-dialog
       v-model="showDeepAnalysisDialog"
       title="深度分析（提取人物 / 世界观 / 大纲）"
-      width="540px"
+      width="720px"
       @closed="stopDeepAnalysisPoll"
     >
       <div v-if="deepAnalysisDialogLoading" class="loading-block">
@@ -393,9 +343,68 @@
           <el-alert v-else-if="deepAnalysisJob.status === 'failed'"
             type="error" :title="deepAnalysisJob.error_message || '分析失败'" :closable="false"
             style="margin-top:12px" show-icon />
-          <el-alert v-else-if="deepAnalysisJob.status === 'completed'"
-            type="success" title="深度分析完成，可将提取结果导入项目" :closable="false"
-            style="margin-top:12px" show-icon />
+          <template v-else-if="deepAnalysisJob.status === 'completed'">
+            <el-alert
+              type="success" title="深度分析完成，以下为提取结果预览，点击「导入到项目」将数据写入人物、世界观和大纲" :closable="false"
+              style="margin: 12px 0" show-icon />
+            <el-tabs class="da-result-tabs">
+              <el-tab-pane :label="`人物设定（${daChars.length} 个）`">
+                <div class="da-result-scroll">
+                  <div v-if="daChars.length > 0">
+                    <div v-for="ch in daChars" :key="ch.name" class="da-char-item">
+                      <div class="da-char-header">
+                        <strong class="da-char-name">{{ ch.name }}</strong>
+                        <el-tag size="small" :type="roleTagType(ch.role)">{{ ch.role || '其他' }}</el-tag>
+                      </div>
+                      <p class="da-char-desc">{{ ch.description }}</p>
+                      <div v-if="ch.traits?.length" class="da-char-traits">
+                        <el-tag v-for="t in ch.traits" :key="t" size="small" type="info" style="margin:2px">{{ t }}</el-tag>
+                      </div>
+                    </div>
+                  </div>
+                  <el-empty v-else description="未提取到人物信息" />
+                </div>
+              </el-tab-pane>
+              <el-tab-pane label="世界观">
+                <div class="da-result-scroll" v-if="daWorld && Object.keys(daWorld).length > 0">
+                  <div class="da-world-item" v-if="daWorld.setting">
+                    <div class="da-world-label">世界背景</div>
+                    <div class="da-world-value">{{ daWorld.setting }}</div>
+                  </div>
+                  <div class="da-world-item" v-if="daWorld.time_period">
+                    <div class="da-world-label">时代背景</div>
+                    <div class="da-world-value">{{ daWorld.time_period }}</div>
+                  </div>
+                  <div class="da-world-item" v-if="daWorld.locations?.length">
+                    <div class="da-world-label">主要场景</div>
+                    <div class="da-world-tags">
+                      <el-tag v-for="loc in daWorld.locations" :key="loc" size="small" style="margin:2px">{{ loc }}</el-tag>
+                    </div>
+                  </div>
+                  <div class="da-world-item" v-if="daWorld.systems?.length">
+                    <div class="da-world-label">体系设定</div>
+                    <div class="da-world-tags">
+                      <el-tag v-for="sys in daWorld.systems" :key="sys" size="small" type="warning" style="margin:2px">{{ sys }}</el-tag>
+                    </div>
+                  </div>
+                </div>
+                <el-empty v-else description="未提取到世界观信息" />
+              </el-tab-pane>
+              <el-tab-pane :label="`大纲（${daOutline.length} 条）`">
+                <div class="da-result-scroll">
+                  <div v-if="daOutline.length > 0">
+                    <div v-for="(node, idx) in daOutline" :key="idx" class="da-outline-item"
+                      :class="node.level === 2 ? 'da-outline-sub' : ''">
+                      <span class="da-outline-idx">{{ idx + 1 }}.</span>
+                      <span class="da-outline-title">{{ node.title }}</span>
+                      <span class="da-outline-summary" v-if="node.summary">— {{ node.summary }}</span>
+                    </div>
+                  </div>
+                  <el-empty v-else description="未提取到大纲信息" />
+                </div>
+              </el-tab-pane>
+            </el-tabs>
+          </template>
           <el-alert v-else-if="deepAnalysisJob.status === 'cancelled'"
             type="info"
             :title="deepAnalysisJob.done_chunks > 0
@@ -405,7 +414,7 @@
             style="margin-top:12px" />
         </div>
         <div v-else class="da-empty">
-          <p>点击「开始深度分析」将对整本参考书进行分块分析，自动提取人物设定、世界观和大纲，并导入当前项目。</p>
+          <p>点击「开始深度分析」将对整本参考书进行分块分析，自动提取人物设定、世界观和大纲，并可导入当前项目。</p>
           <p class="da-hint">大型小说（≥100万字）分析可能需要较长时间，任务在后台运行不影响其他操作。</p>
         </div>
       </template>
@@ -461,10 +470,9 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Upload, Link, Search, Loading, Lock, Delete, DocumentCopy, Download } from '@element-plus/icons-vue'
+import { Upload, Search, Loading, Lock, Delete, DocumentCopy, Download } from '@element-plus/icons-vue'
 import { referenceApi, streamSearchNovels } from '@/api'
 import type { NovelSearchResult, FetchBookInfo, FetchChapterInfo, ReferenceChapter } from '@/api'
-import VChart from 'vue-echarts'
 import { useDownloadStore } from '@/stores/download'
 
 const route = useRoute()
@@ -476,13 +484,10 @@ const genres = ['玄幻', '修真', '西幻', '都市', '历史', '科幻', '悬
 // ─── reference list ───────────────────────────────────────────────────────────
 const loading = ref(false)
 const references = ref<any[]>([])
-const analyzing = ref<string | null>(null)
 const deleting = ref<string | null>(null)
 const exporting = ref<string | null>(null)
 const exportingBatch = ref(false)
-const showAnalysisDialog = ref(false)
 const showMigrationDialog = ref(false)
-const selectedRef = ref<any>(null)
 const selectedRefId = ref('')
 const selectedIds = ref<string[]>([])
 const localFileInput = ref<HTMLInputElement | null>(null)
@@ -516,6 +521,33 @@ const daStatusText = computed(() => {
   }
   return map[deepAnalysisJob.value?.status] ?? deepAnalysisJob.value?.status ?? '—'
 })
+
+// Extracted data computed properties for result preview
+const daChars = computed<any[]>(() => {
+  const raw = deepAnalysisJob.value?.extracted_characters
+  if (!raw) return []
+  try { return Array.isArray(raw) ? raw : JSON.parse(raw) } catch { return [] }
+})
+
+const daWorld = computed<any>(() => {
+  const raw = deepAnalysisJob.value?.extracted_world
+  if (!raw) return {}
+  try { return (typeof raw === 'object' && !Array.isArray(raw)) ? raw : JSON.parse(raw) } catch { return {} }
+})
+
+const daOutline = computed<any[]>(() => {
+  const raw = deepAnalysisJob.value?.extracted_outline
+  if (!raw) return []
+  try { return Array.isArray(raw) ? raw : JSON.parse(raw) } catch { return [] }
+})
+
+function roleTagType(role: string): string {
+  const r = (role || '').toLowerCase()
+  if (r.includes('主角') || r === 'protagonist') return 'success'
+  if (r.includes('反派') || r === 'antagonist') return 'danger'
+  if (r.includes('配角') || r === 'supporting') return 'warning'
+  return 'info'
+}
 
 async function openDeepAnalysisDialog(refRow: any) {
   deepAnalysisRef.value = refRow
@@ -587,8 +619,9 @@ async function importDeepAnalysisResult() {
   deepAnalysisImporting.value = true
   try {
     await referenceApi.importDeepAnalysisResult(deepAnalysisRef.value.id)
-    ElMessage.success('已成功导入到项目（人物、世界观、大纲）')
+    ElMessage.success('已成功导入到项目（人物、世界观、大纲），请到对应页面查看')
     showDeepAnalysisDialog.value = false
+    await fetchRefs()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.error || '导入失败')
   } finally {
@@ -925,66 +958,6 @@ async function handleLocalFile(event: Event) {
 }
 
 // ─── analysis & migration ─────────────────────────────────────────────────────
-const styleChartOption = computed(() => {
-  const fp = selectedRef.value?.style_layer
-  if (!fp || Object.keys(fp).length === 0) return {}
-  const indicators = [
-    { name: '词汇丰富度', max: 1 },
-    { name: '平均句长', max: 50 },
-    { name: '突发度', max: 1 },
-    { name: '比喻密度', max: 0.1 },
-    { name: '对话占比', max: 1 },
-  ]
-  return {
-    backgroundColor: 'transparent',
-    radar: { indicator: indicators, shape: 'circle' },
-    series: [{
-      type: 'radar',
-      data: [{
-        value: [
-          fp.vocabulary_richness?.ttr || 0,
-          fp.sentence?.avg_length || 0,
-          fp.sentence?.burstiness_index || 0,
-          fp.rhetoric?.metaphor_density || 0,
-          fp.punctuation?.dialogue_quote_count ? 0.5 : 0,
-        ],
-        name: '风格指纹',
-      }],
-    }],
-  }
-})
-
-const atmosphereChartOption = computed(() => {
-  const ap = selectedRef.value?.atmosphere_layer
-  if (!ap || Object.keys(ap).length === 0) return {}
-  const sensory = ap.sensory_profile || {}
-  return {
-    backgroundColor: 'transparent',
-    radar: {
-      indicator: [
-        { name: '视觉', max: 1 },
-        { name: '听觉', max: 1 },
-        { name: '嗅觉', max: 1 },
-        { name: '触觉', max: 1 },
-        { name: '味觉', max: 1 },
-      ],
-      shape: 'circle',
-    },
-    series: [{
-      type: 'radar',
-      data: [{
-        value: [
-          sensory.visual?.ratio || 0,
-          sensory.auditory?.ratio || 0,
-          sensory.olfactory?.ratio || 0,
-          sensory.tactile?.ratio || 0,
-          sensory.gustatory?.ratio || 0,
-        ],
-        name: '感官分布',
-      }],
-    }],
-  }
-})
 
 onMounted(fetchRefs)
 
@@ -999,29 +972,6 @@ async function fetchRefs() {
 }
 
 
-
-async function startAnalysis(id: string) {
-  analyzing.value = id
-  try {
-    await referenceApi.analyze(id)
-    ElMessage.success('分析完成')
-    await fetchRefs()
-  } catch {
-    ElMessage.error('分析失败')
-  } finally {
-    analyzing.value = null
-  }
-}
-
-async function viewAnalysis(ref: any) {
-  try {
-    const res = await referenceApi.get(ref.id)
-    selectedRef.value = (res.data as any).data
-    showAnalysisDialog.value = true
-  } catch {
-    ElMessage.error('获取分析结果失败')
-  }
-}
 
 function showMigration(ref: any) {
   selectedRefId.value = ref.id
@@ -1134,6 +1084,22 @@ async function deleteReference(id: string) {
 .da-title { font-size: 15px; font-weight: 500; color: #e0e0e0; }
 .da-hint { font-size: 12px; color: var(--nb-text-secondary); margin-top: 6px; }
 .da-empty p { margin: 8px 0; color: var(--nb-text-secondary); font-size: 13px; line-height: 1.6; }
+.da-result-tabs { margin-top: 4px; }
+.da-result-scroll { max-height: 320px; overflow-y: auto; padding: 4px 2px; }
+.da-char-item { padding: 10px 12px; border: 1px solid var(--nb-card-border, #333); border-radius: 8px; margin-bottom: 8px; background: var(--nb-card-bg, #1e1e1e); }
+.da-char-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.da-char-name { font-size: 14px; color: #e0e0e0; }
+.da-char-desc { font-size: 13px; color: var(--nb-text-secondary); margin: 4px 0; line-height: 1.5; }
+.da-char-traits { margin-top: 4px; }
+.da-world-item { margin-bottom: 14px; }
+.da-world-label { font-size: 12px; color: #409eff; font-weight: 600; margin-bottom: 4px; }
+.da-world-value { font-size: 13px; color: #e0e0e0; line-height: 1.6; }
+.da-world-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.da-outline-item { display: flex; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--nb-card-border, #2a2a2a); font-size: 13px; line-height: 1.5; }
+.da-outline-sub { padding-left: 20px; color: var(--nb-text-secondary); }
+.da-outline-idx { color: #409eff; flex-shrink: 0; min-width: 28px; }
+.da-outline-title { font-weight: 500; color: #e0e0e0; flex-shrink: 0; }
+.da-outline-summary { color: var(--nb-text-secondary); flex: 1; }
 .source-url-info { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; font-size: 13px; color: var(--nb-text-secondary); }
 .source-url-info a { color: #409eff; word-break: break-all; }
 </style>

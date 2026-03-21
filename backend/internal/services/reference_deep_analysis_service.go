@@ -304,7 +304,7 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 			worldJSON, _ := json.Marshal(worldData)
 			// Try update first; if no row create one
 			tag, dbErr := s.db.Exec(ctx,
-				`UPDATE world_bibles SET content = content || $1::jsonb, version = version + 1
+				`UPDATE world_bibles SET content = COALESCE(content, '{}') || $1::jsonb, version = version + 1
 				 WHERE project_id = $2`,
 				worldJSON, projectID)
 			if dbErr != nil {
