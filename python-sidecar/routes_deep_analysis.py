@@ -219,6 +219,15 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 4) -> dic
                     break
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60.0)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "LLM empty/invalid JSON attempt %d/%d: %s",
+                    attempt, max_retries, repr(exc),
+                )
+                if attempt == max_retries:
+                    break
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 60.0)
             except Exception as exc:
                 logger.error("LLM unexpected error attempt %d/%d: %s", attempt, max_retries, repr(exc), exc_info=True)
                 break
