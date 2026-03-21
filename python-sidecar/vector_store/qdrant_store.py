@@ -39,7 +39,12 @@ def _get_embedder():
     """Lazy-load sentence-transformers model."""
     try:
         from sentence_transformers import SentenceTransformer
-        return SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
+        # low_cpu_mem_usage=False avoids meta-tensor loading (sentence-transformers>=3.0)
+        # which would cause "Cannot copy out of meta tensor" when moving to device.
+        return SentenceTransformer(
+            "paraphrase-multilingual-mpnet-base-v2",
+            model_kwargs={"low_cpu_mem_usage": False},
+        )
     except Exception as exc:
         logger.warning("sentence-transformers unavailable: %s", repr(exc), exc_info=True)
         return None
