@@ -126,9 +126,21 @@ type ReferenceExportBundle struct {
 	References []ReferenceExportItem `json:"references"`
 }
 
+// ReferenceAnalysisExport captures the completed deep-analysis results for
+// a reference book so they can be restored on import without re-running the
+// full (expensive) LLM analysis.
+type ReferenceAnalysisExport struct {
+	ExtractedCharacters     json.RawMessage `json:"extracted_characters,omitempty"`
+	ExtractedWorld          json.RawMessage `json:"extracted_world,omitempty"`
+	ExtractedOutline        json.RawMessage `json:"extracted_outline,omitempty"`
+	ExtractedGlossary       json.RawMessage `json:"extracted_glossary,omitempty"`
+	ExtractedForeshadowings json.RawMessage `json:"extracted_foreshadowings,omitempty"`
+}
+
 type ReferenceExportItem struct {
-	Material ReferenceMaterial  `json:"material"`
-	Chapters []ReferenceChapter `json:"chapters"`
+	Material     ReferenceMaterial        `json:"material"`
+	Chapters     []ReferenceChapter       `json:"chapters"`
+	AnalysisData *ReferenceAnalysisExport `json:"analysis_data,omitempty"`
 }
 
 // ── Quality Analysis Types ────────────────────────────────────────────────────

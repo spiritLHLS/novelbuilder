@@ -613,6 +613,31 @@ func (s *ReferenceService) ExportBundle(ctx context.Context, refIDs []string) (*
 	}
 
 	// ── 3. Assemble bundle preserving the requested order ─────────────────────
+	// Fetch the latest completed analysis job for each reference in one query.
+	analysisMap := make(map[string]*models.ReferenceAnalysisExport, len(refIDs))
+	anaRows, err := s.db.Query(ctx,
+		`SELECT DISTINCT ON (ref_id)
+		        ref_id,
+		        extracted_characters, extracted_world, extracted_outline,
+		        extracted_glossary, extracted_foreshadowings
+		 FROM reference_analysis_jobs
+		 WHERE ref_id = ANY($1::uuid[]) AND status = 'completed'
+		 ORDER BY ref_id, updated_at DESC`, refIDs)
+	if err == nil {
+		defer anaRows.Close()
+		for anaRows.Next() {
+			var refID string
+			var ae models.ReferenceAnalysisExport
+			if scanErr := anaRows.Scan(&refID,
+				&ae.ExtractedCharacters, &ae.ExtractedWorld, &ae.ExtractedOutline,
+				&ae.ExtractedGlossary, &ae.ExtractedForeshadowings,
+			); scanErr == nil {
+				cp := ae
+				analysisMap[refID] = &cp
+			}
+		}
+	}
+
 	for _, id := range refIDs {
 		ref, ok := refMap[id]
 		if !ok {
@@ -624,8 +649,9 @@ func (s *ReferenceService) ExportBundle(ctx context.Context, refIDs []string) (*
 			chapters = s.parseFileIntoChapters(ref.FilePath, id)
 		}
 		bundle.References = append(bundle.References, models.ReferenceExportItem{
-			Material: *ref,
-			Chapters: chapters,
+			Material:     *ref,
+			Chapters:     chapters,
+			AnalysisData: analysisMap[id],
 		})
 	}
 	return bundle, nil
@@ -700,6 +726,27 @@ func (s *ReferenceService) ImportBundle(ctx context.Context, projectID string, b
 				`UPDATE reference_materials SET fetch_status='completed', fetch_done=$2, fetch_total=$2 WHERE id=$1`,
 				ref.ID, len(item.Chapters))
 		}
+		// Restore deep-analysis results when present in the bundle
+		if ad := item.AnalysisData; ad != nil {
+			jobID := uuid.New().String()
+			s.db.Exec(ctx, //nolint
+				`INSERT INTO reference_analysis_jobs
+				 (id, ref_id, project_id, status,
+				  extracted_characters, extracted_world, extracted_outline,
+				  extracted_glossary, extracted_foreshadowings)
+				 VALUES ($1,$2,$3,'completed',$4,$5,$6,$7,$8)`,
+				jobID, ref.ID, projectID,
+				nullableJSON(ad.ExtractedCharacters),
+				nullableJSON(ad.ExtractedWorld),
+				nullableJSON(ad.ExtractedOutline),
+				nullableJSON(ad.ExtractedGlossary),
+				nullableJSON(ad.ExtractedForeshadowings),
+			)
+			s.db.Exec(ctx, //nolint
+				`UPDATE reference_materials SET analysis_job_id=$1 WHERE id=$2`,
+				jobID, ref.ID,
+			)
+		}
 		createdIDs = append(createdIDs, ref.ID)
 	}
 	return createdIDs, nil
@@ -740,4 +787,13 @@ func (s *ReferenceService) ListDownloadingRefs(ctx context.Context, projectID st
 		refs = append(refs, ref)
 	}
 	return refs, rows.Err()
+}
+
+// nullableJSON returns nil when the raw message is empty or a JSON null,
+// so it is stored as SQL NULL rather than an empty JSON object.
+func nullableJSON(raw json.RawMessage) any {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	return raw
 }
