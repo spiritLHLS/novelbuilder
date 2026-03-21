@@ -784,8 +784,8 @@ func (s *ReferenceDeepAnalysisService) analyzeChunk(
 
 	retryConfig := retry.Config{
 		MaxAttempts: 10,
-		BaseDelay:   3 * time.Second,
-		MaxDelay:    60 * time.Second,
+		BaseDelay:   10 * time.Second,
+		MaxDelay:    120 * time.Second,
 		Jitter:      0.25,
 	}
 
