@@ -1,4 +1,4 @@
--- NovelBuilder Database Schema - Part 8: Change Propagation & Task Queue
+-- NovelBuilder Database Schema - Part 7: Change Propagation & Task Queue
 
 -- ============================================================
 -- Change Propagation System (Re3 / PEARL-inspired)

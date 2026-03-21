@@ -1,4 +1,4 @@
--- NovelBuilder Database Schema - Part 6: Indexes, Core Functions & Triggers
+-- NovelBuilder Database Schema - Part 5: Indexes, Core Functions & Triggers
 
 -- ============================================================
 -- General Indexes

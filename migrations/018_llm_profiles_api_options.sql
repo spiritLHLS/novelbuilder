@@ -1,3 +1,0 @@
--- Migration 018: No-op stub. Consolidated into 007_ai_llm.sql.
--- omit_max_tokens, omit_temperature, api_style columns are now defined in
--- the CREATE TABLE and via ADD COLUMN IF NOT EXISTS guards in 007_ai_llm.sql.

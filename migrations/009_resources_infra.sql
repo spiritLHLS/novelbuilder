@@ -1,4 +1,4 @@
--- NovelBuilder Database Schema - Part 10: Resources & Infrastructure
+-- NovelBuilder Database Schema - Part 9: Resources & Infrastructure
 -- Story resource ledger, system settings, webhooks, summaries, sync log, audit reports
 
 -- ============================================================

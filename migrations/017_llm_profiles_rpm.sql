@@ -1,4 +1,0 @@
--- 017_llm_profiles_rpm.sql
--- Migration 017: No-op stub. Consolidated into 007_ai_llm.sql.
--- rpm_limit column is now defined directly in the CREATE TABLE and via
--- ADD COLUMN IF NOT EXISTS guards in 007_ai_llm.sql.

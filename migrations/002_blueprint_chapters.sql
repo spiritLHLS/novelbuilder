@@ -1,4 +1,4 @@
--- NovelBuilder Database Schema - Part 3: Story Structure
+-- NovelBuilder Database Schema - Part 2: Story Structure
 -- Foreshadowings, book blueprints, volumes, chapters
 
 -- ============================================================

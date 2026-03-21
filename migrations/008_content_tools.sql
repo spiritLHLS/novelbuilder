@@ -1,4 +1,4 @@
--- NovelBuilder Database Schema - Part 9: Content Tools
+-- NovelBuilder Database Schema - Part 8: Content Tools
 -- Prompt presets, glossary, book rules, chapter imports, fan-fiction settings
 
 -- ============================================================

@@ -1,5 +1,8 @@
--- NovelBuilder Database Schema - Part 2: Core Entity Tables
--- projects, reference materials, world bibles, characters, outlines
+-- NovelBuilder Database Schema - Part 1: Extensions & Core Entities
+-- PostgreSQL with pgvector extension
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "vector";
 
 -- ============================================================
 -- Core Tables
@@ -19,9 +22,7 @@ CREATE TABLE projects (
 );
 
 CREATE TABLE reference_materials (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id      UUID REFERENCES projects(id) ON DELETE CASCADE,
-    title           VARCHAR(200),
+    id              UUID PR    id              UUID PR    id              UUID PR    id      REN    id              UUID PR    id       title           VARCHAR(200),
     author          VARCHAR(100),
     genre           VARCHAR(50),
     file_path       VARCHAR(500),

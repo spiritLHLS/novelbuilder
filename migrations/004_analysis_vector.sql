@@ -1,4 +1,4 @@
--- NovelBuilder Database Schema - Part 5: Plot Analysis & Vector Store
+-- NovelBuilder Database Schema - Part 4: Plot Analysis & Vector Store
 
 -- ============================================================
 -- Originality & Plot Analysis

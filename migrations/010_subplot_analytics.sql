@@ -1,4 +1,4 @@
--- NovelBuilder Database Schema - Part 11: Subplot & Analytics
+-- NovelBuilder Database Schema - Part 10: Subplot & Analytics
 -- Subplot board, character emotional arcs, character interaction matrix, radar scan results
 
 -- ============================================================

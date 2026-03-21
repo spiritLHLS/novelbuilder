@@ -1,4 +1,4 @@
--- NovelBuilder Database Schema - Part 4: Workflow Tables
+-- NovelBuilder Database Schema - Part 3: Workflow Tables
 
 -- ============================================================
 -- Workflow Tables

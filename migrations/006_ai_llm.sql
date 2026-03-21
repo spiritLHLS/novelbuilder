@@ -1,4 +1,4 @@
--- NovelBuilder Database Schema - Part 7: AI & LLM Tables
+-- NovelBuilder Database Schema - Part 6: AI & LLM Tables
 -- Agent review sessions, LLM profiles, model routing, agent sessions
 
 -- ============================================================
@@ -48,9 +48,9 @@ CREATE TABLE llm_profiles (
     max_tokens      INT          NOT NULL DEFAULT 8192,
     temperature     FLOAT        NOT NULL DEFAULT 0.7,
     is_default      BOOLEAN      NOT NULL DEFAULT FALSE,
-    -- Per-profile RPM limit (0 = unlimited). Consolidated from migration 017.
+    -- Per-profile RPM limit (0 = unlimited). Column defined in CREATE TABLE.
     rpm_limit       INT          NOT NULL DEFAULT 0,
-    -- Parameter omission flags and API style selector. Consolidated from migration 018.
+    -- Parameter omission flags and API style selector. Column defined in CREATE TABLE.
     omit_max_tokens  BOOLEAN     NOT NULL DEFAULT false,
     omit_temperature BOOLEAN     NOT NULL DEFAULT false,
     -- api_style: 'chat_completions' (default) or 'responses' (OpenAI Responses API).
@@ -63,7 +63,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_profiles_single_default ON llm_profile
 CREATE INDEX IF NOT EXISTS idx_llm_profiles_is_default ON llm_profiles (is_default);
 
 -- Idempotent ADD COLUMN guards for existing databases that ran the original 007
--- before rpm_limit / omit_* / api_style columns were added (ex-migrations 017/018).
+-- before rpm_limit / omit_* / api_style columns were added .
 ALTER TABLE llm_profiles
     ADD COLUMN IF NOT EXISTS rpm_limit        INT         NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS omit_max_tokens  BOOLEAN     NOT NULL DEFAULT false,

@@ -1,4 +1,0 @@
--- 016_chunk_results.sql
--- Migration 016: No-op stub. Consolidated into 015_reference_deep_analysis.sql.
--- chunk_results column is now defined directly in the CREATE TABLE and via
--- ADD COLUMN IF NOT EXISTS guards in 015_reference_deep_analysis.sql.
