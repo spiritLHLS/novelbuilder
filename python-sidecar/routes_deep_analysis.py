@@ -62,6 +62,7 @@ class LLMConfig(BaseModel):
     omit_max_tokens: bool = False   # skip max_tokens field (some providers reject it)
     omit_temperature: bool = False  # skip temperature field
     api_style: str = "chat_completions"  # or "responses" (OpenAI Responses API)
+    timeout: int = 600          # seconds; thinking/reasoning models can take several minutes
 
 class ChunkAnalyzeRequest(BaseModel):
     job_id: str
@@ -180,7 +181,8 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
             payload["temperature"] = cfg.temperature
 
     delay = 10.0
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    http_timeout = httpx.Timeout(connect=30.0, read=float(cfg.timeout), write=30.0, pool=30.0)
+    async with httpx.AsyncClient(timeout=http_timeout) as client:
         for attempt in range(1, max_retries + 1):
             try:
                 await _rate_limit(cfg)
@@ -231,14 +233,29 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
                 if use_responses_api:
                     # Responses API: data["output"][0]["content"][0]["text"]
                     raw = data["output"][0]["content"][0]["text"]
+                    finish_reason = data.get("status", "unknown")
                 else:
-                    raw = data["choices"][0]["message"].get("content") or ""
+                    message = data["choices"][0]["message"]
+                    raw = message.get("content") or ""
+                    finish_reason = data["choices"][0].get("finish_reason", "unknown")
+                    # Some providers surface thinking content separately; log it for tracing.
+                    thinking = message.get("reasoning_content") or message.get("thinking") or ""
+                    if thinking:
+                        logger.debug(
+                            "LLM thinking tokens on attempt %d/%d: %d chars (first 200): %.200s",
+                            attempt, max_retries, len(thinking), thinking,
+                        )
+
+                logger.info(
+                    "LLM raw response attempt %d/%d | finish_reason=%s | len=%d | first 500: %.500s",
+                    attempt, max_retries, finish_reason, len(raw), raw,
+                )
 
                 # Retry immediately on empty content (content filter, null, etc.)
                 if not raw.strip():
                     logger.warning(
-                        "LLM returned empty content on attempt %d/%d (content_filter or null), retrying in %.1fs",
-                        attempt, max_retries, delay,
+                        "LLM returned empty content on attempt %d/%d (finish_reason=%s), retrying in %.1fs",
+                        attempt, max_retries, finish_reason, delay,
                     )
                     if attempt < max_retries:
                         await asyncio.sleep(delay)
@@ -246,24 +263,38 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
                         continue
                     break
 
-                # Check response completeness and attempt retry if incomplete
-                is_complete, issues = is_response_complete(raw)
-                if not is_complete and attempt < max_retries:
+                # finish_reason="length" means the model hit token limit → truncated output
+                if finish_reason == "length" and attempt < max_retries:
+                    reduced_tokens = max(int(cfg.max_tokens * 0.75), 2048)
                     logger.warning(
-                        "LLM response incomplete on attempt %d/%d: %s. Retrying...",
-                        attempt, max_retries, issues
+                        "LLM finish_reason=length (truncated) on attempt %d/%d, "
+                        "reducing max_tokens %d→%d and retrying in %.1fs",
+                        attempt, max_retries, cfg.max_tokens, reduced_tokens, delay,
                     )
-                    # Reduce max_tokens and retry
-                    reduced_tokens = max(int(cfg.max_tokens * 0.7), 2048)
                     if use_responses_api:
                         payload["max_output_tokens"] = reduced_tokens
                     else:
                         payload["max_tokens"] = reduced_tokens
-                    
                     await asyncio.sleep(delay)
                     delay = min(delay * 1.5, 30.0)
                     continue
-                
+
+                # Heuristic completeness check (catches truncation not flagged by finish_reason)
+                is_complete, issues = is_response_complete(raw)
+                if not is_complete and attempt < max_retries:
+                    logger.warning(
+                        "LLM response heuristically incomplete on attempt %d/%d: %s. Retrying...",
+                        attempt, max_retries, issues,
+                    )
+                    reduced_tokens = max(int(cfg.max_tokens * 0.75), 2048)
+                    if use_responses_api:
+                        payload["max_output_tokens"] = reduced_tokens
+                    else:
+                        payload["max_tokens"] = reduced_tokens
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 1.5, 30.0)
+                    continue
+
                 return _parse_json(raw)
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 logger.warning(
