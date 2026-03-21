@@ -27,7 +27,7 @@
     </div>
 
     <!-- Table -->
-    <el-table :data="filteredTerms" v-loading="loading" class="terms-table" stripe>
+    <el-table :data="pagedTerms" v-loading="loading" class="terms-table" stripe>
       <el-table-column label="术语" prop="term" min-width="160" />
       <el-table-column label="定义" prop="definition" min-width="280" show-overflow-tooltip />
       <el-table-column label="分类" prop="category" width="120">
@@ -43,6 +43,17 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <div class="pagination-bar" v-if="filteredTerms.length > pageSize">
+      <el-pagination
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :page-sizes="[20, 50, 100, 200]"
+        :total="filteredTerms.length"
+        layout="total, sizes, prev, pager, next"
+        @size-change="(s: number) => { pageSize = s; currentPage = 1 }"
+      />
+    </div>
 
     <div v-if="!loading && filteredTerms.length === 0" class="empty-state">
       <el-empty description="暂无术语，点击「新增术语」添加" />
@@ -107,6 +118,8 @@ const filterCategory = ref('')
 const dialogVisible = ref(false)
 const submitting = ref(false)
 const formRef = ref<FormInstance>()
+const currentPage = ref(1)
+const pageSize = ref(50)
 
 const form = ref({ term: '', definition: '', category: 'concept' })
 const rules: FormRules = {
@@ -121,6 +134,11 @@ const filteredTerms = computed(() => {
     const matchCategory = !filterCategory.value || t.category === filterCategory.value
     return matchSearch && matchCategory
   })
+})
+
+const pagedTerms = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredTerms.value.slice(start, start + pageSize.value)
 })
 
 const categoryLabel = (c: string) => {
@@ -152,7 +170,7 @@ async function loadTerms() {
 }
 
 function filterTerms() {
-  // reactivity via computed
+  currentPage.value = 1  // reset to first page on filter change
 }
 
 function openAddDialog() {
@@ -228,5 +246,11 @@ onMounted(loadTerms)
 .empty-state {
   margin-top: 40px;
   text-align: center;
+}
+
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 </style>

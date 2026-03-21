@@ -184,11 +184,10 @@ const forbiddenAnchors = ref<string[]>([])
 const newAnchor = ref('')
 
 onMounted(async () => {
+  // Load world bible and constitution independently so a missing constitution (404)
+  // does not prevent the world bible content from displaying.
   try {
-    const [wbRes, constRes] = await Promise.all([
-      worldBibleApi.get(projectId),
-      worldBibleApi.getConstitution(projectId),
-    ])
+    const wbRes = await worldBibleApi.get(projectId)
     if (wbRes.data.data) {
       const d = wbRes.data.data
       // content JSONB is returned nested under d.content
@@ -204,6 +203,12 @@ onMounted(async () => {
         extra_json: c.extra_json ? JSON.stringify(c.extra_json, null, 2) : '',
       }
     }
+  } catch {
+    // new project, no world bible yet
+  }
+
+  try {
+    const constRes = await worldBibleApi.getConstitution(projectId)
     if (constRes.data.data) {
       const c = constRes.data.data
       const immutable = (c.immutable_rules || []).map((item: any) => ({ ...item, type: 'immutable' }))
@@ -212,7 +217,7 @@ onMounted(async () => {
       forbiddenAnchors.value = c.forbidden_anchors || []
     }
   } catch {
-    // new project, no data yet
+    // no constitution yet — normal for new projects
   }
 })
 

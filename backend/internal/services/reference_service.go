@@ -307,6 +307,8 @@ func (s *ReferenceService) IngestSamples(ctx context.Context, projectID, refID s
 }
 
 // RebuildProject re-ingests all cached samples for every completed reference in a project.
+// For references without cached sample_texts (e.g. those imported via deep analysis),
+// it reads chapter content directly from reference_book_chapters and builds style samples.
 // Returns the number of reference materials processed.
 func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string) (int, error) {
 	if s.rag == nil {
@@ -318,10 +320,10 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		return 0, fmt.Errorf("clear project vectors: %w", err)
 	}
 
-	// Fetch all completed references that have cached samples (single query)
+	// Fetch all completed references (with or without cached sample_texts)
 	rows, err := s.db.Query(ctx,
 		`SELECT id, sample_texts FROM reference_materials
-		 WHERE project_id = $1 AND status = 'completed' AND sample_texts IS NOT NULL`,
+		 WHERE project_id = $1 AND status = 'completed'`,
 		projectID)
 	if err != nil {
 		return 0, err
@@ -335,6 +337,9 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 
 	// Collect all batch items across all references before hitting the DB again
 	var allItems []BatchEmbedItem
+	// Track references that need chapter-based sample generation
+	var noSamplesRefIDs []string
+
 	rebuilt := 0
 	for rows.Next() {
 		var refID string
@@ -342,24 +347,74 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		if err := rows.Scan(&refID, &samplesRaw); err != nil {
 			continue
 		}
-		var cache sampleCache
-		if err := json.Unmarshal(samplesRaw, &cache); err != nil {
+		if len(samplesRaw) > 2 {
+			var cache sampleCache
+			if err := json.Unmarshal(samplesRaw, &cache); err == nil && (len(cache.Style) > 0 || len(cache.Sensory) > 0) {
+				meta := map[string]interface{}{"ref_id": refID}
+				for _, sample := range cache.Style {
+					allItems = append(allItems, BatchEmbedItem{
+						Collection: "style_samples",
+						Content:    sample,
+						SourceType: "reference",
+						SourceID:   refID,
+						Metadata:   meta,
+					})
+				}
+				for _, sample := range cache.Sensory {
+					allItems = append(allItems, BatchEmbedItem{
+						Collection: "sensory_samples",
+						Content:    sample,
+						SourceType: "reference",
+						SourceID:   refID,
+						Metadata:   meta,
+					})
+				}
+				rebuilt++
+				continue
+			}
+		}
+		// No cached samples — will build from chapter content
+		noSamplesRefIDs = append(noSamplesRefIDs, refID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return rebuilt, fmt.Errorf("rebuild project rows: %w", err)
+	}
+
+	// For references without sample_texts, extract style samples from chapter content.
+	// Read up to 60 chapters per reference and sample sentences evenly.
+	for _, refID := range noSamplesRefIDs {
+		chapRows, chErr := s.db.Query(ctx,
+			`SELECT content FROM reference_book_chapters
+			 WHERE ref_id = $1 AND NOT is_deleted AND content <> ''
+			 ORDER BY chapter_no LIMIT 60`,
+			refID)
+		if chErr != nil {
+			s.logger.Warn("could not read chapters for RAG rebuild", zap.String("ref_id", refID), zap.Error(chErr))
+			continue
+		}
+		var allText strings.Builder
+		for chapRows.Next() {
+			var content string
+			if scanErr := chapRows.Scan(&content); scanErr == nil {
+				allText.WriteString(content)
+				allText.WriteByte('\n')
+			}
+		}
+		chapRows.Close()
+		if allText.Len() == 0 {
+			continue
+		}
+		// Sample up to 40 sentences evenly spaced from the combined text
+		sentences := sampleSentences(allText.String(), 40)
+		if len(sentences) == 0 {
 			continue
 		}
 		meta := map[string]interface{}{"ref_id": refID}
-		for _, sample := range cache.Style {
+		for _, s := range sentences {
 			allItems = append(allItems, BatchEmbedItem{
 				Collection: "style_samples",
-				Content:    sample,
-				SourceType: "reference",
-				SourceID:   refID,
-				Metadata:   meta,
-			})
-		}
-		for _, sample := range cache.Sensory {
-			allItems = append(allItems, BatchEmbedItem{
-				Collection: "sensory_samples",
-				Content:    sample,
+				Content:    s,
 				SourceType: "reference",
 				SourceID:   refID,
 				Metadata:   meta,
@@ -367,15 +422,40 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		}
 		rebuilt++
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return rebuilt, fmt.Errorf("rebuild project rows: %w", err)
-	}
 
+	if len(allItems) == 0 {
+		return rebuilt, nil
+	}
 	if err := s.rag.StoreEmbeddingBatch(ctx, projectID, allItems); err != nil {
 		return rebuilt, err
 	}
 	return rebuilt, nil
+}
+
+// sampleSentences extracts up to maxSamples evenly-spaced sentences from text for RAG indexing.
+func sampleSentences(text string, maxSamples int) []string {
+	// Split on common Chinese/English sentence terminators
+	var sentences []string
+	start := 0
+	for i, r := range text {
+		if r == '。' || r == '！' || r == '？' || r == '\n' || r == '.' || r == '!' || r == '?' {
+			chunk := strings.TrimSpace(text[start : i+len(string(r))])
+			if len([]rune(chunk)) >= 15 && len([]rune(chunk)) <= 150 {
+				sentences = append(sentences, chunk)
+			}
+			start = i + len(string(r))
+		}
+	}
+	if len(sentences) <= maxSamples {
+		return sentences
+	}
+	// Evenly sample
+	step := len(sentences) / maxSamples
+	result := make([]string, 0, maxSamples)
+	for i := 0; i < len(sentences) && len(result) < maxSamples; i += step {
+		result = append(result, sentences[i])
+	}
+	return result
 }
 
 // ── Download task management (migration 014) ─────────────────────────────────

@@ -98,24 +98,6 @@
       </el-table>
     </el-card>
 
-    <!-- Embedding Config Tips -->
-    <el-card class="tips-card">
-      <template #header><span>配置说明</span></template>
-      <el-descriptions :column="1" border size="small">
-        <el-descriptions-item label="EMBEDDING_API_KEY">
-          OpenAI 或兼容 API 的密钥（也读取 OPENAI_API_KEY）
-        </el-descriptions-item>
-        <el-descriptions-item label="EMBEDDING_BASE_URL">
-          嵌入 API 基础地址（默认 <code>https://api.openai.com/v1</code>）
-        </el-descriptions-item>
-        <el-descriptions-item label="EMBEDDING_MODEL">
-          嵌入模型名（默认 <code>text-embedding-3-small</code>，支持 dimensions=1024）
-        </el-descriptions-item>
-        <el-descriptions-item label="向量维度">
-          默认 1024 维（与 <code>vector_store</code> 表 VECTOR(1024) 匹配）
-        </el-descriptions-item>
-      </el-descriptions>
-    </el-card>
   </div>
 </template>
 
@@ -288,11 +270,6 @@ onMounted(async () => {
   color: #888;
   font-size: 13px;
   line-height: 1.6;
-}
-
-.tips-card {
-  background: var(--nb-card-bg);
-  border-color: var(--nb-card-border);
 }
 
 code {

@@ -283,6 +283,8 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 					roleType = "other"
 				}
 				desc, _ := ch["description"].(string)
+				motivation, _ := ch["motivation"].(string)
+				growthArc, _ := ch["growth_arc"].(string)
 				traits, _ := ch["traits"].([]interface{})
 				var traitStrs []string
 				for _, t := range traits {
@@ -290,9 +292,25 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 						traitStrs = append(traitStrs, ts)
 					}
 				}
+				// Convert relationships array [{name, description}] → map {name: description}
+				relMap := map[string]string{}
+				if relList, ok := ch["relationships"].([]interface{}); ok {
+					for _, r := range relList {
+						if rm, ok := r.(map[string]interface{}); ok {
+							rName, _ := rm["name"].(string)
+							rDesc, _ := rm["description"].(string)
+							if rName != "" {
+								relMap[rName] = rDesc
+							}
+						}
+					}
+				}
 				profileData := map[string]interface{}{
 					"backstory":          desc,
 					"personality_traits": traitStrs,
+					"motivation":         motivation,
+					"growth_arc":         growthArc,
+					"relationships":      relMap,
 					"source_ref_id":      job.RefID,
 					"imported_from":      "reference_analysis",
 				}
@@ -300,7 +318,10 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 				b.Queue(
 					`INSERT INTO characters (project_id, name, role_type, profile)
 					 VALUES ($1, $2, $3, $4)
-					 ON CONFLICT (project_id, name) DO NOTHING`,
+					 ON CONFLICT (project_id, name) DO UPDATE
+					 SET role_type = EXCLUDED.role_type,
+					     profile   = characters.profile || EXCLUDED.profile,
+					     updated_at = NOW()`,
 					projectID, name, normalizeRole(roleType), profileJSON)
 			}
 			if b.Len() > 0 {
@@ -391,10 +412,21 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 						levelStr = "meso"
 					}
 				}
+				// Extract involved_characters array
+				var involvedChars []string
+				if icRaw, ok := node["involved_characters"].([]interface{}); ok {
+					for _, ic := range icRaw {
+						if ics, ok := ic.(string); ok && ics != "" {
+							involvedChars = append(involvedChars, ics)
+						}
+					}
+				}
 				contentData := map[string]interface{}{
-					"key_events": summary,
-					"source":     "reference_analysis",
-					"ref_id":     job.RefID,
+					"content":             summary,
+					"key_events":          summary,
+					"involved_characters": involvedChars,
+					"source":              "reference_analysis",
+					"ref_id":              job.RefID,
 				}
 				contentJSON, _ := json.Marshal(contentData)
 				b.Queue(
@@ -484,6 +516,14 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 				br.Close()
 			}
 		}
+	}
+
+	// Mark the reference material as completed so the RAG rebuild can find it.
+	if _, dbErr := s.db.Exec(ctx,
+		`UPDATE reference_materials SET status = 'completed', updated_at = NOW() WHERE id = $1`,
+		job.RefID); dbErr != nil {
+		s.logger.Warn("could not mark reference as completed after import",
+			zap.String("ref_id", job.RefID), zap.Error(dbErr))
 	}
 
 	return nil

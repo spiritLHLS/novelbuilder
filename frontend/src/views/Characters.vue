@@ -138,6 +138,16 @@
         <el-form-item label="成长弧线">
           <el-input v-model="editForm.growth_arc" type="textarea" :rows="2" />
         </el-form-item>
+        <el-form-item label="关系网络">
+          <div class="rel-editor">
+            <div v-for="(rel, idx) in editForm.relationship_list" :key="idx" class="rel-editor-row">
+              <el-input v-model="rel.name" placeholder="角色名" style="width:140px;margin-right:8px" />
+              <el-input v-model="rel.desc" placeholder="关系描述" style="flex:1;margin-right:8px" />
+              <el-button type="danger" text @click="editForm.relationship_list.splice(idx,1)">删除</el-button>
+            </div>
+            <el-button size="small" @click="editForm.relationship_list.push({name:'',desc:''})">+ 添加关系</el-button>
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showEditDlg = false">取消</el-button>
@@ -195,6 +205,9 @@ function selectChar(c: any) {
 
 function openEditDialog() {
   const p = selected.value?.profile || {}
+  // Convert relationships object {name: desc} → [{name, desc}] for the editor
+  const relObj = p.relationships || {}
+  const relationship_list = Object.entries(relObj).map(([name, desc]) => ({ name, desc: String(desc) }))
   editForm.value = {
     name: selected.value.name,
     role_type: selected.value.role_type,
@@ -204,6 +217,7 @@ function openEditDialog() {
     motivation: p.motivation || '',
     growth_arc: p.growth_arc || '',
     personality_str: (p.personality_traits || []).join(', '),
+    relationship_list,
   }
   showEditDlg.value = true
 }
@@ -237,6 +251,11 @@ async function createChar() {
 async function saveEdit() {
   try {
     const personality_traits = editForm.value.personality_str.split(/[,，]/).map((s: string) => s.trim()).filter(Boolean)
+    // Convert [{name, desc}] → {name: desc} object, skipping empty entries
+    const relationships: Record<string, string> = {}
+    for (const rel of (editForm.value.relationship_list || [])) {
+      if (rel.name.trim()) relationships[rel.name.trim()] = rel.desc.trim()
+    }
     await characterApi.update(projectId, selected.value.id, {
       name: editForm.value.name,
       role_type: editForm.value.role_type,
@@ -247,6 +266,7 @@ async function saveEdit() {
         motivation: editForm.value.motivation,
         growth_arc: editForm.value.growth_arc,
         personality_traits,
+        relationships,
       },
     })
     ElMessage.success('角色已更新')
@@ -279,8 +299,8 @@ function buildGraph() {
     }))
     const edges: any[] = []
     characters.value.forEach(c => {
-      if (c.relationships) {
-        Object.entries(c.relationships).forEach(([targetName, rel]) => {
+      if (c.profile?.relationships) {
+        Object.entries(c.profile.relationships).forEach(([targetName, rel]) => {
           const target = characters.value.find(t => t.name === targetName)
           if (target) {
             edges.push({
@@ -348,6 +368,9 @@ watch(() => characters.value, buildGraph, { deep: true })
 .char-item:hover { background: rgba(64,158,255,0.1); }
 .char-item.active { background: rgba(64,158,255,0.2); }
 .char-name { font-weight: 500; color: var(--nb-text-primary); }
+.rel-editor { display: flex; flex-direction: column; gap: 8px; }
+.rel-editor-row { display: flex; align-items: center; }
+.rel-item { padding: 4px 0; color: var(--nb-text-primary); }
 .text-content { color: var(--nb-text-secondary); line-height: 1.8; white-space: pre-wrap; }
 .rel-item { padding: 4px 0; color: var(--nb-text-secondary); }
 .cy-container { width: 100%; height: 400px; background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); border-radius: 8px; }
