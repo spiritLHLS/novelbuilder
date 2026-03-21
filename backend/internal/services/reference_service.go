@@ -716,6 +716,12 @@ func (s *ReferenceService) ImportBundle(ctx context.Context, projectID string, b
 		if len(m.StyleLayer) > 0 || len(m.NarrativeLayer) > 0 {
 			s.UpdateAnalysis(ctx, ref.ID, m.StyleLayer, m.NarrativeLayer, m.AtmosphereLayer) //nolint
 		}
+		// Restore migration config and style collection if present
+		if len(m.MigrationConfig) > 0 || m.StyleCollection != "" {
+			s.db.Exec(ctx, //nolint
+				`UPDATE reference_materials SET migration_config=$1, style_collection=$2 WHERE id=$3`,
+				nullableJSON(m.MigrationConfig), m.StyleCollection, ref.ID)
+		}
 		// Insert chapters
 		for _, ch := range item.Chapters {
 			s.SaveChapter(ctx, ref.ID, ch.ChapterID, ch.Title, ch.Content, ch.ChapterNo) //nolint
