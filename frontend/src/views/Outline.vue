@@ -56,20 +56,20 @@
             <el-descriptions-item label="层级">
               <el-tag :type="levelTagType(selectedNode.level)">{{ levelLabel(selectedNode.level) }}</el-tag>
             </el-descriptions-item>
-            <el-descriptions-item label="排序">{{ selectedNode.sort_order }}</el-descriptions-item>
+            <el-descriptions-item label="排序">{{ selectedNode.order_num }}</el-descriptions-item>
             <el-descriptions-item label="张力目标">{{ selectedNode.tension_target || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="预估字数">{{ selectedNode.estimated_words || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="预估字数">{{ selectedNode.content?.estimated_words || '-' }}</el-descriptions-item>
           </el-descriptions>
 
           <h4 style="margin: 16px 0 8px; color: #409eff;">内容概要</h4>
-          <p class="text-content">{{ selectedNode.content || '暂无' }}</p>
+          <p class="text-content">{{ (typeof selectedNode.content === 'string' ? selectedNode.content : selectedNode.content?.content) || '暂无' }}</p>
 
           <h4 style="margin: 16px 0 8px; color: #409eff;">关键事件</h4>
-          <p class="text-content">{{ selectedNode.key_events || '暂无' }}</p>
+          <p class="text-content">{{ selectedNode.content?.key_events || '暂无' }}</p>
 
           <h4 style="margin: 16px 0 8px; color: #409eff;">涉及角色</h4>
-          <div v-if="selectedNode.involved_characters?.length">
-            <el-tag v-for="c in selectedNode.involved_characters" :key="c" style="margin: 2px;">{{ c }}</el-tag>
+          <div v-if="selectedNode.content?.involved_characters?.length">
+            <el-tag v-for="c in selectedNode.content.involved_characters" :key="c" style="margin: 2px;">{{ c }}</el-tag>
           </div>
           <span v-else class="text-content">暂无</span>
         </el-card>
@@ -173,13 +173,13 @@ const treeData = computed(() => {
       roots.push(node)
     }
   })
-  return roots.sort((a, b) => a.sort_order - b.sort_order)
+  return roots.sort((a, b) => a.order_num - b.order_num)
 })
 
 const tensionChartOption = computed(() => {
   const sorted = [...outlines.value]
     .filter(o => o.level === 'meso' || o.level === 'micro')
-    .sort((a, b) => a.sort_order - b.sort_order)
+    .sort((a, b) => a.order_num - b.order_num)
   return {
     backgroundColor: 'transparent',
     xAxis: {
@@ -231,7 +231,7 @@ function showCreate() {
   form.value = {
     title: '', level: 'macro', sort_order: outlines.value.length,
     parent_id: '', content: '', key_events: '', tension_target: 5,
-    estimated_words: 0, involved_characters: [],
+    estimated_words: 0, involved_characters: [] as string[],
   }
   showDialog.value = true
 }
@@ -239,7 +239,16 @@ function showCreate() {
 function editNode() {
   if (!selectedNode.value) return
   isEdit.value = true
-  form.value = { ...selectedNode.value }
+  const c = selectedNode.value.content
+  const contentObj = c && typeof c === 'object' ? c : {}
+  form.value = {
+    ...selectedNode.value,
+    sort_order: selectedNode.value.order_num,
+    content: typeof c === 'string' ? c : (contentObj.content || ''),
+    key_events: contentObj.key_events || '',
+    estimated_words: contentObj.estimated_words || 0,
+    involved_characters: contentObj.involved_characters || [],
+  }
   showDialog.value = true
 }
 
@@ -247,11 +256,24 @@ async function saveOutline() {
   if (!form.value.title) { ElMessage.warning('请填写标题'); return }
   saving.value = true
   try {
+    const payload = {
+      level: form.value.level,
+      parent_id: form.value.parent_id || null,
+      order_num: form.value.sort_order,
+      title: form.value.title,
+      tension_target: form.value.tension_target,
+      content: {
+        content: form.value.content,
+        key_events: form.value.key_events,
+        estimated_words: form.value.estimated_words,
+        involved_characters: form.value.involved_characters,
+      },
+    }
     if (isEdit.value) {
-      await outlineApi.update(projectId, selectedNode.value.id, form.value)
+      await outlineApi.update(projectId, selectedNode.value.id, payload)
       ElMessage.success('大纲已更新')
     } else {
-      await outlineApi.create(projectId, form.value)
+      await outlineApi.create(projectId, payload)
       ElMessage.success('大纲已创建')
     }
     showDialog.value = false

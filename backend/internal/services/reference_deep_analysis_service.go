@@ -276,18 +276,17 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 						traitStrs = append(traitStrs, ts)
 					}
 				}
+				// Use field names matching the frontend's expected profile shape
 				profileData := map[string]interface{}{
-					"description":   desc,
-					"traits":        traitStrs,
-					"source_ref_id": job.RefID,
-					"imported_from": "reference_analysis",
+					"backstory":          desc,
+					"personality_traits": traitStrs,
+					"source_ref_id":      job.RefID,
+					"imported_from":      "reference_analysis",
 				}
 				profileJSON, _ := json.Marshal(profileData)
-				// Insert; ignore conflict (duplicate name+project)
 				if _, dbErr := s.db.Exec(ctx,
 					`INSERT INTO characters (project_id, name, role_type, profile)
-					 VALUES ($1, $2, $3, $4)
-					 ON CONFLICT DO NOTHING`,
+					 VALUES ($1, $2, $3, $4)`,
 					projectID, name, normalizeRole(roleType), profileJSON); dbErr != nil {
 					s.logger.Warn("import character failed", zap.String("name", name), zap.Error(dbErr))
 				}
@@ -299,9 +298,31 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 	if len(job.ExtractedWorld) > 2 {
 		var worldData map[string]interface{}
 		if json.Unmarshal(job.ExtractedWorld, &worldData) == nil {
-			worldData["source_ref_id"] = job.RefID
-			worldData["imported_from"] = "reference_analysis"
-			worldJSON, _ := json.Marshal(worldData)
+			// Map Python sidecar keys to the keys the frontend expects
+			setting, _ := worldData["setting"].(string)
+			timePeriod, _ := worldData["time_period"].(string)
+			locations, _ := worldData["locations"].([]interface{})
+			systems, _ := worldData["systems"].([]interface{})
+			var locStrs, sysStrs []string
+			for _, l := range locations {
+				if ls, ok := l.(string); ok {
+					locStrs = append(locStrs, ls)
+				}
+			}
+			for _, sys := range systems {
+				if ss, ok := sys.(string); ok {
+					sysStrs = append(sysStrs, ss)
+				}
+			}
+			mappedWorld := map[string]interface{}{
+				"world_view":     setting,
+				"era_background": timePeriod,
+				"geography":      strings.Join(locStrs, "、"),
+				"power_system":   strings.Join(sysStrs, "、"),
+				"source_ref_id":  job.RefID,
+				"imported_from":  "reference_analysis",
+			}
+			worldJSON, _ := json.Marshal(mappedWorld)
 			// Try update first; if no row create one
 			tag, dbErr := s.db.Exec(ctx,
 				`UPDATE world_bibles SET content = COALESCE(content, '{}') || $1::jsonb, version = version + 1
@@ -331,20 +352,24 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 				}
 				summary, _ := node["summary"].(string)
 				levelF, _ := node["level"].(float64)
-				level := int(levelF)
-				if level < 1 {
-					level = 1
+				// Map numeric level to the string values the frontend uses
+				levelStr := "macro"
+				switch int(levelF) {
+				case 2:
+					levelStr = "meso"
+				case 3:
+					levelStr = "micro"
 				}
 				contentData := map[string]interface{}{
-					"summary": summary,
-					"source":  "reference_analysis",
-					"ref_id":  job.RefID,
+					"key_events": summary,
+					"source":     "reference_analysis",
+					"ref_id":     job.RefID,
 				}
 				contentJSON, _ := json.Marshal(contentData)
 				if _, dbErr := s.db.Exec(ctx,
 					`INSERT INTO outlines (project_id, level, order_num, title, content)
 					 VALUES ($1, $2, $3, $4, $5)`,
-					projectID, level, i+1, title, contentJSON); dbErr != nil {
+					projectID, levelStr, i+1, title, contentJSON); dbErr != nil {
 					s.logger.Warn("import outline node failed", zap.String("title", title), zap.Error(dbErr))
 				}
 			}

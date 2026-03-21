@@ -123,14 +123,16 @@ onMounted(async () => {
     ])
     if (wbRes.data.data) {
       const d = wbRes.data.data
+      // content JSONB is returned nested under d.content
+      const c = d.content || {}
       worldBible.value = {
-        world_view: d.world_view || '',
-        era_background: d.era_background || '',
-        geography: d.geography || '',
-        social_structure: d.social_structure || '',
-        power_system: d.power_system || '',
-        core_conflict: d.core_conflict || '',
-        extra_json: d.extra_json ? JSON.stringify(d.extra_json, null, 2) : '',
+        world_view: c.world_view || '',
+        era_background: c.era_background || '',
+        geography: c.geography || '',
+        social_structure: c.social_structure || '',
+        power_system: c.power_system || '',
+        core_conflict: c.core_conflict || '',
+        extra_json: c.extra_json ? JSON.stringify(c.extra_json, null, 2) : '',
       }
     }
     if (constRes.data.data) {

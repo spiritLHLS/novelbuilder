@@ -14,7 +14,7 @@
             class="char-item" :class="{ active: selected?.id === c.id }"
             @click="selectChar(c)">
             <div class="char-name">{{ c.name }}</div>
-            <el-tag size="small" :type="roleTagType(c.role)">{{ c.role }}</el-tag>
+            <el-tag size="small" :type="roleTagType(c.role_type)">{{ c.role_type }}</el-tag>
           </div>
           <el-empty v-if="!characters.length" description="暂无角色" />
         </el-card>
@@ -36,23 +36,23 @@
           <template v-if="!editMode">
             <el-descriptions :column="2" border>
               <el-descriptions-item label="名称">{{ selected.name }}</el-descriptions-item>
-              <el-descriptions-item label="角色定位">{{ selected.role }}</el-descriptions-item>
-              <el-descriptions-item label="年龄">{{ selected.age || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="性别">{{ selected.gender || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="角色定位">{{ selected.role_type }}</el-descriptions-item>
+              <el-descriptions-item label="年龄">{{ selected.profile?.age || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="性别">{{ selected.profile?.gender || '-' }}</el-descriptions-item>
             </el-descriptions>
             <h4 style="margin: 16px 0 8px; color: #409eff;">背景故事</h4>
-            <p class="text-content">{{ selected.backstory || '暂无' }}</p>
+            <p class="text-content">{{ selected.profile?.backstory || '暂无' }}</p>
             <h4 style="margin: 16px 0 8px; color: #409eff;">性格特征</h4>
-            <div v-if="selected.personality_traits?.length">
-              <el-tag v-for="t in selected.personality_traits" :key="t" style="margin: 2px;">{{ t }}</el-tag>
+            <div v-if="selected.profile?.personality_traits?.length">
+              <el-tag v-for="t in selected.profile.personality_traits" :key="t" style="margin: 2px;">{{ t }}</el-tag>
             </div>
             <h4 style="margin: 16px 0 8px; color: #409eff;">动机</h4>
-            <p class="text-content">{{ selected.motivation || '暂无' }}</p>
+            <p class="text-content">{{ selected.profile?.motivation || '暂无' }}</p>
             <h4 style="margin: 16px 0 8px; color: #409eff;">成长弧线</h4>
-            <p class="text-content">{{ selected.growth_arc || '暂无' }}</p>
+            <p class="text-content">{{ selected.profile?.growth_arc || '暂无' }}</p>
             <h4 style="margin: 16px 0 8px; color: #409eff;">关系网络</h4>
-            <div v-if="selected.relationships">
-              <div v-for="(rel, name) in selected.relationships" :key="name" class="rel-item">
+            <div v-if="selected.profile?.relationships">
+              <div v-for="(rel, name) in selected.profile.relationships" :key="name" class="rel-item">
                 <strong>{{ name }}</strong>: {{ rel }}
               </div>
             </div>
@@ -66,7 +66,7 @@
                 </el-col>
                 <el-col :span="12">
                   <el-form-item label="角色定位">
-                    <el-select v-model="editForm.role" style="width: 100%;">
+                    <el-select v-model="editForm.role_type" style="width: 100%;">
                       <el-option label="主角" value="protagonist" />
                       <el-option label="配角" value="supporting" />
                       <el-option label="反派" value="antagonist" />
@@ -187,9 +187,16 @@ async function fetchChars() {
 function selectChar(c: any) {
   selected.value = c
   editMode.value = false
+  const p = c.profile || {}
   editForm.value = {
-    ...c,
-    personality_str: (c.personality_traits || []).join(', '),
+    name: c.name,
+    role_type: c.role_type,
+    backstory: p.backstory || '',
+    age: p.age || '',
+    gender: p.gender || '',
+    motivation: p.motivation || '',
+    growth_arc: p.growth_arc || '',
+    personality_str: (p.personality_traits || []).join(', '),
   }
 }
 
@@ -202,12 +209,15 @@ async function createChar() {
   if (!createForm.value.name) { ElMessage.warning('请填写角色名称'); return }
   creating.value = true
   try {
-    const payload: any = {
-      ...createForm.value,
-      personality_traits: createForm.value.personality_str.split(/[,，]/).map(s => s.trim()).filter(Boolean),
-    }
-    delete payload.personality_str
-    await characterApi.create(projectId, payload)
+    const personality_traits = createForm.value.personality_str.split(/[,，]/).map((s: string) => s.trim()).filter(Boolean)
+    await characterApi.create(projectId, {
+      name: createForm.value.name,
+      role_type: createForm.value.role,
+      profile: {
+        backstory: createForm.value.backstory,
+        personality_traits,
+      },
+    })
     ElMessage.success('角色已创建')
     showCreateDialog.value = false
     await fetchChars()
@@ -218,10 +228,19 @@ async function createChar() {
 
 async function saveEdit() {
   try {
-    const payload: any = { ...editForm.value }
-    payload.personality_traits = editForm.value.personality_str.split(/[,，]/).map((s: string) => s.trim()).filter(Boolean)
-    delete payload.personality_str
-    await characterApi.update(projectId, selected.value.id, payload)
+    const personality_traits = editForm.value.personality_str.split(/[,，]/).map((s: string) => s.trim()).filter(Boolean)
+    await characterApi.update(projectId, selected.value.id, {
+      name: editForm.value.name,
+      role_type: editForm.value.role_type,
+      profile: {
+        backstory: editForm.value.backstory,
+        age: editForm.value.age,
+        gender: editForm.value.gender,
+        motivation: editForm.value.motivation,
+        growth_arc: editForm.value.growth_arc,
+        personality_traits,
+      },
+    })
     ElMessage.success('角色已更新')
     editMode.value = false
     await fetchChars()
