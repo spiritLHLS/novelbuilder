@@ -188,6 +188,24 @@ func (h *Handler) SetDefaultLLMProfile(c *gin.Context) {
 	c.JSON(200, gin.H{"data": profile})
 }
 
+// isMaxTokensUnsupportedBody returns true when rawBody is an OpenAI-style 400 error
+// indicating that "max_tokens" is not accepted for the requested model and the caller
+// should use "max_completion_tokens" instead (e.g. o-series, certain new models).
+func isMaxTokensUnsupportedBody(rawBody []byte) bool {
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(rawBody, &body) != nil {
+		return false
+	}
+	return body.Error.Code == "unsupported_parameter" ||
+		(strings.Contains(body.Error.Message, "max_tokens") &&
+			strings.Contains(body.Error.Message, "max_completion_tokens"))
+}
+
 // TestLLMProfile sends a minimal probe request to the provider to verify that the
 // supplied credentials and endpoint are reachable and return a valid response.
 // It accepts either an explicit api_key or falls back to looking up a saved
@@ -339,6 +357,40 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 
 	rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	durationMs := time.Since(start).Milliseconds()
+	statusCode := resp.StatusCode
+
+	// For chat/completions endpoints: if the provider rejects max_tokens and demands
+	// max_completion_tokens (e.g. OpenAI o-series, certain new models), transparently
+	// retry once with the correct parameter name.
+	if statusCode == 400 &&
+		!strings.HasSuffix(req.APIStyle, "/messages") &&
+		!strings.HasSuffix(req.APIStyle, "/responses") &&
+		req.APIStyle != "gemini" &&
+		isMaxTokensUnsupportedBody(rawBody) {
+		h.logger.Info("llm_test: max_tokens rejected, retrying with max_completion_tokens",
+			zap.String("model", req.ModelName))
+		fallbackMap := map[string]any{
+			"model":                 req.ModelName,
+			"max_completion_tokens": 16,
+			"messages": []map[string]string{
+				{"role": "user", "content": "Reply with the single word: ok"},
+			},
+		}
+		if fbBytes, err2 := json.Marshal(fallbackMap); err2 == nil {
+			if fbReq, err2 := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, endpoint, bytes.NewReader(fbBytes)); err2 == nil {
+				fbReq.Header.Set("Content-Type", "application/json")
+				fbReq.Header.Set("Authorization", "Bearer "+req.APIKey)
+				if resp2, err2 := client.Do(fbReq); err2 == nil {
+					rawBody2, _ := io.ReadAll(io.LimitReader(resp2.Body, 4096))
+					resp2.Body.Close()
+					rawBody = rawBody2
+					statusCode = resp2.StatusCode
+					durationMs = time.Since(start).Milliseconds()
+				}
+			}
+		}
+	}
+
 	// Truncate for logging and response (first 500 bytes is enough to diagnose issues)
 	rawBodySnippet := string(rawBody)
 	if len(rawBodySnippet) > 500 {
@@ -348,12 +400,12 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 	h.logger.Info("llm_test raw response",
 		zap.String("endpoint", endpoint),
 		zap.String("model", req.ModelName),
-		zap.Int("status", resp.StatusCode),
+		zap.Int("status", statusCode),
 		zap.Int64("duration_ms", durationMs),
 		zap.String("raw_body", rawBodySnippet),
 	)
 
-	if resp.StatusCode >= 400 {
+	if statusCode >= 400 {
 		// Try to extract human-readable error across different provider response shapes.
 		var rawErr map[string]json.RawMessage
 		errMsg := fmt.Sprintf("HTTP %d", resp.StatusCode)

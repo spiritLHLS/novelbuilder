@@ -193,6 +193,22 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
                         body_snippet = resp.text[:400]
                     except Exception:
                         body_snippet = "<unreadable>"
+                    # Special case: some models (e.g. o-series) reject max_tokens and
+                    # require max_completion_tokens. Rebuild payload and retry once.
+                    if (
+                        resp.status_code == 400
+                        and not use_responses_api
+                        and "max_tokens" in payload
+                        and "max_tokens" in body_snippet
+                        and "max_completion_tokens" in body_snippet
+                    ):
+                        logger.warning(
+                            "LLM HTTP 400: max_tokens unsupported, retrying with max_completion_tokens (attempt %d/%d)",
+                            attempt, max_retries,
+                        )
+                        payload = {k: v for k, v in payload.items() if k != "max_tokens"}
+                        payload["max_completion_tokens"] = cfg.max_tokens
+                        continue
                     label = {400: "Bad Request (check model name)", 401: "Unauthorized (invalid API key)", 403: "Forbidden (API key rejected by gateway)"}
                     logger.error(
                         "LLM HTTP %d %s \u2014 will not retry | body: %s",

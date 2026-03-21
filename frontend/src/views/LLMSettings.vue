@@ -49,10 +49,9 @@
           <el-icon v-if="row.is_default" class="default-icon"><StarFilled /></el-icon>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
+      <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="editProfile(row)">编辑</el-button>
-          <el-button size="small" type="success" @click="testSavedProfile(row)" :loading="testingId === row.id">测试</el-button>
           <el-button
             size="small"
             type="warning"
@@ -220,7 +219,6 @@ const editingProfile = ref<LLMProfile | null>(null)
 const formRef = ref<FormInstance>()
 
 // Test state
-const testingId = ref<string | null>(null)
 const dialogTesting = ref(false)
 const dialogTestResult = ref<TestResult | null>(null)
 
@@ -332,36 +330,6 @@ function onProviderChange(provider: string) {
 }
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
-async function testSavedProfile(profile: LLMProfile) {
-  testingId.value = profile.id
-  try {
-    const res = await llmProfileApi.test({ profile_id: profile.id })
-    const result: TestResult = res.data
-    if (result.ok) {
-      ElMessage({
-        type: 'success',
-        message: `连接成功 · 模型: ${result.model} · 耗时 ${result.duration_ms} ms`,
-        duration: 5000,
-      })
-      if (result.raw_body) {
-        console.info('[LLM Test] raw response:', result.raw_body)
-      }
-    } else {
-      ElMessageBox.alert(
-        (result.raw_body
-          ? `<p>错误: ${result.error}</p><pre style="margin-top:8px;white-space:pre-wrap;word-break:break-all;font-size:12px;background:#f5f5f5;padding:8px;border-radius:4px">${result.raw_body}</pre>`
-          : result.error) ?? '未知错误',
-        '连接失败',
-        { dangerouslyUseHTMLString: true, type: 'error', confirmButtonText: '关闭' },
-      )
-    }
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.error || '测试请求失败')
-  } finally {
-    testingId.value = null
-  }
-}
-
 async function testDialogForm() {
   // Base URL and model name are needed at minimum
   if (!form.base_url || !form.model_name) {
