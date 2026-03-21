@@ -1,5 +1,4 @@
 -- 017_llm_profiles_rpm.sql
--- Add per-profile RPM (requests per minute) limit for LLM APIs.
--- 0 = unlimited (default, preserves existing behavior).
-ALTER TABLE llm_profiles
-    ADD COLUMN IF NOT EXISTS rpm_limit INT NOT NULL DEFAULT 0;
+-- Migration 017: No-op stub. Consolidated into 007_ai_llm.sql.
+-- rpm_limit column is now defined directly in the CREATE TABLE and via
+-- ADD COLUMN IF NOT EXISTS guards in 007_ai_llm.sql.

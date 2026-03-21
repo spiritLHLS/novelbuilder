@@ -39,21 +39,36 @@ CREATE INDEX idx_agent_review_messages_session_id ON agent_review_messages(sessi
 -- ============================================================
 
 CREATE TABLE llm_profiles (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        VARCHAR(100) NOT NULL UNIQUE,
-    provider    VARCHAR(50)  NOT NULL DEFAULT 'openai',
-    base_url    VARCHAR(500) NOT NULL DEFAULT 'https://api.openai.com/v1',
-    api_key     TEXT         NOT NULL,
-    model_name  VARCHAR(200) NOT NULL,
-    max_tokens  INT          NOT NULL DEFAULT 8192,
-    temperature FLOAT        NOT NULL DEFAULT 0.7,
-    is_default  BOOLEAN      NOT NULL DEFAULT FALSE,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            VARCHAR(100) NOT NULL UNIQUE,
+    provider        VARCHAR(50)  NOT NULL DEFAULT 'openai',
+    base_url        VARCHAR(500) NOT NULL DEFAULT 'https://api.openai.com/v1',
+    api_key         TEXT         NOT NULL,
+    model_name      VARCHAR(200) NOT NULL,
+    max_tokens      INT          NOT NULL DEFAULT 8192,
+    temperature     FLOAT        NOT NULL DEFAULT 0.7,
+    is_default      BOOLEAN      NOT NULL DEFAULT FALSE,
+    -- Per-profile RPM limit (0 = unlimited). Consolidated from migration 017.
+    rpm_limit       INT          NOT NULL DEFAULT 0,
+    -- Parameter omission flags and API style selector. Consolidated from migration 018.
+    omit_max_tokens  BOOLEAN     NOT NULL DEFAULT false,
+    omit_temperature BOOLEAN     NOT NULL DEFAULT false,
+    -- api_style: 'chat_completions' (default) or 'responses' (OpenAI Responses API).
+    api_style        VARCHAR(50) NOT NULL DEFAULT 'chat_completions',
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX idx_llm_profiles_single_default ON llm_profiles (is_default) WHERE (is_default = TRUE);
-CREATE INDEX idx_llm_profiles_is_default ON llm_profiles (is_default);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_profiles_single_default ON llm_profiles (is_default) WHERE (is_default = TRUE);
+CREATE INDEX IF NOT EXISTS idx_llm_profiles_is_default ON llm_profiles (is_default);
+
+-- Idempotent ADD COLUMN guards for existing databases that ran the original 007
+-- before rpm_limit / omit_* / api_style columns were added (ex-migrations 017/018).
+ALTER TABLE llm_profiles
+    ADD COLUMN IF NOT EXISTS rpm_limit        INT         NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS omit_max_tokens  BOOLEAN     NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS omit_temperature BOOLEAN     NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS api_style        VARCHAR(50) NOT NULL DEFAULT 'chat_completions';
 
 -- ============================================================
 -- Per-Agent Model Routing

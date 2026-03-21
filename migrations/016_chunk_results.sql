@@ -1,6 +1,4 @@
 -- 016_chunk_results.sql
--- Add per-chunk result storage so that a cancelled / failed analysis job
--- can be resumed from its last checkpoint rather than restarting from scratch.
-
-ALTER TABLE reference_analysis_jobs
-    ADD COLUMN IF NOT EXISTS chunk_results JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- Migration 016: No-op stub. Consolidated into 015_reference_deep_analysis.sql.
+-- chunk_results column is now defined directly in the CREATE TABLE and via
+-- ADD COLUMN IF NOT EXISTS guards in 015_reference_deep_analysis.sql.

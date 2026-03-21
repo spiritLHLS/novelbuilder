@@ -1,7 +1,4 @@
 -- 019_deep_analysis_extended.sql
--- Add glossary and foreshadowing extraction columns to analysis jobs.
--- These are filled during the merge phase of deep analysis.
-
-ALTER TABLE reference_analysis_jobs
-    ADD COLUMN IF NOT EXISTS extracted_glossary      JSONB,
-    ADD COLUMN IF NOT EXISTS extracted_foreshadowings JSONB;
+-- Migration 019: No-op stub. Consolidated into 015_reference_deep_analysis.sql.
+-- extracted_glossary and extracted_foreshadowings columns are now defined in
+-- the CREATE TABLE and via ADD COLUMN IF NOT EXISTS guards in 015_reference_deep_analysis.sql.

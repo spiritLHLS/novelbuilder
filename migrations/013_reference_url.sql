@@ -1,3 +1,0 @@
--- Migration 013: (consolidated into 014_reference_chapters.sql)
--- source_url is now part of reference_materials in 002_core_entities.sql (fresh installs)
--- and added via ADD COLUMN IF NOT EXISTS in 014_reference_chapters.sql (existing DBs).

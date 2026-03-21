@@ -27,6 +27,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/retry"
@@ -267,10 +268,11 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 		return fmt.Errorf("job %s is not completed (status: %s)", jobID, job.Status)
 	}
 
-	// Import characters
+	// Import characters — batch insert to avoid N+1 queries.
 	if len(job.ExtractedCharacters) > 2 {
 		var chars []map[string]interface{}
-		if json.Unmarshal(job.ExtractedCharacters, &chars) == nil {
+		if json.Unmarshal(job.ExtractedCharacters, &chars) == nil && len(chars) > 0 {
+			b := &pgx.Batch{}
 			for _, ch := range chars {
 				name, _ := ch["name"].(string)
 				if name == "" {
@@ -288,7 +290,6 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 						traitStrs = append(traitStrs, ts)
 					}
 				}
-				// Use field names matching the frontend's expected profile shape
 				profileData := map[string]interface{}{
 					"backstory":          desc,
 					"personality_traits": traitStrs,
@@ -296,12 +297,20 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 					"imported_from":      "reference_analysis",
 				}
 				profileJSON, _ := json.Marshal(profileData)
-				if _, dbErr := s.db.Exec(ctx,
+				b.Queue(
 					`INSERT INTO characters (project_id, name, role_type, profile)
-					 VALUES ($1, $2, $3, $4)`,
-					projectID, name, normalizeRole(roleType), profileJSON); dbErr != nil {
-					s.logger.Warn("import character failed", zap.String("name", name), zap.Error(dbErr))
+					 VALUES ($1, $2, $3, $4)
+					 ON CONFLICT (project_id, name) DO NOTHING`,
+					projectID, name, normalizeRole(roleType), profileJSON)
+			}
+			if b.Len() > 0 {
+				br := s.db.SendBatch(ctx, b)
+				for i := 0; i < b.Len(); i++ {
+					if _, dbErr := br.Exec(); dbErr != nil {
+						s.logger.Warn("import character batch failed", zap.Int("idx", i), zap.Error(dbErr))
+					}
 				}
+				br.Close()
 			}
 		}
 	}
@@ -353,18 +362,19 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 		}
 	}
 
-	// Import outline nodes
+	// Import outline nodes — batch insert to avoid N+1 queries.
 	if len(job.ExtractedOutline) > 2 {
 		var outlineNodes []map[string]interface{}
-		if json.Unmarshal(job.ExtractedOutline, &outlineNodes) == nil {
-			for i, node := range outlineNodes {
+		if json.Unmarshal(job.ExtractedOutline, &outlineNodes) == nil && len(outlineNodes) > 0 {
+			b := &pgx.Batch{}
+			orderNum := 0
+			for _, node := range outlineNodes {
 				title, _ := node["title"].(string)
 				if title == "" {
 					continue
 				}
+				orderNum++
 				summary, _ := node["summary"].(string)
-				// Level is now a string ("macro"/"meso"/"micro") from the Python sidecar.
-				// For backward compat also handle old numeric levels.
 				levelStr := "meso"
 				if ls, ok := node["level"].(string); ok && ls != "" {
 					valid := map[string]bool{"macro": true, "meso": true, "micro": true}
@@ -387,20 +397,28 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 					"ref_id":     job.RefID,
 				}
 				contentJSON, _ := json.Marshal(contentData)
-				if _, dbErr := s.db.Exec(ctx,
+				b.Queue(
 					`INSERT INTO outlines (project_id, level, order_num, title, content)
 					 VALUES ($1, $2, $3, $4, $5)`,
-					projectID, levelStr, i+1, title, contentJSON); dbErr != nil {
-					s.logger.Warn("import outline node failed", zap.String("title", title), zap.Error(dbErr))
+					projectID, levelStr, orderNum, title, contentJSON)
+			}
+			if b.Len() > 0 {
+				br := s.db.SendBatch(ctx, b)
+				for i := 0; i < b.Len(); i++ {
+					if _, dbErr := br.Exec(); dbErr != nil {
+						s.logger.Warn("import outline batch failed", zap.Int("idx", i), zap.Error(dbErr))
+					}
 				}
+				br.Close()
 			}
 		}
 	}
 
-	// Import glossary terms
+	// Import glossary terms — batch insert to avoid N+1 queries.
 	if len(job.ExtractedGlossary) > 2 {
 		var terms []map[string]interface{}
-		if json.Unmarshal(job.ExtractedGlossary, &terms) == nil {
+		if json.Unmarshal(job.ExtractedGlossary, &terms) == nil && len(terms) > 0 {
+			b := &pgx.Batch{}
 			for _, t := range terms {
 				term, _ := t["term"].(string)
 				if term == "" {
@@ -411,21 +429,29 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 				if category == "" {
 					category = "concept"
 				}
-				if _, dbErr := s.db.Exec(ctx,
+				b.Queue(
 					`INSERT INTO glossary_terms (project_id, term, definition, category)
 					 VALUES ($1, $2, $3, $4)
 					 ON CONFLICT (project_id, term) DO UPDATE SET definition = EXCLUDED.definition`,
-					projectID, term, definition, category); dbErr != nil {
-					s.logger.Warn("import glossary term failed", zap.String("term", term), zap.Error(dbErr))
+					projectID, term, definition, category)
+			}
+			if b.Len() > 0 {
+				br := s.db.SendBatch(ctx, b)
+				for i := 0; i < b.Len(); i++ {
+					if _, dbErr := br.Exec(); dbErr != nil {
+						s.logger.Warn("import glossary batch failed", zap.Int("idx", i), zap.Error(dbErr))
+					}
 				}
+				br.Close()
 			}
 		}
 	}
 
-	// Import foreshadowings
+	// Import foreshadowings — batch insert to avoid N+1 queries.
 	if len(job.ExtractedForeshadowings) > 2 {
 		var foreshadowings []map[string]interface{}
-		if json.Unmarshal(job.ExtractedForeshadowings, &foreshadowings) == nil {
+		if json.Unmarshal(job.ExtractedForeshadowings, &foreshadowings) == nil && len(foreshadowings) > 0 {
+			b := &pgx.Batch{}
 			for _, f := range foreshadowings {
 				content, _ := f["content"].(string)
 				if content == "" {
@@ -442,12 +468,20 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 						tags = append(tags, rs)
 					}
 				}
-				if _, dbErr := s.db.Exec(ctx,
+				b.Queue(
 					`INSERT INTO foreshadowings (project_id, content, embed_method, priority, tags, status)
-					 VALUES ($1, $2, 'reference_import', $3, $4, 'planned')`,
-					projectID, content, priority, tags); dbErr != nil {
-					s.logger.Warn("import foreshadowing failed", zap.Error(dbErr))
+					 VALUES ($1, $2, 'reference_import', $3, $4, 'planned')
+					 ON CONFLICT DO NOTHING`,
+					projectID, content, priority, tags)
+			}
+			if b.Len() > 0 {
+				br := s.db.SendBatch(ctx, b)
+				for i := 0; i < b.Len(); i++ {
+					if _, dbErr := br.Exec(); dbErr != nil {
+						s.logger.Warn("import foreshadowing batch failed", zap.Int("idx", i), zap.Error(dbErr))
+					}
 				}
+				br.Close()
 			}
 		}
 	}

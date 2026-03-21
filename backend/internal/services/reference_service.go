@@ -540,38 +540,85 @@ func (s *ReferenceService) GetChapterFull(ctx context.Context, chapterID string)
 }
 
 // ExportBundle builds the exportable JSON bundle for one or more references.
+// All data is fetched in two queries (one for materials, one for chapters) to avoid N+1.
 func (s *ReferenceService) ExportBundle(ctx context.Context, refIDs []string) (*models.ReferenceExportBundle, error) {
 	bundle := &models.ReferenceExportBundle{
 		Version:    1,
 		ExportedAt: time.Now().UTC(),
 	}
+	if len(refIDs) == 0 {
+		return bundle, nil
+	}
+
+	// ── 1. Fetch all reference materials in a single query ────────────────────
+	matRows, err := s.db.Query(ctx,
+		`SELECT id, project_id, title, author, genre, COALESCE(file_path, ''),
+		        COALESCE(source_url, ''),
+		        COALESCE(style_layer, '{}'), COALESCE(narrative_layer, '{}'), COALESCE(atmosphere_layer, '{}'),
+		        COALESCE(migration_config, '{}'), COALESCE(style_collection, ''), status, created_at,
+		        sample_texts,
+		        COALESCE(fetch_status,'none'), COALESCE(fetch_done,0), COALESCE(fetch_total,0),
+		        COALESCE(fetch_error,''), COALESCE(fetch_site,''), COALESCE(fetch_book_id,''),
+		        COALESCE(fetch_chapter_ids,'[]'::jsonb)
+		 FROM reference_materials WHERE id = ANY($1::uuid[])`, refIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer matRows.Close()
+
+	refMap := make(map[string]*models.ReferenceMaterial, len(refIDs))
+	for matRows.Next() {
+		var ref models.ReferenceMaterial
+		if err := matRows.Scan(
+			&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
+			&ref.SourceURL,
+			&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
+			&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
+			&ref.SampleTexts,
+			&ref.FetchStatus, &ref.FetchDone, &ref.FetchTotal,
+			&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, &ref.FetchChapterIDs,
+		); err != nil {
+			return nil, err
+		}
+		r := ref
+		refMap[ref.ID] = &r
+	}
+	if err := matRows.Err(); err != nil {
+		return nil, err
+	}
+	matRows.Close()
+
+	// ── 2. Fetch all chapters for all refs in a single query ──────────────────
+	chapRows, err := s.db.Query(ctx,
+		`SELECT id, ref_id, chapter_no, chapter_id, title, content, word_count, is_deleted, created_at
+		 FROM reference_book_chapters
+		 WHERE ref_id = ANY($1::uuid[]) AND NOT is_deleted
+		 ORDER BY ref_id, chapter_no`, refIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer chapRows.Close()
+
+	chapMap := make(map[string][]models.ReferenceChapter)
+	for chapRows.Next() {
+		var ch models.ReferenceChapter
+		if err := chapRows.Scan(&ch.ID, &ch.RefID, &ch.ChapterNo, &ch.ChapterID,
+			&ch.Title, &ch.Content, &ch.WordCount, &ch.IsDeleted, &ch.CreatedAt); err != nil {
+			return nil, err
+		}
+		chapMap[ch.RefID] = append(chapMap[ch.RefID], ch)
+	}
+	if err := chapRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// ── 3. Assemble bundle preserving the requested order ─────────────────────
 	for _, id := range refIDs {
-		ref, err := s.Get(ctx, id)
-		if err != nil || ref == nil {
+		ref, ok := refMap[id]
+		if !ok {
 			continue
 		}
-		// Fetch all chapters (including content)
-		rows, err := s.db.Query(ctx,
-			`SELECT id, ref_id, chapter_no, chapter_id, title, content, word_count, is_deleted, created_at
-			 FROM reference_book_chapters
-			 WHERE ref_id=$1 AND NOT is_deleted ORDER BY chapter_no`, id)
-		if err != nil {
-			return nil, err
-		}
-		var chapters []models.ReferenceChapter
-		for rows.Next() {
-			var ch models.ReferenceChapter
-			if err := rows.Scan(&ch.ID, &ch.RefID, &ch.ChapterNo, &ch.ChapterID,
-				&ch.Title, &ch.Content, &ch.WordCount, &ch.IsDeleted, &ch.CreatedAt); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			chapters = append(chapters, ch)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
+		chapters := chapMap[id]
 		// If no DB chapters, fall back to reading the file (backward compatibility)
 		if len(chapters) == 0 && ref.FilePath != "" {
 			chapters = s.parseFileIntoChapters(ref.FilePath, id)

@@ -253,11 +253,21 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	if startChapter < 1 {
 		startChapter = 1
 	}
-	for i := startChapter; i < chapterNum; i++ {
-		summaryKey := fmt.Sprintf("chapter_summary:%s:%d", projectID, i)
-		summary, err := s.rdb.Get(ctx, summaryKey).Result()
-		if err == nil {
-			sb.WriteString(fmt.Sprintf("第%d章摘要：%s\n", i, summary))
+	if startChapter < chapterNum {
+		// Use MGET to fetch all window summaries in a single Redis round trip (no N+1).
+		summaryKeys := make([]string, 0, chapterNum-startChapter)
+		for i := startChapter; i < chapterNum; i++ {
+			summaryKeys = append(summaryKeys, fmt.Sprintf("chapter_summary:%s:%d", projectID, i))
+		}
+		vals, mgetErr := s.rdb.MGet(ctx, summaryKeys...).Result()
+		if mgetErr == nil {
+			for idx, val := range vals {
+				if val != nil {
+					if s, ok := val.(string); ok && s != "" {
+						sb.WriteString(fmt.Sprintf("第%d章摘要：%s\n", startChapter+idx, s))
+					}
+				}
+			}
 		}
 	}
 	sb.WriteString("\n")
