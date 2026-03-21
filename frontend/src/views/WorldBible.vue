@@ -39,6 +39,11 @@
             <div class="wb-label">核心冲突</div>
             <div class="wb-value">{{ worldBible.core_conflict }}</div>
           </div>
+          <!-- Extra fields from blueprint that don't use standard keys -->
+          <div class="wb-field" v-for="field in extraFields" :key="field.key">
+            <div class="wb-label">{{ field.key }}</div>
+            <div class="wb-value">{{ field.value }}</div>
+          </div>
           <el-empty v-if="isEmpty" description="暂无世界观设定，点击『编辑世界观设定』开始填写" />
         </el-card>
       </el-col>
@@ -144,6 +149,17 @@ const saving = ref(false)
 const savingConst = ref(false)
 const showEditDlg = ref(false)
 
+const STANDARD_WB_KEYS = new Set(['world_view', 'era_background', 'geography', 'social_structure', 'power_system', 'core_conflict', 'extra_json'])
+
+const rawContent = ref<Record<string, any>>({})
+
+const extraFields = computed(() =>
+  Object.entries(rawContent.value)
+    .filter(([k]) => !STANDARD_WB_KEYS.has(k))
+    .map(([k, v]) => ({ key: k, value: typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v ?? '') }))
+    .filter(({ value }) => value !== '' && value !== 'null')
+)
+
 const worldBible = ref({
   world_view: '',
   era_background: '',
@@ -159,7 +175,8 @@ const editForm = ref({ ...worldBible.value })
 const isEmpty = computed(() =>
   !worldBible.value.world_view && !worldBible.value.era_background &&
   !worldBible.value.geography && !worldBible.value.social_structure &&
-  !worldBible.value.power_system && !worldBible.value.core_conflict
+  !worldBible.value.power_system && !worldBible.value.core_conflict &&
+  extraFields.value.length === 0
 )
 
 const constitutions = ref<Array<{ type: string; rule: string; reason: string }>>([])
@@ -176,6 +193,7 @@ onMounted(async () => {
       const d = wbRes.data.data
       // content JSONB is returned nested under d.content
       const c = d.content || {}
+      rawContent.value = c
       worldBible.value = {
         world_view: c.world_view || '',
         era_background: c.era_background || '',
@@ -188,7 +206,9 @@ onMounted(async () => {
     }
     if (constRes.data.data) {
       const c = constRes.data.data
-      constitutions.value = c.rules || []
+      const immutable = (c.immutable_rules || []).map((item: any) => ({ ...item, type: 'immutable' }))
+      const mutable = (c.mutable_rules || []).map((item: any) => ({ ...item, type: 'mutable' }))
+      constitutions.value = [...immutable, ...mutable]
       forbiddenAnchors.value = c.forbidden_anchors || []
     }
   } catch {
@@ -222,8 +242,15 @@ async function saveWorldBible() {
 async function saveConstitution() {
   savingConst.value = true
   try {
+    const immutableRules = constitutions.value
+      .filter(c => c.type === 'immutable')
+      .map(({ type: _t, ...rest }) => rest)
+    const mutableRules = constitutions.value
+      .filter(c => c.type === 'mutable')
+      .map(({ type: _t, ...rest }) => rest)
     await worldBibleApi.updateConstitution(projectId, {
-      rules: constitutions.value,
+      immutable_rules: immutableRules,
+      mutable_rules: mutableRules,
       forbidden_anchors: forbiddenAnchors.value,
     })
     ElMessage.success('宪法已保存')

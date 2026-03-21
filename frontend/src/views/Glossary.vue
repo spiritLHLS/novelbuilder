@@ -143,7 +143,7 @@ async function loadTerms() {
   loading.value = true
   try {
     const res = await glossaryApi.list(projectId.value)
-    terms.value = res.data ?? []
+    terms.value = res.data.data ?? []
   } catch {
     ElMessage.error('加载术语列表失败')
   } finally {

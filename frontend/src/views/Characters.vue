@@ -183,7 +183,9 @@ async function fetchChars() {
     const res = await characterApi.list(projectId)
     characters.value = res.data.data || []
     buildGraph()
-  } catch { /* empty */ }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error ?? '加载角色列表失败')
+  }
 }
 
 function selectChar(c: any) {

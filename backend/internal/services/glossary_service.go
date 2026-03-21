@@ -30,7 +30,7 @@ func (s *GlossaryService) List(ctx context.Context, projectID string) ([]models.
 	}
 	defer rows.Close()
 
-	var terms []models.GlossaryTerm
+	terms := []models.GlossaryTerm{}
 	for rows.Next() {
 		var t models.GlossaryTerm
 		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Term, &t.Definition,

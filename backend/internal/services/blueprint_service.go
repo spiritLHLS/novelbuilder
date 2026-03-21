@@ -69,8 +69,14 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 
 请以 JSON 格式返回以下资产：
 
-1. world_bible: 世界观设定（包括世界背景、力量体系、社会结构、地理环境等）
-2. characters: 角色列表，每个角色包含 name, role_type(主角/配角/反派), profile(性格、背景、动机、能力)
+1. world_bible: 世界观设定，必须包含以下字段（均为字符串）：
+   - world_view: 世界观概述
+   - era_background: 时代背景
+   - geography: 地理环境
+   - social_structure: 社会结构
+   - power_system: 力量体系
+   - core_conflict: 核心冲突
+2. characters: 角色列表，每个角色包含 name, role_type(protagonist/supporting/antagonist/mentor/minor), profile(性格、背景、动机、能力等JSON对象)
 3. master_outline: 主线大纲，包含每卷的主题、核心冲突、高潮点
 4. relation_graph: 角色关系图，描述角色间的关系
 5. global_timeline: 全局时间线，重要事件节点

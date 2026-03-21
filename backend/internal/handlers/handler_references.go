@@ -651,7 +651,12 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "no content to analyze: reference has no file and no downloaded chapters"})
 			return
 		}
-		tmpPath := filepath.Join("/data/uploads", "analyze_"+refID+".txt")
+		uploadDir := "/data/uploads"
+		if mkErr := os.MkdirAll(uploadDir, 0o755); mkErr != nil {
+			c.JSON(500, gin.H{"error": "failed to create upload directory: " + mkErr.Error()})
+			return
+		}
+		tmpPath := filepath.Join(uploadDir, "analyze_"+refID+".txt")
 		if writeErr := os.WriteFile(tmpPath, []byte(text), 0o644); writeErr != nil {
 			c.JSON(500, gin.H{"error": "failed to prepare analysis file: " + writeErr.Error()})
 			return
