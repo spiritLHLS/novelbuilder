@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/services"
@@ -46,6 +47,10 @@ type Handler struct {
 	radar                 *services.RadarService
 	deepAnalysis          *services.ReferenceDeepAnalysisService
 	logger                *zap.Logger
+
+	// ragRebuildJobs tracks in-progress / recently completed RAG rebuild tasks
+	// keyed by project ID so they survive page refreshes (server stays up).
+	ragRebuildJobs sync.Map // projectID → *ragRebuildState
 }
 
 func NewHandler(
@@ -208,6 +213,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// RAG knowledge base management
 	api.POST("/projects/:id/rag/rebuild", h.RebuildRAG)
+	api.GET("/projects/:id/rag/rebuild-status", h.GetRebuildRAGStatus)
 	api.GET("/projects/:id/rag/status", h.GetRAGStatus)
 
 	api.POST("/projects/:id/agent-reviews", h.StartAgentReview)

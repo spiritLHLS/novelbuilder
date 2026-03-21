@@ -523,6 +523,14 @@ func (s *ReferenceService) SetFetchStatus(ctx context.Context, id, status string
 	return err
 }
 
+// SetStatus updates the main status field of a reference material (e.g. 'analyzing', 'completed', 'failed').
+func (s *ReferenceService) SetStatus(ctx context.Context, id, status string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE reference_materials SET status=$2 WHERE id=$1`,
+		id, status)
+	return err
+}
+
 // SaveChapter inserts a single downloaded chapter into reference_book_chapters.
 func (s *ReferenceService) SaveChapter(ctx context.Context, refID, chapterID, title, content string, chapterNo int) error {
 	wordCount := len([]rune(content))

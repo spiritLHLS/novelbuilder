@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -635,6 +636,12 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 		return
 	}
 
+	// If already in progress, return immediately so the frontend can keep polling.
+	if ref.Status == "analyzing" {
+		c.JSON(202, gin.H{"ref_id": refID, "status": "analyzing"})
+		return
+	}
+
 	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
 	if sidecarURL == "" {
 		sidecarURL = "http://localhost:8081"
@@ -664,36 +671,50 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 		analysisFilePath = tmpPath
 		tempFilePath = tmpPath
 	}
-	defer func() {
-		if tempFilePath != "" {
-			os.Remove(tempFilePath) //nolint
-		}
-	}()
+
+	// Persist 'analyzing' status immediately so the frontend (and page refresh) can see it.
+	h.references.SetStatus(c.Request.Context(), refID, "analyzing") //nolint
+
+	// Return 202 so the browser is not blocked.
+	c.JSON(202, gin.H{"ref_id": refID, "status": "analyzing"})
+
+	// Background goroutine: call the Python sidecar and update DB on completion.
+	go h.runBackgroundAnalyze(refID, ref.ProjectID, analysisFilePath, tempFilePath, sidecarURL)
+}
+
+// runBackgroundAnalyze performs the actual sidecar call and DB update asynchronously.
+func (h *Handler) runBackgroundAnalyze(refID, projectID, analysisFilePath, tempFilePath, sidecarURL string) {
+	ctx := context.Background()
+	if tempFilePath != "" {
+		defer os.Remove(tempFilePath) //nolint
+	}
 
 	reqBody, _ := json.Marshal(map[string]string{
 		"file_path":   analysisFilePath,
 		"material_id": refID,
-		"project_id":  ref.ProjectID,
+		"project_id":  projectID,
 	})
 
-	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, sidecarURL+"/analyze", bytes.NewReader(reqBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, sidecarURL+"/analyze", bytes.NewReader(reqBody))
 	if err != nil {
-		c.JSON(500, gin.H{"error": "failed to build sidecar request"})
+		h.logger.Error("runBackgroundAnalyze: build request failed", zap.String("ref_id", refID), zap.Error(err))
+		h.references.SetStatus(ctx, refID, "failed") //nolint
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+
 	resp, err := analyzeHTTPClient.Do(httpReq)
 	if resp != nil {
 		defer resp.Body.Close()
 	}
 
 	if err != nil || resp == nil || resp.StatusCode != 200 {
-		h.logger.Warn("Python sidecar unavailable, using AI fallback", zap.Error(err))
+		h.logger.Warn("runBackgroundAnalyze: Python sidecar unavailable, using AI fallback",
+			zap.String("ref_id", refID), zap.Error(err))
 		styleJSON := json.RawMessage(`{"nl_description": "默认风格分析（Python分析服务不可用）"}`)
 		narrativeJSON := json.RawMessage(`{"pov_type": "限制性第三人称"}`)
 		atmosphereJSON := json.RawMessage(`{"tone_descriptions": ["待分析"]}`)
-		h.references.UpdateAnalysis(c.Request.Context(), refID, styleJSON, narrativeJSON, atmosphereJSON)
-		c.JSON(200, gin.H{"status": "completed_fallback", "message": "使用AI回退分析完成"})
+		h.references.UpdateAnalysis(ctx, refID, styleJSON, narrativeJSON, atmosphereJSON) //nolint
 		return
 	}
 
@@ -704,39 +725,109 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 		StyleSamples    []string        `json:"style_samples"`
 		SensorySamples  []string        `json:"sensory_samples"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&analysisResult); err == nil {
-		h.references.UpdateAnalysis(c.Request.Context(), refID,
-			analysisResult.StyleLayer, analysisResult.NarrativeLayer, analysisResult.AtmosphereLayer)
-
-		// Ingest text samples into the vector store (async to avoid blocking the HTTP response).
-		// Use context.Background() — the request context is cancelled once the handler returns.
-		go func() {
-			if ingestErr := h.references.IngestSamples(
-				context.Background(), ref.ProjectID, refID,
-				analysisResult.StyleSamples, analysisResult.SensorySamples,
-			); ingestErr != nil {
-				h.logger.Warn("RAG ingest failed", zap.String("ref_id", refID), zap.Error(ingestErr))
-			}
-		}()
+	if err := json.NewDecoder(resp.Body).Decode(&analysisResult); err != nil {
+		h.logger.Error("runBackgroundAnalyze: decode failed", zap.String("ref_id", refID), zap.Error(err))
+		h.references.SetStatus(ctx, refID, "failed") //nolint
+		return
 	}
 
-	c.JSON(200, gin.H{
-		"status":          "completed",
-		"style_samples":   len(analysisResult.StyleSamples),
-		"sensory_samples": len(analysisResult.SensorySamples),
-	})
+	h.references.UpdateAnalysis(ctx, refID,
+		analysisResult.StyleLayer, analysisResult.NarrativeLayer, analysisResult.AtmosphereLayer) //nolint
+
+	// Ingest text samples into the vector store asynchronously.
+	go func() {
+		if ingestErr := h.references.IngestSamples(
+			ctx, projectID, refID,
+			analysisResult.StyleSamples, analysisResult.SensorySamples,
+		); ingestErr != nil {
+			h.logger.Warn("RAG ingest failed", zap.String("ref_id", refID), zap.Error(ingestErr))
+		}
+	}()
+}
+
+// ragRebuildState holds the mutable state of a single RAG rebuild job.
+// Access is guarded by mu so goroutine writes are safely visible to HTTP reads.
+type ragRebuildState struct {
+	mu      sync.Mutex
+	status  string // "running" | "completed" | "failed"
+	rebuilt int
+	errMsg  string
+}
+
+func (s *ragRebuildState) markDone(rebuilt int) {
+	s.mu.Lock()
+	s.status = "completed"
+	s.rebuilt = rebuilt
+	s.mu.Unlock()
+}
+
+func (s *ragRebuildState) markFailed(msg string) {
+	s.mu.Lock()
+	s.status = "failed"
+	s.errMsg = msg
+	s.mu.Unlock()
+}
+
+func (s *ragRebuildState) snapshot() (status string, rebuilt int, errMsg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.status, s.rebuilt, s.errMsg
 }
 
 // ── RAG knowledge-base handlers ───────────────────────────────────────────────
 
+// RebuildRAG starts a background goroutine to re-index all project vectors and
+// returns 202 immediately. The frontend should poll GET /projects/:id/rag/rebuild-status.
 func (h *Handler) RebuildRAG(c *gin.Context) {
 	projectID := c.Param("id")
-	rebuilt, err := h.references.RebuildProject(c.Request.Context(), projectID)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+
+	// If a rebuild is already running for this project, return its current status.
+	if v, ok := h.ragRebuildJobs.Load(projectID); ok {
+		job := v.(*ragRebuildState)
+		status, rebuilt, errMsg := job.snapshot()
+		if status == "running" {
+			c.JSON(202, gin.H{"status": "running", "project_id": projectID})
+			return
+		}
+		// Previous run finished — a new click should start a fresh rebuild.
+		_ = rebuilt
+		_ = errMsg
+	}
+
+	job := &ragRebuildState{status: "running"}
+	h.ragRebuildJobs.Store(projectID, job)
+
+	// Respond immediately so the browser is not blocked.
+	c.JSON(202, gin.H{"status": "running", "project_id": projectID})
+
+	go func() {
+		rebuilt, err := h.references.RebuildProject(context.Background(), projectID)
+		if err != nil {
+			h.logger.Error("RebuildRAG background failed",
+				zap.String("project_id", projectID), zap.Error(err))
+			job.markFailed(err.Error())
+		} else {
+			h.logger.Info("RebuildRAG background completed",
+				zap.String("project_id", projectID), zap.Int("rebuilt", rebuilt))
+			job.markDone(rebuilt)
+		}
+	}()
+}
+
+// GetRebuildRAGStatus returns the current state of the most recent rebuild job.
+func (h *Handler) GetRebuildRAGStatus(c *gin.Context) {
+	projectID := c.Param("id")
+	if v, ok := h.ragRebuildJobs.Load(projectID); ok {
+		job := v.(*ragRebuildState)
+		status, rebuilt, errMsg := job.snapshot()
+		c.JSON(200, gin.H{
+			"status":          status,
+			"rebuilt_sources": rebuilt,
+			"error":           errMsg,
+		})
 		return
 	}
-	c.JSON(200, gin.H{"rebuilt_sources": rebuilt, "project_id": projectID})
+	c.JSON(200, gin.H{"status": "idle"})
 }
 
 func (h *Handler) GetRAGStatus(c *gin.Context) {

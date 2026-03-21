@@ -42,7 +42,6 @@
         </div>
         <el-button
           type="primary"
-          :loading="rebuilding"
           :icon="Refresh"
           @click="handleRebuild"
         >
@@ -68,6 +67,7 @@
             <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
+
         <el-table-column label="样本缓存" width="100">
           <template #default="{ row }">
             <el-icon v-if="row.sample_texts" color="#67c23a"><CircleCheck /></el-icon>
@@ -80,7 +80,7 @@
               v-if="row.status !== 'completed'"
               size="small"
               type="primary"
-              :loading="analyzingId === row.id"
+              :loading="analyzingId === row.id || row.status === 'analyzing'"
               @click="handleAnalyze(row)"
             >
               分析
@@ -88,7 +88,7 @@
             <el-button
               v-else
               size="small"
-              :loading="analyzingId === row.id"
+              :loading="analyzingId === row.id || row.status === 'analyzing'"
               @click="handleAnalyze(row)"
             >
               重析
@@ -99,13 +99,47 @@
     </el-card>
 
   </div>
+
+  <!-- Rebuild progress dialog -->
+  <el-dialog
+    v-model="rebuildDialogVisible"
+    title="重建知识库索引"
+    width="420px"
+    :close-on-click-modal="false"
+    :close-on-press-escape="false"
+    :show-close="rebuildJobStatus !== 'running'"
+    @close="onRebuildDialogClose"
+  >
+    <div class="rebuild-progress">
+      <template v-if="rebuildJobStatus === 'running'">
+        <el-icon class="spinning" style="font-size:32px"><Loading /></el-icon>
+        <p>正在后台重建索引，刷新页面不影响执行进度…</p>
+      </template>
+      <template v-else-if="rebuildJobStatus === 'completed'">
+        <el-icon color="#67c23a" style="font-size:32px"><CircleCheck /></el-icon>
+        <p>索引重建完成，已同步 <strong>{{ rebuildSources }}</strong> 条参考书。</p>
+      </template>
+      <template v-else-if="rebuildJobStatus === 'failed'">
+        <el-icon color="#f56c6c" style="font-size:32px"><CircleClose /></el-icon>
+        <p>重建失败：{{ rebuildError || '请检查 Embedding API 配置' }}</p>
+      </template>
+    </div>
+    <template #footer>
+      <el-button
+        v-if="rebuildJobStatus !== 'running'"
+        type="primary"
+        @click="onRebuildDialogClose"
+      >关闭</el-button>
+    </template>
+  </el-dialog>
+
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
+import { Refresh, CircleCheck, CircleClose, Loading } from '@element-plus/icons-vue'
 import { ragApi, referenceApi } from '@/api/index'
 
 const route = useRoute()
@@ -115,9 +149,19 @@ const totalChunks = ref(0)
 const collections = ref<{ collection: string; count: number }[]>([])
 const references = ref<any[]>([])
 const loadingRefs = ref(false)
-const rebuilding = ref(false)
 const analyzingId = ref<string | null>(null)
-const embeddingConfigured = ref(true) // optimistic; sidecar /embed returns 503 if not
+const embeddingConfigured = ref(true)
+
+// Rebuild dialog state
+const rebuildDialogVisible = ref(false)
+const rebuildJobStatus = ref<'running' | 'completed' | 'failed' | 'idle'>('idle')
+const rebuildSources = ref(0)
+const rebuildError = ref('')
+
+let rebuildPoller: ReturnType<typeof setInterval> | null = null
+let analyzePoller: ReturnType<typeof setInterval> | null = null
+
+const REBUILD_STORAGE_KEY = computed(() => `rag_rebuild_${projectId.value}`)
 
 function collectionLabel(col: string): string {
   const map: Record<string, string> = {
@@ -130,6 +174,7 @@ function collectionLabel(col: string): string {
 function statusLabel(status: string): string {
   const map: Record<string, string> = {
     processing: '处理中',
+    analyzing: '分析中',
     completed: '已完成',
     failed: '失败',
   }
@@ -137,7 +182,10 @@ function statusLabel(status: string): string {
 }
 
 function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
-  return status === 'completed' ? 'success' : status === 'failed' ? 'danger' : 'warning'
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'analyzing') return 'warning'
+  return 'warning'
 }
 
 async function loadStatus() {
@@ -160,39 +208,158 @@ async function loadReferences() {
   }
 }
 
+// ── Rebuild index ─────────────────────────────────────────────────────
+
 async function handleRebuild() {
-  rebuilding.value = true
   try {
-    const res = await ragApi.rebuild(projectId.value)
-    const count = res.data.rebuilt_sources ?? 0
-    ElMessage.success(`索引重建完成，已同步 ${count} 条参考书`)
-    await loadStatus()
+    await ragApi.rebuild(projectId.value)
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error ?? '重建失败，请检查 Embedding API 配置')
+    ElMessage.error(e?.response?.data?.error ?? '启动重建失败，请检查 Embedding API 配置')
     embeddingConfigured.value = false
-  } finally {
-    rebuilding.value = false
+    return
+  }
+
+  // Persist job marker so we survive page refresh
+  localStorage.setItem(REBUILD_STORAGE_KEY.value, Date.now().toString())
+
+  rebuildJobStatus.value = 'running'
+  rebuildError.value = ''
+  rebuildSources.value = 0
+  rebuildDialogVisible.value = true
+
+  startRebuildPoller()
+}
+
+function startRebuildPoller() {
+  stopRebuildPoller()
+  rebuildPoller = setInterval(async () => {
+    try {
+      const res = await ragApi.rebuildStatus(projectId.value)
+      const { status, rebuilt_sources, error } = res.data
+
+      rebuildJobStatus.value = status
+      if (status === 'completed') {
+        rebuildSources.value = rebuilt_sources ?? 0
+        stopRebuildPoller()
+        localStorage.removeItem(REBUILD_STORAGE_KEY.value)
+        await loadStatus()
+      } else if (status === 'failed') {
+        rebuildError.value = error ?? ''
+        stopRebuildPoller()
+        localStorage.removeItem(REBUILD_STORAGE_KEY.value)
+        embeddingConfigured.value = false
+      }
+    } catch {
+      // transient network error — keep polling
+    }
+  }, 2000)
+}
+
+function stopRebuildPoller() {
+  if (rebuildPoller !== null) {
+    clearInterval(rebuildPoller)
+    rebuildPoller = null
   }
 }
 
+function onRebuildDialogClose() {
+  stopRebuildPoller()
+  rebuildDialogVisible.value = false
+  localStorage.removeItem(REBUILD_STORAGE_KEY.value)
+}
+
+// On mount: recover rebuild job state from localStorage (page was refreshed mid-job)
+async function recoverRebuildJob() {
+  const marker = localStorage.getItem(REBUILD_STORAGE_KEY.value)
+  if (!marker) return
+
+  try {
+    const res = await ragApi.rebuildStatus(projectId.value)
+    const { status } = res.data
+    if (status === 'running') {
+      rebuildJobStatus.value = 'running'
+      rebuildDialogVisible.value = true
+      startRebuildPoller()
+    } else {
+      // Job finished (or server restarted) — clear marker silently
+      localStorage.removeItem(REBUILD_STORAGE_KEY.value)
+    }
+  } catch {
+    localStorage.removeItem(REBUILD_STORAGE_KEY.value)
+  }
+}
+
+// ── Analyze reference ─────────────────────────────────────────────────
+
 async function handleAnalyze(ref: any) {
+  if (analyzingId.value === ref.id || ref.status === 'analyzing') return
+
   analyzingId.value = ref.id
   try {
-    const res = await referenceApi.analyze(ref.id)
-    const d = res.data
-    ElMessage.success(
-      `分析完成：风格样本 ${d.style_samples ?? 0} 条，感官片段 ${d.sensory_samples ?? 0} 条，已自动入库`,
-    )
-    await Promise.all([loadReferences(), loadStatus()])
+    await referenceApi.analyze(ref.id)
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.error ?? '分析失败')
-  } finally {
     analyzingId.value = null
+    return
+  }
+
+  // Backend returned 202 — update local row status immediately for visual feedback
+  const row = references.value.find(r => r.id === ref.id)
+  if (row) row.status = 'analyzing'
+
+  startAnalyzePoller(ref.id)
+}
+
+function startAnalyzePoller(targetId: string) {
+  stopAnalyzePoller()
+  analyzePoller = setInterval(async () => {
+    try {
+      const res = await referenceApi.list(projectId.value)
+      const list: any[] = res.data.data ?? []
+      references.value = list
+
+      const target = list.find(r => r.id === targetId)
+      if (!target || target.status !== 'analyzing') {
+        stopAnalyzePoller()
+        analyzingId.value = null
+        if (target?.status === 'completed') {
+          ElMessage.success('分析完成，样本已入库')
+          await loadStatus()
+        } else if (target?.status === 'failed') {
+          ElMessage.error('分析失败，请重试')
+        }
+      }
+    } catch {
+      // transient — keep polling
+    }
+  }, 2500)
+}
+
+function stopAnalyzePoller() {
+  if (analyzePoller !== null) {
+    clearInterval(analyzePoller)
+    analyzePoller = null
+  }
+}
+
+// On mount: if any reference is still 'analyzing' (e.g. after page refresh), resume polling
+function recoverAnalyzeJob() {
+  const pending = references.value.find(r => r.status === 'analyzing')
+  if (pending) {
+    analyzingId.value = pending.id
+    startAnalyzePoller(pending.id)
   }
 }
 
 onMounted(async () => {
   await Promise.all([loadStatus(), loadReferences()])
+  await recoverRebuildJob()
+  recoverAnalyzeJob()
+})
+
+onUnmounted(() => {
+  stopRebuildPoller()
+  stopAnalyzePoller()
 })
 </script>
 
@@ -278,5 +445,27 @@ code {
   border-radius: 3px;
   font-size: 12px;
   color: var(--nb-success);
+}
+
+.rebuild-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 0;
+  text-align: center;
+}
+
+.rebuild-progress p {
+  color: var(--nb-text-primary, #e0e0e0);
+  font-size: 14px;
+  margin: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.spinning {
+  animation: spin 1s linear infinite;
 }
 </style>

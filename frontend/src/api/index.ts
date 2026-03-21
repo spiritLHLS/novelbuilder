@@ -421,6 +421,7 @@ export const llmProfileApi = {
 export const ragApi = {
   getStatus: (projectId: string) => api.get(`/projects/${projectId}/rag/status`),
   rebuild: (projectId: string) => api.post(`/projects/${projectId}/rag/rebuild`),
+  rebuildStatus: (projectId: string) => api.get(`/projects/${projectId}/rag/rebuild-status`),
 }
 
 export const propagationApi = {
