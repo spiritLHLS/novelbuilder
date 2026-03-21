@@ -594,7 +594,15 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 	chunkSz := chunkSize // default fallback (80_000 chars)
 	if llmCfg != nil {
 		if model, ok := llmCfg["model"].(string); ok && model != "" {
-			chunkSz = computeChunkChars(model, 4096)
+			// Resolve effective output budget:
+			// 1. Start from the model's hard maximum (e.g. 64K for deepseek-reasoner).
+			// 2. If the profile has a configured max_tokens, use whichever is larger
+			//    so that reasoning models always get their full output capacity.
+			maxOut := modelMaxOutputTokens(model)
+			if mt, ok := llmCfg["max_tokens"].(int); ok && mt > maxOut {
+				maxOut = mt
+			}
+			chunkSz = computeChunkChars(model, maxOut)
 		}
 	}
 
@@ -883,18 +891,36 @@ func (s *ReferenceDeepAnalysisService) mergeChunks(
 }
 
 // buildPriorContext extracts a compact list of entity names already found in
-// completed chunks.  Passed to subsequent chunks so the LLM skips known entities
-// and only extracts new ones (or supplements existing ones with fresh details).
+// completed chunks. A sliding window of the last windowSize chunks is used so
+// the hint stays bounded even for very long novels. Per-category caps and a
+// total byte budget provide an additional safety net.
+//
+// Only names are included (no descriptions) to minimise prompt bloat.
 func buildPriorContext(completed []chunkResult) map[string]interface{} {
+	const (
+		windowSize = 8    // look back at most this many completed chunks
+		maxChars   = 30   // max character entries
+		maxLocs    = 20   // max location entries
+		maxSystems = 10   // max system/power entries
+		maxGloss   = 40   // max glossary term entries
+		maxTotalB  = 2000 // hard byte budget for the whole prior context payload
+	)
 	if len(completed) == 0 {
 		return nil
 	}
+
+	// Sliding window: only inspect the most recent chunks.
+	window := completed
+	if len(window) > windowSize {
+		window = window[len(window)-windowSize:]
+	}
+
 	charSet := map[string]bool{}
 	locSet := map[string]bool{}
 	sysSet := map[string]bool{}
 	glossSet := map[string]bool{}
 
-	for _, r := range completed {
+	for _, r := range window {
 		if r == nil {
 			continue
 		}
@@ -941,34 +967,44 @@ func buildPriorContext(completed []chunkResult) map[string]interface{} {
 		}
 	}
 
-	toSlice := func(set map[string]bool) []string {
+	capSlice := func(set map[string]bool, limit int) []string {
 		s := make([]string, 0, len(set))
 		for k := range set {
 			s = append(s, k)
 		}
 		sort.Strings(s)
+		if len(s) > limit {
+			s = s[:limit]
+		}
 		return s
 	}
 
 	ctx := map[string]interface{}{}
 	if len(charSet) > 0 {
-		ctx["characters"] = toSlice(charSet)
+		ctx["characters"] = capSlice(charSet, maxChars)
 	}
 	if len(locSet) > 0 {
-		ctx["locations"] = toSlice(locSet)
+		ctx["locations"] = capSlice(locSet, maxLocs)
 	}
 	if len(sysSet) > 0 {
-		ctx["systems"] = toSlice(sysSet)
+		ctx["systems"] = capSlice(sysSet, maxSystems)
 	}
 	if len(glossSet) > 0 {
-		g := toSlice(glossSet)
-		if len(g) > 80 { // cap to avoid bloating the prompt
-			g = g[:80]
-		}
-		ctx["glossary"] = g
+		ctx["glossary"] = capSlice(glossSet, maxGloss)
 	}
 	if len(ctx) == 0 {
 		return nil
+	}
+
+	// Final byte-budget guard: if the serialized payload is too large, drop
+	// lower-priority categories until it fits.
+	encoded, _ := json.Marshal(ctx)
+	if len(encoded) > maxTotalB {
+		delete(ctx, "glossary")
+		encoded, _ = json.Marshal(ctx)
+	}
+	if len(encoded) > maxTotalB {
+		delete(ctx, "locations")
 	}
 	return ctx
 }
@@ -1025,8 +1061,12 @@ func modelContextTokens(m string) int {
 		return 8_192
 	case strings.Contains(m, "gpt-3.5"):
 		return 16_385
+	case strings.Contains(m, "deepseek-reasoner"):
+		return 128_000
 	case strings.Contains(m, "deepseek-r1"):
 		return 65_536
+	case strings.Contains(m, "deepseek-chat"):
+		return 128_000
 	case strings.Contains(m, "deepseek"):
 		return 65_536
 	case strings.Contains(m, "claude-3"):
@@ -1040,12 +1080,31 @@ func modelContextTokens(m string) int {
 	}
 }
 
+// modelMaxOutputTokens returns the hard maximum output token limit for a model.
+// Used to clamp the configured max_tokens so it never exceeds what the API allows,
+// and to set a sensible floor when the user hasn't explicitly configured a value.
+func modelMaxOutputTokens(m string) int {
+	m = strings.ToLower(m)
+	switch {
+	case strings.Contains(m, "deepseek-reasoner"):
+		return 64_000 // DeepSeek-Reasoner max output
+	case strings.Contains(m, "deepseek-chat"):
+		return 8_000 // DeepSeek-V3 max output
+	case strings.Contains(m, "deepseek-r1"):
+		return 32_000
+	default:
+		return 8_192
+	}
+}
+
 // computeChunkChars returns the number of characters per analysis chunk, sized to fit
 // inside the model's input window minus the output budget and prompt overhead.
 // Assumes ~1.5 chars/token for Chinese prose (conservative).
 func computeChunkChars(modelName string, maxOutputTokens int) int {
 	ctxTokens := modelContextTokens(modelName)
-	promptOverhead := 800 // tokens for system prompt + JSON formatting
+	// promptOverhead covers: system message + JSON schema template (~500 tokens)
+	// + prior_context hint block (~600 tokens worst case) + extraction rules (~300 tokens)
+	promptOverhead := 1400
 	available := ctxTokens - maxOutputTokens - promptOverhead
 	if available < 2000 {
 		available = 2000

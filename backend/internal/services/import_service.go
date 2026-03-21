@@ -184,6 +184,27 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 	if maxTokens != nil {
 		cfg["max_tokens"] = *maxTokens
 	}
+	// For reasoning models (deepseek-reasoner, o1, o3 etc.) the default DB value of
+	// 8192 is far below the model's actual maximum.  Override upward so callers
+	// automatically get the full output capacity without requiring manual UI edits.
+	if model != nil {
+		m := strings.ToLower(*model)
+		modelCap := 0
+		switch {
+		case strings.Contains(m, "deepseek-reasoner"):
+			modelCap = 64_000
+		case strings.Contains(m, "deepseek-r1"):
+			modelCap = 32_000
+		case strings.Contains(m, "o1"), strings.Contains(m, "o3"):
+			modelCap = 100_000
+		}
+		if modelCap > 0 {
+			current, _ := cfg["max_tokens"].(int)
+			if current < modelCap {
+				cfg["max_tokens"] = modelCap
+			}
+		}
+	}
 	if rpmLimit != nil {
 		cfg["rpm_limit"] = *rpmLimit
 	}
