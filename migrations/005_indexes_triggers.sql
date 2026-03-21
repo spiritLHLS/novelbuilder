@@ -4,18 +4,18 @@
 -- General Indexes
 -- ============================================================
 
-CREATE INDEX idx_workflow_steps_run_order ON workflow_steps(run_id, step_order);
-CREATE INDEX idx_workflow_steps_status ON workflow_steps(status);
-CREATE INDEX idx_chapters_project_status ON chapters(project_id, status);
-CREATE INDEX idx_volumes_project_status ON volumes(project_id, status);
-CREATE INDEX idx_outlines_project ON outlines(project_id);
-CREATE INDEX idx_characters_project ON characters(project_id);
-CREATE INDEX idx_foreshadowings_project ON foreshadowings(project_id);
-CREATE INDEX idx_reference_materials_project ON reference_materials(project_id);
-CREATE INDEX idx_world_bibles_project ON world_bibles(project_id);
-CREATE INDEX idx_world_bible_constitutions_project ON world_bible_constitutions(project_id);
-CREATE INDEX idx_book_blueprints_project ON book_blueprints(project_id);
-CREATE INDEX idx_chapters_project_num ON chapters(project_id, chapter_num);
+CREATE INDEX idx_workflow_steps_run_order             ON workflow_steps(run_id, step_order);
+CREATE INDEX idx_workflow_steps_status                ON workflow_steps(status);
+CREATE INDEX idx_chapters_project_status              ON chapters(project_id, status);
+CREATE INDEX idx_volumes_project_status               ON volumes(project_id, status);
+CREATE INDEX idx_outlines_project                     ON outlines(project_id);
+CREATE INDEX idx_characters_project                   ON characters(project_id);
+CREATE INDEX idx_foreshadowings_project               ON foreshadowings(project_id);
+CREATE INDEX idx_reference_materials_project          ON reference_materials(project_id);
+CREATE INDEX idx_world_bibles_project                 ON world_bibles(project_id);
+CREATE INDEX idx_world_bible_constitutions_project    ON world_bible_constitutions(project_id);
+CREATE INDEX idx_book_blueprints_project              ON book_blueprints(project_id);
+CREATE INDEX idx_chapters_project_num                 ON chapters(project_id, chapter_num);
 
 -- Deferred FK constraints for foreshadowings (chapters table created later)
 ALTER TABLE foreshadowings

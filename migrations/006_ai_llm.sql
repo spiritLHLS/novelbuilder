@@ -59,16 +59,8 @@ CREATE TABLE llm_profiles (
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_profiles_single_default ON llm_profiles (is_default) WHERE (is_default = TRUE);
-CREATE INDEX IF NOT EXISTS idx_llm_profiles_is_default ON llm_profiles (is_default);
-
--- Idempotent ADD COLUMN guards for existing databases that ran the original 007
--- before rpm_limit / omit_* / api_style columns were added .
-ALTER TABLE llm_profiles
-    ADD COLUMN IF NOT EXISTS rpm_limit        INT         NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS omit_max_tokens  BOOLEAN     NOT NULL DEFAULT false,
-    ADD COLUMN IF NOT EXISTS omit_temperature BOOLEAN     NOT NULL DEFAULT false,
-    ADD COLUMN IF NOT EXISTS api_style        VARCHAR(50) NOT NULL DEFAULT 'chat_completions';
+CREATE UNIQUE INDEX idx_llm_profiles_single_default ON llm_profiles (is_default) WHERE (is_default = TRUE);
+CREATE INDEX idx_llm_profiles_is_default ON llm_profiles (is_default);
 
 -- ============================================================
 -- Per-Agent Model Routing
@@ -78,11 +70,13 @@ ALTER TABLE llm_profiles
 
 CREATE TABLE agent_model_routes (
     id             UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_type     VARCHAR(50)  NOT NULL,  -- writer|auditor|planner|reviser|radar|moderator
+    agent_type     VARCHAR(50)  NOT NULL,
     llm_profile_id UUID         REFERENCES llm_profiles(id) ON DELETE SET NULL,
     project_id     UUID         REFERENCES projects(id) ON DELETE CASCADE,
     created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT agent_model_routes_agent_type_check
+        CHECK (agent_type IN ('writer','auditor','planner','reviser','radar','moderator','reference_analyzer'))
 );
 
 -- Partial unique indexes to handle NULL project_id correctly

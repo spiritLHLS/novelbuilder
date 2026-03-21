@@ -1,4 +1,4 @@
--- 012_genre_templates.sql
+-- 011_genre_templates.sql
 -- Per-genre writing rule templates injected into chapter-generation system prompts.
 
 CREATE TABLE IF NOT EXISTS genre_templates (

@@ -22,7 +22,9 @@ CREATE TABLE projects (
 );
 
 CREATE TABLE reference_materials (
-    id              UUID PR    id              UUID PR    id              UUID PR    id      REN    id              UUID PR    id       title           VARCHAR(200),
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id      UUID REFERENCES projects(id) ON DELETE CASCADE,
+    title           VARCHAR(200),
     author          VARCHAR(100),
     genre           VARCHAR(50),
     file_path       VARCHAR(500),
