@@ -27,13 +27,13 @@
             <div class="card-header">
               <span>{{ selected.name }} 详情</span>
               <div>
-                <el-button text type="primary" @click="editMode = true">编辑</el-button>
+                <el-button text type="primary" @click="openEditDialog">编辑</el-button>
                 <el-button text type="danger" @click="deleteChar">删除</el-button>
               </div>
             </div>
           </template>
 
-          <template v-if="!editMode">
+          <template v-if="true">
             <el-descriptions :column="2" border>
               <el-descriptions-item label="名称">{{ selected.name }}</el-descriptions-item>
               <el-descriptions-item label="角色定位">{{ selected.role_type }}</el-descriptions-item>
@@ -56,51 +56,6 @@
                 <strong>{{ name }}</strong>: {{ rel }}
               </div>
             </div>
-          </template>
-
-          <template v-else>
-            <el-form :model="editForm" label-position="top">
-              <el-row :gutter="16">
-                <el-col :span="12">
-                  <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
-                </el-col>
-                <el-col :span="12">
-                  <el-form-item label="角色定位">
-                    <el-select v-model="editForm.role_type" style="width: 100%;">
-                      <el-option label="主角" value="protagonist" />
-                      <el-option label="配角" value="supporting" />
-                      <el-option label="反派" value="antagonist" />
-                      <el-option label="导师" value="mentor" />
-                      <el-option label="龙套" value="minor" />
-                    </el-select>
-                  </el-form-item>
-                </el-col>
-              </el-row>
-              <el-row :gutter="16">
-                <el-col :span="12">
-                  <el-form-item label="年龄"><el-input v-model="editForm.age" /></el-form-item>
-                </el-col>
-                <el-col :span="12">
-                  <el-form-item label="性别"><el-input v-model="editForm.gender" /></el-form-item>
-                </el-col>
-              </el-row>
-              <el-form-item label="背景故事">
-                <el-input v-model="editForm.backstory" type="textarea" :rows="4" />
-              </el-form-item>
-              <el-form-item label="性格特征（逗号分隔）">
-                <el-input v-model="editForm.personality_str" placeholder="勇敢, 固执, 善良" />
-              </el-form-item>
-              <el-form-item label="动机">
-                <el-input v-model="editForm.motivation" type="textarea" :rows="2" />
-              </el-form-item>
-              <el-form-item label="成长弧线">
-                <el-input v-model="editForm.growth_arc" type="textarea" :rows="2" />
-              </el-form-item>
-              <el-form-item>
-                <el-button type="primary" @click="saveEdit">保存</el-button>
-                <el-button @click="editMode = false">取消</el-button>
-              </el-form-item>
-            </el-form>
           </template>
         </el-card>
 
@@ -143,6 +98,52 @@
         <el-button type="primary" @click="createChar" :loading="creating">创建</el-button>
       </template>
     </el-dialog>
+
+    <!-- Edit Dialog -->
+    <el-dialog v-model="showEditDlg" title="编辑角色" width="600px" :close-on-click-modal="false">
+      <el-form :model="editForm" label-position="top">
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="名称"><el-input v-model="editForm.name" /></el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="角色定位">
+              <el-select v-model="editForm.role_type" style="width: 100%;">
+                <el-option label="主角" value="protagonist" />
+                <el-option label="配角" value="supporting" />
+                <el-option label="反派" value="antagonist" />
+                <el-option label="导师" value="mentor" />
+                <el-option label="龙套" value="minor" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="年龄"><el-input v-model="editForm.age" /></el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="性别"><el-input v-model="editForm.gender" /></el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="背景故事">
+          <el-input v-model="editForm.backstory" type="textarea" :rows="4" />
+        </el-form-item>
+        <el-form-item label="性格特征（逗号分隔）">
+          <el-input v-model="editForm.personality_str" placeholder="勇敢, 固执, 善良" />
+        </el-form-item>
+        <el-form-item label="动机">
+          <el-input v-model="editForm.motivation" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="成长弧线">
+          <el-input v-model="editForm.growth_arc" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showEditDlg = false">取消</el-button>
+        <el-button type="primary" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -162,6 +163,7 @@ const characters = ref<any[]>([])
 const selected = ref<any>(null)
 const editMode = ref(false)
 const showCreateDialog = ref(false)
+const showEditDlg = ref(false)
 const creating = ref(false)
 
 const createForm = ref({ name: '', role: 'supporting', backstory: '', personality_str: '' })
@@ -187,10 +189,13 @@ async function fetchChars() {
 function selectChar(c: any) {
   selected.value = c
   editMode.value = false
-  const p = c.profile || {}
+}
+
+function openEditDialog() {
+  const p = selected.value?.profile || {}
   editForm.value = {
-    name: c.name,
-    role_type: c.role_type,
+    name: selected.value.name,
+    role_type: selected.value.role_type,
     backstory: p.backstory || '',
     age: p.age || '',
     gender: p.gender || '',
@@ -198,6 +203,7 @@ function selectChar(c: any) {
     growth_arc: p.growth_arc || '',
     personality_str: (p.personality_traits || []).join(', '),
   }
+  showEditDlg.value = true
 }
 
 function showCreate() {
@@ -242,7 +248,7 @@ async function saveEdit() {
       },
     })
     ElMessage.success('角色已更新')
-    editMode.value = false
+    showEditDlg.value = false
     await fetchChars()
     const updated = characters.value.find(c => c.id === selected.value.id)
     if (updated) selected.value = updated

@@ -65,6 +65,7 @@ export const outlineApi = {
 export const foreshadowingApi = {
   list: (projectId: string) => api.get(`/projects/${projectId}/foreshadowings`),
   create: (projectId: string, data: any) => api.post(`/projects/${projectId}/foreshadowings`, data),
+  update: (_projectId: string, id: string, data: any) => api.put(`/foreshadowings/${id}`, data),
   updateStatus: (_projectId: string, id: string, status: string) => api.put(`/foreshadowings/${id}/status`, { status }),
   delete: (_projectId: string, id: string) => api.delete(`/foreshadowings/${id}`),
 }

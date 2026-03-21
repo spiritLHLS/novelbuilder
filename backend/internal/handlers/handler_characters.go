@@ -172,6 +172,26 @@ func (h *Handler) UpdateForeshadowingStatus(c *gin.Context) {
 	c.JSON(200, gin.H{"status": body.Status})
 }
 
+func (h *Handler) UpdateForeshadowing(c *gin.Context) {
+	var body struct {
+		Content     string   `json:"content"`
+		EmbedMethod string   `json:"embed_method"`
+		Tags        []string `json:"tags"`
+		Priority    int      `json:"priority"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	f, err := h.foreshadowings.Update(c.Request.Context(), c.Param("id"),
+		body.Content, body.EmbedMethod, body.Tags, body.Priority)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": f})
+}
+
 func (h *Handler) DeleteForeshadowing(c *gin.Context) {
 	if err := h.foreshadowings.Delete(c.Request.Context(), c.Param("id")); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})

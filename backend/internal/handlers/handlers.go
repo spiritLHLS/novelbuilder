@@ -158,6 +158,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/projects/:id/foreshadowings", h.ListForeshadowings)
 	api.POST("/projects/:id/foreshadowings", h.CreateForeshadowing)
 	api.PUT("/foreshadowings/:id/status", h.UpdateForeshadowingStatus)
+	api.PUT("/foreshadowings/:id", h.UpdateForeshadowing)
 	api.DELETE("/foreshadowings/:id", h.DeleteForeshadowing)
 
 	api.GET("/projects/:id/volumes", h.ListVolumes)

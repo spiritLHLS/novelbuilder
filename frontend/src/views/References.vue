@@ -394,13 +394,39 @@
                 <div class="da-result-scroll">
                   <div v-if="daOutline.length > 0">
                     <div v-for="(node, idx) in daOutline" :key="idx" class="da-outline-item"
-                      :class="node.level === 2 ? 'da-outline-sub' : ''">
+                      :class="node.level === 'meso' ? 'da-outline-sub' : node.level === 'micro' ? 'da-outline-sub2' : ''">
                       <span class="da-outline-idx">{{ idx + 1 }}.</span>
                       <span class="da-outline-title">{{ node.title }}</span>
-                      <span class="da-outline-summary" v-if="node.summary">— {{ node.summary }}</span>
+                      <span class="da-outline-summary" v-if="node.summary || node.key_events">— {{ node.summary || node.key_events }}</span>
                     </div>
                   </div>
                   <el-empty v-else description="未提取到大纲信息" />
+                </div>
+              </el-tab-pane>
+              <el-tab-pane :label="`术语（${daGlossary.length} 条）`">
+                <div class="da-result-scroll">
+                  <div v-if="daGlossary.length > 0">
+                    <div v-for="(term, idx) in daGlossary" :key="idx" class="da-outline-item">
+                      <el-tag size="small" type="info" style="margin-right:8px">{{ term.category || '概念' }}</el-tag>
+                      <strong>{{ term.term }}</strong>
+                      <span class="da-outline-summary" v-if="term.definition"> — {{ term.definition }}</span>
+                    </div>
+                  </div>
+                  <el-empty v-else description="未提取到术语信息" />
+                </div>
+              </el-tab-pane>
+              <el-tab-pane :label="`伏笔（${daForeshadowings.length} 条）`">
+                <div class="da-result-scroll">
+                  <div v-if="daForeshadowings.length > 0">
+                    <div v-for="(fs, idx) in daForeshadowings" :key="idx" class="da-outline-item">
+                      <span class="da-outline-idx">{{ idx + 1 }}.</span>
+                      <span class="da-outline-title">{{ fs.content }}</span>
+                      <div v-if="fs.related_characters?.length" style="margin-left:20px;margin-top:4px">
+                        <el-tag v-for="c in fs.related_characters" :key="c" size="small" style="margin:2px">{{ c }}</el-tag>
+                      </div>
+                    </div>
+                  </div>
+                  <el-empty v-else description="未提取到伏笔信息" />
                 </div>
               </el-tab-pane>
             </el-tabs>
@@ -541,6 +567,18 @@ const daOutline = computed<any[]>(() => {
   try { return Array.isArray(raw) ? raw : JSON.parse(raw) } catch { return [] }
 })
 
+const daGlossary = computed<any[]>(() => {
+  const raw = deepAnalysisJob.value?.extracted_glossary
+  if (!raw) return []
+  try { return Array.isArray(raw) ? raw : JSON.parse(raw) } catch { return [] }
+})
+
+const daForeshadowings = computed<any[]>(() => {
+  const raw = deepAnalysisJob.value?.extracted_foreshadowings
+  if (!raw) return []
+  try { return Array.isArray(raw) ? raw : JSON.parse(raw) } catch { return [] }
+})
+
 function roleTagType(role: string): string {
   const r = (role || '').toLowerCase()
   if (r.includes('主角') || r === 'protagonist') return 'success'
@@ -619,7 +657,7 @@ async function importDeepAnalysisResult() {
   deepAnalysisImporting.value = true
   try {
     await referenceApi.importDeepAnalysisResult(deepAnalysisRef.value.id)
-    ElMessage.success('已成功导入到项目（人物、世界观、大纲），请到对应页面查看')
+    ElMessage.success('已成功导入到项目（人物、世界观、大纲、术语表、伏笔），请到对应页面查看')
     showDeepAnalysisDialog.value = false
     await fetchRefs()
   } catch (e: any) {

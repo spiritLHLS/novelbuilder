@@ -44,18 +44,20 @@ const (
 
 // AnalysisJob mirrors the reference_analysis_jobs DB row.
 type AnalysisJob struct {
-	ID                  string          `json:"id"`
-	RefID               string          `json:"ref_id"`
-	ProjectID           string          `json:"project_id"`
-	Status              string          `json:"status"` // pending|running|completed|failed|cancelled
-	TotalChunks         int             `json:"total_chunks"`
-	DoneChunks          int             `json:"done_chunks"`
-	ErrorMessage        string          `json:"error_message,omitempty"`
-	ExtractedCharacters json.RawMessage `json:"extracted_characters,omitempty"`
-	ExtractedWorld      json.RawMessage `json:"extracted_world,omitempty"`
-	ExtractedOutline    json.RawMessage `json:"extracted_outline,omitempty"`
-	CreatedAt           time.Time       `json:"created_at"`
-	UpdatedAt           time.Time       `json:"updated_at"`
+	ID                      string          `json:"id"`
+	RefID                   string          `json:"ref_id"`
+	ProjectID               string          `json:"project_id"`
+	Status                  string          `json:"status"` // pending|running|completed|failed|cancelled
+	TotalChunks             int             `json:"total_chunks"`
+	DoneChunks              int             `json:"done_chunks"`
+	ErrorMessage            string          `json:"error_message,omitempty"`
+	ExtractedCharacters     json.RawMessage `json:"extracted_characters,omitempty"`
+	ExtractedWorld          json.RawMessage `json:"extracted_world,omitempty"`
+	ExtractedOutline        json.RawMessage `json:"extracted_outline,omitempty"`
+	ExtractedGlossary       json.RawMessage `json:"extracted_glossary,omitempty"`
+	ExtractedForeshadowings json.RawMessage `json:"extracted_foreshadowings,omitempty"`
+	CreatedAt               time.Time       `json:"created_at"`
+	UpdatedAt               time.Time       `json:"updated_at"`
 }
 
 // ── Deep Analysis Service ─────────────────────────────────────────────────────
@@ -197,12 +199,17 @@ func (s *ReferenceDeepAnalysisService) GetJob(ctx context.Context, jobID string)
 	err := s.db.QueryRow(ctx,
 		`SELECT id, ref_id, project_id, status, total_chunks, done_chunks,
 		        COALESCE(error_message,''),
-		        extracted_characters, extracted_world, extracted_outline,
+		        COALESCE(extracted_characters, '[]'::jsonb),
+		        COALESCE(extracted_world, '{}'::jsonb),
+		        COALESCE(extracted_outline, '[]'::jsonb),
+		        COALESCE(extracted_glossary, '[]'::jsonb),
+		        COALESCE(extracted_foreshadowings, '[]'::jsonb),
 		        created_at, updated_at
 		 FROM reference_analysis_jobs WHERE id = $1`, jobID).Scan(
 		&job.ID, &job.RefID, &job.ProjectID, &job.Status,
 		&job.TotalChunks, &job.DoneChunks, &job.ErrorMessage,
 		&job.ExtractedCharacters, &job.ExtractedWorld, &job.ExtractedOutline,
+		&job.ExtractedGlossary, &job.ExtractedForeshadowings,
 		&job.CreatedAt, &job.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get analysis job: %w", err)
@@ -216,13 +223,18 @@ func (s *ReferenceDeepAnalysisService) GetJobByRef(ctx context.Context, refID st
 	err := s.db.QueryRow(ctx,
 		`SELECT id, ref_id, project_id, status, total_chunks, done_chunks,
 		        COALESCE(error_message,''),
-		        extracted_characters, extracted_world, extracted_outline,
+		        COALESCE(extracted_characters, '[]'::jsonb),
+		        COALESCE(extracted_world, '{}'::jsonb),
+		        COALESCE(extracted_outline, '[]'::jsonb),
+		        COALESCE(extracted_glossary, '[]'::jsonb),
+		        COALESCE(extracted_foreshadowings, '[]'::jsonb),
 		        created_at, updated_at
 		 FROM reference_analysis_jobs WHERE ref_id = $1
 		 ORDER BY created_at DESC LIMIT 1`, refID).Scan(
 		&job.ID, &job.RefID, &job.ProjectID, &job.Status,
 		&job.TotalChunks, &job.DoneChunks, &job.ErrorMessage,
 		&job.ExtractedCharacters, &job.ExtractedWorld, &job.ExtractedOutline,
+		&job.ExtractedGlossary, &job.ExtractedForeshadowings,
 		&job.CreatedAt, &job.UpdatedAt)
 	if err != nil {
 		return nil, nil // no job yet is not an error
@@ -351,14 +363,23 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 					continue
 				}
 				summary, _ := node["summary"].(string)
-				levelF, _ := node["level"].(float64)
-				// Map numeric level to the string values the frontend uses
-				levelStr := "macro"
-				switch int(levelF) {
-				case 2:
-					levelStr = "meso"
-				case 3:
-					levelStr = "micro"
+				// Level is now a string ("macro"/"meso"/"micro") from the Python sidecar.
+				// For backward compat also handle old numeric levels.
+				levelStr := "meso"
+				if ls, ok := node["level"].(string); ok && ls != "" {
+					valid := map[string]bool{"macro": true, "meso": true, "micro": true}
+					if valid[ls] {
+						levelStr = ls
+					}
+				} else if lf, ok := node["level"].(float64); ok {
+					switch int(lf) {
+					case 1:
+						levelStr = "macro"
+					case 3:
+						levelStr = "micro"
+					default:
+						levelStr = "meso"
+					}
 				}
 				contentData := map[string]interface{}{
 					"key_events": summary,
@@ -371,6 +392,61 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 					 VALUES ($1, $2, $3, $4, $5)`,
 					projectID, levelStr, i+1, title, contentJSON); dbErr != nil {
 					s.logger.Warn("import outline node failed", zap.String("title", title), zap.Error(dbErr))
+				}
+			}
+		}
+	}
+
+	// Import glossary terms
+	if len(job.ExtractedGlossary) > 2 {
+		var terms []map[string]interface{}
+		if json.Unmarshal(job.ExtractedGlossary, &terms) == nil {
+			for _, t := range terms {
+				term, _ := t["term"].(string)
+				if term == "" {
+					continue
+				}
+				definition, _ := t["definition"].(string)
+				category, _ := t["category"].(string)
+				if category == "" {
+					category = "concept"
+				}
+				if _, dbErr := s.db.Exec(ctx,
+					`INSERT INTO glossary_terms (project_id, term, definition, category)
+					 VALUES ($1, $2, $3, $4)
+					 ON CONFLICT (project_id, term) DO UPDATE SET definition = EXCLUDED.definition`,
+					projectID, term, definition, category); dbErr != nil {
+					s.logger.Warn("import glossary term failed", zap.String("term", term), zap.Error(dbErr))
+				}
+			}
+		}
+	}
+
+	// Import foreshadowings
+	if len(job.ExtractedForeshadowings) > 2 {
+		var foreshadowings []map[string]interface{}
+		if json.Unmarshal(job.ExtractedForeshadowings, &foreshadowings) == nil {
+			for _, f := range foreshadowings {
+				content, _ := f["content"].(string)
+				if content == "" {
+					continue
+				}
+				priority := 3
+				if pf, ok := f["priority"].(float64); ok {
+					priority = int(pf)
+				}
+				relChars, _ := f["related_characters"].([]interface{})
+				var tags []string
+				for _, rc := range relChars {
+					if rs, ok := rc.(string); ok {
+						tags = append(tags, rs)
+					}
+				}
+				if _, dbErr := s.db.Exec(ctx,
+					`INSERT INTO foreshadowings (project_id, content, embed_method, priority, tags, status)
+					 VALUES ($1, $2, 'reference_import', $3, $4, 'planned')`,
+					projectID, content, priority, tags); dbErr != nil {
+					s.logger.Warn("import foreshadowing failed", zap.Error(dbErr))
 				}
 			}
 		}
@@ -532,12 +608,15 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 	charsJSON := mustMarshalRaw(merged["characters"])
 	worldJSON := mustMarshalRaw(merged["world"])
 	outlineJSON := mustMarshalRaw(merged["outline"])
+	glossaryJSON := mustMarshalRaw(merged["glossary"])
+	foreshadowingsJSON := mustMarshalRaw(merged["foreshadowings"])
 
 	_, err = s.db.Exec(ctx,
 		`UPDATE reference_analysis_jobs
-		 SET status='completed', extracted_characters=$1, extracted_world=$2, extracted_outline=$3, updated_at=NOW()
-		 WHERE id=$4`,
-		charsJSON, worldJSON, outlineJSON, jobID)
+		 SET status='completed', extracted_characters=$1, extracted_world=$2, extracted_outline=$3,
+		     extracted_glossary=$4, extracted_foreshadowings=$5, updated_at=NOW()
+		 WHERE id=$6`,
+		charsJSON, worldJSON, outlineJSON, glossaryJSON, foreshadowingsJSON, jobID)
 	if err != nil {
 		return fmt.Errorf("save job result: %w", err)
 	}

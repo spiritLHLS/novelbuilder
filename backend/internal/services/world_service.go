@@ -286,6 +286,19 @@ func (s *ForeshadowingService) UpdateStatus(ctx context.Context, id, status stri
 	return err
 }
 
+func (s *ForeshadowingService) Update(ctx context.Context, id, content, embedMethod string, tags []string, priority int) (*models.Foreshadowing, error) {
+	var f models.Foreshadowing
+	err := s.db.QueryRow(ctx,
+		`UPDATE foreshadowings SET content = $1, embed_method = $2, tags = $3, priority = $4
+		 WHERE id = $5
+		 RETURNING id, project_id, content, embed_chapter_id, resolve_chapter_id,
+		           COALESCE(embed_method, ''), COALESCE(resolve_method, ''), priority, status, COALESCE(tags, '{}'), created_at, updated_at`,
+		content, embedMethod, tags, priority, id).Scan(
+		&f.ID, &f.ProjectID, &f.Content, &f.EmbedChapterID, &f.ResolveChapterID,
+		&f.EmbedMethod, &f.ResolveMethod, &f.Priority, &f.Status, &f.Tags, &f.CreatedAt, &f.UpdatedAt)
+	return &f, err
+}
+
 func (s *ForeshadowingService) Delete(ctx context.Context, id string) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM foreshadowings WHERE id = $1`, id)
 	return err

@@ -2,38 +2,44 @@
   <div class="world-bible">
     <div class="page-header">
       <h1>世界圣经</h1>
-      <el-button type="primary" @click="saveWorldBible" :loading="saving">保存修改</el-button>
+      <el-button type="primary" @click="openEditDialog"><el-icon><Edit /></el-icon>编辑世界观设定</el-button>
     </div>
 
     <el-row :gutter="20">
-      <!-- World Bible Content -->
+      <!-- World Bible Display -->
       <el-col :span="14">
         <el-card shadow="hover">
-          <template #header><span>世界设定</span></template>
-          <el-form :model="worldBible" label-position="top">
-            <el-form-item label="世界观概述">
-              <el-input v-model="worldBible.world_view" type="textarea" :rows="4" />
-            </el-form-item>
-            <el-form-item label="时代背景">
-              <el-input v-model="worldBible.era_background" type="textarea" :rows="3" />
-            </el-form-item>
-            <el-form-item label="地理环境">
-              <el-input v-model="worldBible.geography" type="textarea" :rows="3" />
-            </el-form-item>
-            <el-form-item label="社会结构">
-              <el-input v-model="worldBible.social_structure" type="textarea" :rows="3" />
-            </el-form-item>
-            <el-form-item label="力量体系">
-              <el-input v-model="worldBible.power_system" type="textarea" :rows="3" />
-            </el-form-item>
-            <el-form-item label="核心冲突">
-              <el-input v-model="worldBible.core_conflict" type="textarea" :rows="3" />
-            </el-form-item>
-            <el-form-item label="其他设定（JSON）">
-              <el-input v-model="worldBible.extra_json" type="textarea" :rows="5"
-                placeholder='{"customs": "...", "language": "..."}' />
-            </el-form-item>
-          </el-form>
+          <template #header>
+            <div class="card-header">
+              <span>世界设定</span>
+              <el-button text type="primary" size="small" @click="openEditDialog">编辑</el-button>
+            </div>
+          </template>
+          <div class="wb-field" v-if="worldBible.world_view">
+            <div class="wb-label">世界观概述</div>
+            <div class="wb-value">{{ worldBible.world_view }}</div>
+          </div>
+          <div class="wb-field" v-if="worldBible.era_background">
+            <div class="wb-label">时代背景</div>
+            <div class="wb-value">{{ worldBible.era_background }}</div>
+          </div>
+          <div class="wb-field" v-if="worldBible.geography">
+            <div class="wb-label">地理环境</div>
+            <div class="wb-value">{{ worldBible.geography }}</div>
+          </div>
+          <div class="wb-field" v-if="worldBible.social_structure">
+            <div class="wb-label">社会结构</div>
+            <div class="wb-value">{{ worldBible.social_structure }}</div>
+          </div>
+          <div class="wb-field" v-if="worldBible.power_system">
+            <div class="wb-label">力量体系</div>
+            <div class="wb-value">{{ worldBible.power_system }}</div>
+          </div>
+          <div class="wb-field" v-if="worldBible.core_conflict">
+            <div class="wb-label">核心冲突</div>
+            <div class="wb-value">{{ worldBible.core_conflict }}</div>
+          </div>
+          <el-empty v-if="isEmpty" description="暂无世界观设定，点击『编辑世界观设定』开始填写" />
         </el-card>
       </el-col>
 
@@ -84,22 +90,59 @@
               </template>
             </el-input>
           </div>
+          <el-divider />
+          <el-button type="primary" style="width:100%" @click="saveConstitution" :loading="savingConst">保存宪法</el-button>
         </el-card>
       </el-col>
     </el-row>
+
+    <!-- Edit Dialog -->
+    <el-dialog v-model="showEditDlg" title="编辑世界观设定" width="700px" :close-on-click-modal="false">
+      <el-form :model="editForm" label-position="top">
+        <el-form-item label="世界观概述">
+          <el-input v-model="editForm.world_view" type="textarea" :rows="4" />
+        </el-form-item>
+        <el-form-item label="时代背景">
+          <el-input v-model="editForm.era_background" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="地理环境">
+          <el-input v-model="editForm.geography" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="社会结构">
+          <el-input v-model="editForm.social_structure" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="力量体系">
+          <el-input v-model="editForm.power_system" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="核心冲突">
+          <el-input v-model="editForm.core_conflict" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="其他设定（JSON）">
+          <el-input v-model="editForm.extra_json" type="textarea" :rows="4"
+            placeholder='{"customs": "...", "language": "..."}' />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showEditDlg = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="saveWorldBible">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { Edit, Delete } from '@element-plus/icons-vue'
 import { worldBibleApi } from '@/api'
 
 const route = useRoute()
 const projectId = route.params.projectId as string
 
 const saving = ref(false)
+const savingConst = ref(false)
+const showEditDlg = ref(false)
 
 const worldBible = ref({
   world_view: '',
@@ -110,6 +153,14 @@ const worldBible = ref({
   core_conflict: '',
   extra_json: '',
 })
+
+const editForm = ref({ ...worldBible.value })
+
+const isEmpty = computed(() =>
+  !worldBible.value.world_view && !worldBible.value.era_background &&
+  !worldBible.value.geography && !worldBible.value.social_structure &&
+  !worldBible.value.power_system && !worldBible.value.core_conflict
+)
 
 const constitutions = ref<Array<{ type: string; rule: string; reason: string }>>([])
 const forbiddenAnchors = ref<string[]>([])
@@ -145,23 +196,41 @@ onMounted(async () => {
   }
 })
 
+function openEditDialog() {
+  editForm.value = { ...worldBible.value }
+  showEditDlg.value = true
+}
+
 async function saveWorldBible() {
   saving.value = true
   try {
-    const wbPayload: any = { ...worldBible.value }
-    if (wbPayload.extra_json) {
-      try { wbPayload.extra_json = JSON.parse(wbPayload.extra_json) } catch { /* keep as string */ }
+    const payload: any = { ...editForm.value }
+    if (payload.extra_json) {
+      try { payload.extra_json = JSON.parse(payload.extra_json) } catch { /* keep as string */ }
     }
-    await worldBibleApi.update(projectId, wbPayload)
-    await worldBibleApi.updateConstitution(projectId, {
-      rules: constitutions.value,
-      forbidden_anchors: forbiddenAnchors.value,
-    })
+    await worldBibleApi.update(projectId, payload)
+    worldBible.value = { ...editForm.value }
+    showEditDlg.value = false
     ElMessage.success('世界圣经已保存')
   } catch {
     ElMessage.error('保存失败')
   } finally {
     saving.value = false
+  }
+}
+
+async function saveConstitution() {
+  savingConst.value = true
+  try {
+    await worldBibleApi.updateConstitution(projectId, {
+      rules: constitutions.value,
+      forbidden_anchors: forbiddenAnchors.value,
+    })
+    ElMessage.success('宪法已保存')
+  } catch {
+    ElMessage.error('保存失败')
+  } finally {
+    savingConst.value = false
   }
 }
 
@@ -191,6 +260,9 @@ function removeForbiddenAnchor(idx: number) {
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
+.wb-field { margin-bottom: 20px; }
+.wb-label { font-size: 12px; color: #888; margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.wb-value { color: var(--nb-text-primary, #e0e0e0); line-height: 1.8; white-space: pre-wrap; }
 .constitution-item { background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); padding: 12px; border-radius: 8px; margin-bottom: 12px; }
 .constitution-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .constitution-card :deep(.el-card__body) { max-height: 70vh; overflow-y: auto; }
