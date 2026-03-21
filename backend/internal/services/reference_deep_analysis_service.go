@@ -783,7 +783,7 @@ func (s *ReferenceDeepAnalysisService) analyzeChunk(
 	bodyJSON, _ := json.Marshal(body)
 
 	retryConfig := retry.Config{
-		MaxAttempts: 5,
+		MaxAttempts: 10,
 		BaseDelay:   3 * time.Second,
 		MaxDelay:    60 * time.Second,
 		Jitter:      0.25,
@@ -841,7 +841,7 @@ func (s *ReferenceDeepAnalysisService) mergeChunks(
 	bodyJSON, _ := json.Marshal(body)
 
 	retryConfig := retry.Config{
-		MaxAttempts: 5,
+		MaxAttempts: 10,
 		BaseDelay:   4 * time.Second,
 		MaxDelay:    90 * time.Second,
 		Jitter:      0.2,
