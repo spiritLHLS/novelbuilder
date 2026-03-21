@@ -232,8 +232,20 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
                     # Responses API: data["output"][0]["content"][0]["text"]
                     raw = data["output"][0]["content"][0]["text"]
                 else:
-                    raw = data["choices"][0]["message"]["content"]
-                
+                    raw = data["choices"][0]["message"].get("content") or ""
+
+                # Retry immediately on empty content (content filter, null, etc.)
+                if not raw.strip():
+                    logger.warning(
+                        "LLM returned empty content on attempt %d/%d (content_filter or null), retrying in %.1fs",
+                        attempt, max_retries, delay,
+                    )
+                    if attempt < max_retries:
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 2, 60.0)
+                        continue
+                    break
+
                 # Check response completeness and attempt retry if incomplete
                 is_complete, issues = is_response_complete(raw)
                 if not is_complete and attempt < max_retries:

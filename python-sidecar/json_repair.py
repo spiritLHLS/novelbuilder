@@ -74,9 +74,13 @@ def repair_json(raw: str, max_attempts: int = 3) -> dict:
     
     Returns dict on success, {} on complete failure.
     """
+    if not raw:
+        return {}
     original_raw = raw
     raw = raw.strip()
-    
+    if not raw:
+        return {}
+
     # Strategy 1: Direct parse
     try:
         return json.loads(raw)
@@ -150,8 +154,12 @@ def is_response_complete(raw: str, expected_schema: Optional[dict] = None) -> tu
     - Check for incomplete field values
     """
     issues: list[str] = []
+    if raw is None:
+        return False, ["response is None"]
     raw = raw.strip()
-    
+    if not raw:
+        return False, ["empty response"]
+
     # Check balance
     open_braces = raw.count("{") - raw.count("}")
     open_brackets = raw.count("[") - raw.count("]")
