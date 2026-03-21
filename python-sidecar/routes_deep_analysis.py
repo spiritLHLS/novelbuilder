@@ -200,7 +200,8 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
                     )
                     break
                 resp.raise_for_status()
-                data = resp.json()
+                resp_text = resp.text
+                data = json.loads(resp_text)
                 # Extract text from response depending on API style
                 if use_responses_api:
                     # Responses API: data["output"][0]["content"][0]["text"]
@@ -220,9 +221,10 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60.0)
             except json.JSONDecodeError as exc:
+                raw_snippet = locals().get("resp_text", "<not captured>")[:500]
                 logger.warning(
-                    "LLM empty/invalid JSON attempt %d/%d: %s",
-                    attempt, max_retries, repr(exc),
+                    "LLM empty/invalid JSON attempt %d/%d: %s | raw_response: %s",
+                    attempt, max_retries, repr(exc), raw_snippet,
                 )
                 if attempt == max_retries:
                     break
@@ -237,6 +239,7 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
 
 def _parse_json(raw: str) -> dict:
     """Strip markdown fences, repair truncated JSON, return dict."""
+    original_raw = raw
     raw = raw.strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-z]*\n?", "", raw)
@@ -251,6 +254,10 @@ def _parse_json(raw: str) -> dict:
         try:
             return json.loads(raw)
         except Exception:
+            logger.warning(
+                "LLM JSON parse failed after repair, returning empty dict | raw_content: %.500s",
+                original_raw,
+            )
             return {}
 
 

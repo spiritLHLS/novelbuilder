@@ -149,16 +149,21 @@
       </el-form>
 
       <!-- In-dialog test result -->
-      <el-alert
-        v-if="dialogTestResult"
-        :type="dialogTestResult.ok ? 'success' : 'error'"
-        :title="dialogTestResult.ok
-          ? `连接成功 · 模型: ${dialogTestResult.model} · 耗时 ${dialogTestResult.duration_ms} ms`
-          : `连接失败: ${dialogTestResult.error}`"
-        :closable="false"
-        style="margin-top:12px"
-        show-icon
-      />
+      <div v-if="dialogTestResult" style="margin-top:12px">
+        <el-alert
+          :type="dialogTestResult.ok ? 'success' : 'error'"
+          :title="dialogTestResult.ok
+            ? `连接成功 · 模型: ${dialogTestResult.model} · 耗时 ${dialogTestResult.duration_ms} ms`
+            : `连接失败: ${dialogTestResult.error}`"
+          :closable="false"
+          show-icon
+        />
+        <el-collapse v-if="dialogTestResult.raw_body" style="margin-top:8px">
+          <el-collapse-item title="查看原始响应">
+            <pre class="raw-body-pre">{{ dialogTestResult.raw_body }}</pre>
+          </el-collapse-item>
+        </el-collapse>
+      </div>
 
       <template #footer>
         <el-button @click="cancelDialog">取消</el-button>
@@ -204,6 +209,7 @@ interface TestResult {
   model?: string
   duration_ms?: number
   error?: string
+  raw_body?: string
 }
 
 const profiles = ref<LLMProfile[]>([])
@@ -332,9 +338,22 @@ async function testSavedProfile(profile: LLMProfile) {
     const res = await llmProfileApi.test({ profile_id: profile.id })
     const result: TestResult = res.data
     if (result.ok) {
-      ElMessage.success(`连接成功 · 模型: ${result.model} · 耗时 ${result.duration_ms} ms`)
+      ElMessage({
+        type: 'success',
+        message: `连接成功 · 模型: ${result.model} · 耗时 ${result.duration_ms} ms`,
+        duration: 5000,
+      })
+      if (result.raw_body) {
+        console.info('[LLM Test] raw response:', result.raw_body)
+      }
     } else {
-      ElMessage.error(`连接失败: ${result.error}`)
+      ElMessageBox.alert(
+        (result.raw_body
+          ? `<p>错误: ${result.error}</p><pre style="margin-top:8px;white-space:pre-wrap;word-break:break-all;font-size:12px;background:#f5f5f5;padding:8px;border-radius:4px">${result.raw_body}</pre>`
+          : result.error) ?? '未知错误',
+        '连接失败',
+        { dangerouslyUseHTMLString: true, type: 'error', confirmButtonText: '关闭' },
+      )
     }
   } catch (e: any) {
     ElMessage.error(e.response?.data?.error || '测试请求失败')
@@ -500,4 +519,16 @@ function providerTagType(provider: string) {
 .masked-key { font-family: monospace; color: #8a8a9a; font-size: 12px; }
 .default-icon { color: #f5a623; font-size: 18px; }
 .hint { margin-left: 10px; color: #888; font-size: 12px; }
+.raw-body-pre {
+  margin: 0;
+  padding: 8px;
+  background: var(--el-fill-color-light, #f5f5f5);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
 </style>

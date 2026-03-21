@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/models"
+	"go.uber.org/zap"
 )
 
 // ── Health Checks ─────────────────────────────────────────────────────────────
@@ -338,6 +339,19 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 
 	rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	durationMs := time.Since(start).Milliseconds()
+	// Truncate for logging and response (first 500 bytes is enough to diagnose issues)
+	rawBodySnippet := string(rawBody)
+	if len(rawBodySnippet) > 500 {
+		rawBodySnippet = rawBodySnippet[:500] + "..."
+	}
+
+	h.logger.Info("llm_test raw response",
+		zap.String("endpoint", endpoint),
+		zap.String("model", req.ModelName),
+		zap.Int("status", resp.StatusCode),
+		zap.Int64("duration_ms", durationMs),
+		zap.String("raw_body", rawBodySnippet),
+	)
 
 	if resp.StatusCode >= 400 {
 		// Try to extract human-readable error across different provider response shapes.
@@ -367,7 +381,7 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 				}
 			}
 		}
-		c.JSON(200, gin.H{"ok": false, "error": errMsg, "duration_ms": durationMs})
+		c.JSON(200, gin.H{"ok": false, "error": errMsg, "duration_ms": durationMs, "raw_body": rawBodySnippet})
 		return
 	}
 
@@ -393,7 +407,7 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 		}
 	}
 
-	c.JSON(200, gin.H{"ok": true, "model": modelName, "duration_ms": durationMs})
+	c.JSON(200, gin.H{"ok": true, "model": modelName, "duration_ms": durationMs, "raw_body": rawBodySnippet})
 }
 
 // ── Prompt Presets ────────────────────────────────────────────────────────────

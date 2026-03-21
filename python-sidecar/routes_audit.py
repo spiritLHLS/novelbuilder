@@ -355,6 +355,10 @@ async def anti_detect_rewrite(req: AntiDetectRequest):
     except json.JSONDecodeError:
         # LLM didn't return JSON — treat entire response as rewritten text
         rewritten = response.content.strip()  # type: ignore[possibly-undefined]
+        logger.warning(
+            "Anti-detect LLM returned non-JSON, using raw output | raw_content: %.500s",
+            rewritten,
+        )
         changes = ["格式解析失败，使用原始输出"]
     except Exception as exc:
         logger.error("Anti-detect rewrite failed: %s", repr(exc), exc_info=True)

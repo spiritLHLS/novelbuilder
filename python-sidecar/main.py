@@ -239,6 +239,7 @@ def _extract_sensory_samples(sentences: list, max_samples: int = 15) -> list:
 
 def _repair_json(raw: str) -> dict:
     """Strip markdown fences and attempt basic repair of truncated/malformed LLM JSON output."""
+    original_raw = raw
     raw = raw.strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-z]*\n?", "", raw)
@@ -257,7 +258,10 @@ def _repair_json(raw: str) -> dict:
         try:
             return json.loads(raw)
         except Exception:
-            logger.debug("JSON repair also failed, returning empty dict", exc_info=True)
+            logger.warning(
+                "JSON repair failed, returning empty dict | raw_content: %.500s",
+                original_raw,
+            )
             return {}
 
 def _read_file(file_path: str) -> str:
