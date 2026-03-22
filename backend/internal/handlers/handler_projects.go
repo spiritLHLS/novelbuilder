@@ -252,6 +252,9 @@ func (h *Handler) SetAutoWrite(c *gin.Context) {
 	if interval <= 0 {
 		interval = 60
 	}
+	if interval > 1440 {
+		interval = 1440
+	}
 	if err := h.projects.SetAutoWrite(c.Request.Context(), projectID, enabled, interval); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

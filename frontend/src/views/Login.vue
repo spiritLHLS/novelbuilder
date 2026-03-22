@@ -96,7 +96,12 @@ async function handleLogin() {
     await auth.login(form.username, form.password)
     ElMessage.success('登录成功')
     // Navigate to the originally-requested route or the project list.
-    const redirect = (router.currentRoute.value.query.redirect as string) || '/projects'
+    // Only allow relative (same-origin) paths to prevent open redirect attacks.
+    const redirectParam = router.currentRoute.value.query.redirect
+    const redirect =
+      typeof redirectParam === 'string' && redirectParam.startsWith('/')
+        ? redirectParam
+        : '/projects'
     router.replace(redirect)
   } catch (e: any) {
     const msg = e?.response?.data?.error || '用户名或密码错误'

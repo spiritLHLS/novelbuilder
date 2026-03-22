@@ -106,7 +106,7 @@
             <el-button size="small" @click="variablesKV.push({ key: '', value: '' })">
               <el-icon><Plus /></el-icon> 添加变量
             </el-button>
-            <div style="color:#888; font-size:12px; margin-top:6px;">在内容中使用 {{"{{"}}变量名{{"}}"}} 引用变量</div>
+            <div style="color:#888; font-size:12px; margin-top:6px;">在内容中使用 <span v-pre>{{变量名}}</span> 引用变量</div>
           </div>
         </el-form-item>
         <el-row :gutter="12">

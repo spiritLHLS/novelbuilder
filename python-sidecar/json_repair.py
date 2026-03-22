@@ -21,9 +21,23 @@ def close_unclosed_json(raw: str) -> str:
     open_braces = raw.count("{") - raw.count("}")
     open_brackets = raw.count("[") - raw.count("]")
     
-    # Check if we're in the middle of a string value (unclosed quote)
-    # Simple heuristic: count quotes (accounting for escaped quotes)
-    unescaped_quotes = len(re.findall(r'(?<!\\)"', raw))
+    # Check if we're in the middle of a string value (unclosed quote).
+    # Walk the string character-by-character so that \" (escaped quote) and
+    # \\" (escaped backslash + real quote) are handled correctly.
+    def _count_unescaped_quotes(s: str) -> int:
+        count = 0
+        i = 0
+        while i < len(s):
+            if s[i] == '\\':
+                i += 2  # skip the escaped character entirely
+            elif s[i] == '"':
+                count += 1
+                i += 1
+            else:
+                i += 1
+        return count
+
+    unescaped_quotes = _count_unescaped_quotes(raw)
     in_string = unescaped_quotes % 2 != 0
     
     if in_string:
