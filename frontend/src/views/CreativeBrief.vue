@@ -104,7 +104,7 @@
 
       <!-- Save confirmation -->
       <div class="bg-green-50 border border-green-200 rounded p-4 text-green-800 text-sm">
-        ✅ 以上内容已自动保存为本项目的「写作规则」。
+        ✅ 以上内容已自动保存：世界观文档已写入「世界圣经」，写作规则已写入「写作规则」。
       </div>
     </div>
   </div>

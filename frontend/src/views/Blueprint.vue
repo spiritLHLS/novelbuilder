@@ -12,28 +12,31 @@
     <el-dialog v-model="dialogVisible" :title="isRegenerate ? '重新生成蓝图' : '生成蓝图'" width="520px" :close-on-click-modal="false">
       <el-form :model="genForm" label-width="120px">
         <el-form-item label="卷数" required>
-          <el-input-number v-model="genForm.volume_count" :min="1" :max="30" :step="1" style="width: 180px;" />
-          <span style="color:#888; margin-left:10px; font-size:12px;">推荐 4～12 卷</span>
+          <el-input-number v-model="genForm.volume_count" :min="1" :max="30" :step="1" style="width: 160px;" />
+          <span class="form-hint">卷</span>
         </el-form-item>
         <el-form-item label="每章最少字数">
-          <el-input-number v-model="genForm.chapter_words_min" :min="500" :max="10000" :step="500" style="width: 180px;" />
-          <span style="color:#888; margin-left:10px; font-size:12px;">默认 2000 字</span>
+          <el-input-number v-model="genForm.chapter_words_min" :min="500" :max="10000" :step="500" style="width: 160px;" />
+          <span class="form-hint">字</span>
         </el-form-item>
         <el-form-item label="每章最多字数">
-          <el-input-number v-model="genForm.chapter_words_max" :min="500" :max="20000" :step="500" style="width: 180px;" />
-          <span style="color:#888; margin-left:10px; font-size:12px;">默认 3500 字</span>
+          <el-input-number v-model="genForm.chapter_words_max" :min="500" :max="20000" :step="500" style="width: 160px;" />
+          <span class="form-hint">字</span>
         </el-form-item>
-        <el-form-item label="覆盖核心创意">
-          <el-input v-model="genForm.idea" type="textarea" :rows="3" placeholder="可选：留空则使用项目描述" />
+        <el-form-item label="补充创意方向">
+          <el-input v-model="genForm.idea" type="textarea" :rows="3"
+            placeholder="可选：额外的创作方向或改动要点；留空则完全使用项目描述" />
         </el-form-item>
-        <el-alert v-if="isRegenerate" type="warning" :closable="false" style="margin-top:8px;">
-          重新生成将覆盖当前所有卷册规划和蓝图内容，已写入的章节不受影响。
-        </el-alert>
       </el-form>
+
+      <el-alert v-if="isRegenerate" type="warning" :closable="false" style="margin-top:4px;">
+        重新生成将覆盖当前所有蓝图及卷册规划，已写入的章节正文不受影响。
+      </el-alert>
+
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="generating" @click="confirmGenerate">
-          {{ isRegenerate ? '确认重新生成' : '开始生成' }}
+          {{ isRegenerate ? '确认重新生成' : '确认生成' }}
         </el-button>
       </template>
     </el-dialog>
@@ -153,18 +156,36 @@
       <!-- Blueprint Raw Content -->
       <el-card shadow="hover" style="margin-top: 20px;">
         <template #header><span>蓝图详情</span></template>
-        <el-descriptions :column="1" border style="margin-bottom: 16px;" v-if="hasData(currentBlueprint.master_outline)">
-          <el-descriptions-item label="总体大纲">
-            <span style="white-space: pre-wrap; font-size: 13px;">{{ formatBlueprintField(currentBlueprint.master_outline) }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="角色关系图" v-if="hasData(currentBlueprint.relation_graph)">
-            <span style="white-space: pre-wrap; font-size: 13px;">{{ formatBlueprintField(currentBlueprint.relation_graph) }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="全局时间线" v-if="hasData(currentBlueprint.global_timeline)">
-            <span style="white-space: pre-wrap; font-size: 13px;">{{ formatBlueprintField(currentBlueprint.global_timeline) }}</span>
-          </el-descriptions-item>
-        </el-descriptions>
-        <el-empty v-if="!hasData(currentBlueprint.master_outline)" description="蓝图内容正在解析或生成失败，请查看错误信息" />
+        <template v-if="hasData(currentBlueprint.master_outline) || hasData(currentBlueprint.relation_graph) || hasData(currentBlueprint.global_timeline)">
+          <div v-if="hasData(currentBlueprint.master_outline)" class="bp-section">
+            <div class="bp-section-title">总体大纲</div>
+            <div class="bp-outline-list">
+              <div v-for="(item, idx) in parseMasterOutline(currentBlueprint.master_outline)" :key="idx" class="bp-outline-item">
+                <span v-if="item.vol" class="bp-outline-vol">{{ item.vol }}</span>
+                <span class="bp-outline-desc">{{ item.desc }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="hasData(currentBlueprint.relation_graph)" class="bp-section">
+            <div class="bp-section-title">角色关系</div>
+            <div class="bp-relation-list">
+              <div v-for="(rel, idx) in parseRelationGraph(currentBlueprint.relation_graph)" :key="idx" class="bp-relation-item">
+                <el-tag size="small" type="info" style="flex-shrink: 0;">{{ rel.pair }}</el-tag>
+                <span class="bp-relation-desc">{{ rel.desc }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="hasData(currentBlueprint.global_timeline)" class="bp-section">
+            <div class="bp-section-title">全局时间线</div>
+            <div class="bp-timeline-list">
+              <div v-for="(event, idx) in parseGlobalTimeline(currentBlueprint.global_timeline)" :key="idx" class="bp-timeline-item">
+                <span class="bp-timeline-point">{{ event.point }}</span>
+                <span class="bp-timeline-event">{{ event.event }}</span>
+              </div>
+            </div>
+          </div>
+        </template>
+        <el-empty v-else description="蓝图内容正在解析或生成失败，请查看错误信息" />
       </el-card>
     </template>
   </div>
@@ -282,12 +303,6 @@ function formatDate(d: string) {
   return d ? new Date(d).toLocaleString('zh-CN') : '-'
 }
 
-function formatBlueprintField(val: any): string {
-  if (val == null) return ''
-  if (typeof val === 'string') return val
-  return JSON.stringify(val, null, 2)
-}
-
 /** Returns true only when a blueprint JSONB field has meaningful content. */
 function hasData(val: any): boolean {
   if (val == null || val === undefined) return false
@@ -295,6 +310,57 @@ function hasData(val: any): boolean {
   if (Array.isArray(val)) return val.length > 0
   if (typeof val === 'object') return Object.keys(val).length > 0
   return Boolean(val)
+}
+
+function parseMasterOutline(val: any): { vol: string; desc: string }[] {
+  if (val == null) return []
+  let text = ''
+  if (typeof val === 'string') {
+    text = val
+  } else if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
+    text = String(val.raw_content)
+  } else {
+    return [{ vol: '', desc: JSON.stringify(val, null, 2) }]
+  }
+  return text.split(/。\s*/).filter((s: string) => s.trim()).map((p: string) => {
+    const ci = p.indexOf('：') !== -1 ? p.indexOf('：') : p.indexOf(':')
+    if (ci > 0) return { vol: p.slice(0, ci).trim(), desc: p.slice(ci + 1).trim() }
+    return { vol: '', desc: p.trim() }
+  })
+}
+
+function parseRelationGraph(val: any): { pair: string; desc: string }[] {
+  if (val == null) return []
+  let text = ''
+  if (typeof val === 'string') {
+    text = val
+  } else if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
+    text = String(val.raw_content)
+  } else {
+    return [{ pair: '', desc: JSON.stringify(val, null, 2) }]
+  }
+  return text.split(/[;；]\s*/).filter((s: string) => s.trim()).map((p: string) => {
+    const ci = p.indexOf('：') !== -1 ? p.indexOf('：') : p.indexOf(':')
+    if (ci > 0) return { pair: p.slice(0, ci).trim(), desc: p.slice(ci + 1).trim() }
+    return { pair: p.trim(), desc: '' }
+  })
+}
+
+function parseGlobalTimeline(val: any): { point: string; event: string }[] {
+  if (val == null) return []
+  let text = ''
+  if (typeof val === 'string') {
+    text = val
+  } else if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
+    text = String(val.raw_content)
+  } else {
+    return [{ point: '', event: JSON.stringify(val, null, 2) }]
+  }
+  return text.split(/[;；]\s*/).filter((s: string) => s.trim()).map((p: string) => {
+    const ci = p.indexOf('：') !== -1 ? p.indexOf('：') : p.indexOf(':')
+    if (ci > 0) return { point: p.slice(0, ci).trim(), event: p.slice(ci + 1).trim() }
+    return { point: p.trim(), event: '' }
+  })
 }
 
 onMounted(async () => {
@@ -419,4 +485,23 @@ async function rejectVolume(id: string) {
 .status-value { color: var(--nb-text-primary); font-size: 14px; }
 .asset-card { text-align: center; }
 .blueprint-content { background: var(--nb-table-header-bg); border: 1px solid var(--nb-card-border); padding: 16px; border-radius: 8px; font-size: 12px; color: var(--nb-text-secondary); max-height: 500px; overflow: auto; white-space: pre-wrap; }
+
+/* Generation dialog */
+.form-hint { color: #888; font-size: 12px; margin-left: 8px; }
+
+/* Blueprint detail sections */
+.bp-section { margin-bottom: 24px; }
+.bp-section:last-child { margin-bottom: 0; }
+.bp-section-title { font-size: 14px; font-weight: 600; color: #409eff; margin-bottom: 12px; padding-bottom: 6px; border-bottom: 1px solid var(--nb-card-border, #333); }
+.bp-outline-item { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--nb-table-header-bg, #2a2a2a); }
+.bp-outline-item:last-child { border-bottom: none; }
+.bp-outline-vol { flex-shrink: 0; min-width: 60px; font-weight: 600; color: var(--el-color-primary); font-size: 13px; }
+.bp-outline-desc { color: var(--nb-text-primary); font-size: 13px; line-height: 1.6; }
+.bp-relation-list { display: flex; flex-direction: column; gap: 8px; }
+.bp-relation-item { display: flex; align-items: flex-start; gap: 10px; }
+.bp-relation-desc { color: var(--nb-text-secondary); font-size: 13px; line-height: 1.5; }
+.bp-timeline-list { display: flex; flex-direction: column; gap: 10px; }
+.bp-timeline-item { display: flex; gap: 12px; padding-left: 12px; border-left: 2px solid #409eff; }
+.bp-timeline-point { flex-shrink: 0; min-width: 80px; font-weight: 600; color: #e6a23c; font-size: 13px; }
+.bp-timeline-event { color: var(--nb-text-primary); font-size: 13px; line-height: 1.6; }
 </style>

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/models"
+	"go.uber.org/zap"
 )
 
 // ── Audit Context Builder ────────────────────────────────────────────────────
@@ -391,6 +392,29 @@ func (h *Handler) GenerateCreativeBrief(c *gin.Context) {
 			AntiAIWordlist: antiJSON,
 			BannedPatterns: bannedJSON,
 		})
+	}
+
+	// Save world bible — remap creative-brief field names to standard world_bibles keys.
+	if len(result.WorldBible) > 0 {
+		mapped := make(map[string]interface{}, len(result.WorldBible))
+		for k, v := range result.WorldBible {
+			switch k {
+			case "world_overview":
+				mapped["world_view"] = v
+			case "key_locations":
+				mapped["geography"] = v
+			case "core_conflicts":
+				mapped["core_conflict"] = v
+			default:
+				mapped[k] = v
+			}
+		}
+		if wbJSON, err := json.Marshal(mapped); err == nil {
+			if _, wbErr := h.worldBibles.Update(c.Request.Context(), projectID, wbJSON); wbErr != nil {
+				h.logger.Warn("creative brief: failed to save world bible",
+					zap.String("project_id", projectID), zap.Error(wbErr))
+			}
+		}
 	}
 
 	c.JSON(200, gin.H{"data": result})
