@@ -68,7 +68,6 @@ func main() {
 
 	// Initialize Services
 	projectService := services.NewProjectService(db, logger)
-	blueprintService := services.NewBlueprintService(db, aiGateway, wfEngine, logger)
 	ragService := services.NewRAGService(db, cfg.PythonSidecar.URL, logger)
 	originalityService := services.NewOriginalityService(db, cfg.PythonSidecar.URL, logger)
 	propagationService := services.NewEditPropagationService(db, aiGateway, logger)
@@ -104,6 +103,12 @@ func main() {
 	characterInteractionService := services.NewCharacterInteractionService(db, logger)
 	radarService := services.NewRadarService(db, aiGateway, logger)
 	genreTemplateService := services.NewGenreTemplateService(db, logger)
+	blueprintService := services.NewBlueprintService(
+		db, aiGateway, wfEngine,
+		worldBibleService, characterService, foreshadowingService,
+		glossaryService, outlineService, referenceService,
+		genreTemplateService, logger,
+	)
 
 	// ── Deep reference analysis service (chunked, background) ────────────────
 	// Must be created AFTER taskQueueService so it can register its handler.
