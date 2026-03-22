@@ -3,14 +3,11 @@
     <div class="page-header">
       <h1>蓝图管理</h1>
       <div style="display: flex; gap: 8px;">
-        <el-button v-if="!currentBlueprint && !generating" type="primary" @click="openGenerateDialog(false)">
-          <el-icon><Plus /></el-icon>新建蓝图
-        </el-button>
       </div>
     </div>
 
-    <!-- Generation Config Dialog -->
-    <el-dialog v-model="dialogVisible" :title="isRegenerate ? '重新生成蓝图' : '新建蓝图'" width="520px" :close-on-click-modal="false">
+    <!-- Regenerate Config Dialog (only used for re-generation) -->
+    <el-dialog v-model="dialogVisible" title="重新生成蓝图" width="520px" :close-on-click-modal="false">
       <el-form ref="genFormRef" :model="genForm" :rules="genFormRules" label-width="120px">
         <el-form-item label="卷数" prop="volume_count" required>
           <el-input-number v-model="genForm.volume_count" :min="1" :max="30" :step="1" style="width: 160px;" />
@@ -30,25 +27,56 @@
         </el-form-item>
       </el-form>
 
-      <el-alert v-if="isRegenerate" type="warning" :closable="false" style="margin-top:4px;">
+      <el-alert type="warning" :closable="false" style="margin-top:4px;">
         重新生成将覆盖当前所有蓝图及卷册规划，已写入的章节正文不受影响。
       </el-alert>
 
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="generating" @click="confirmGenerate">
-          {{ isRegenerate ? '确认重新生成' : '确认新建' }}
+          确认重新生成
         </el-button>
       </template>
     </el-dialog>
 
-    <!-- No Blueprint -->
-    <el-empty v-if="!currentBlueprint && !generating" description="尚未创建蓝图">
-      <p style="color: #888; margin-top: 8px; font-size: 13px; text-align: center;">
-        点击右上角「新建蓝图」按钮，指定卷数后开始生成。<br>
-        蓝图将根据世界设定自动生成世界圣经、大纲、角色、伏笔和卷册规划。
-      </p>
-    </el-empty>
+    <!-- No Blueprint – inline config panel -->
+    <el-card v-if="!currentBlueprint && !generating" shadow="hover" class="generate-panel">
+      <div class="generate-panel-header">
+        <el-icon :size="40" style="color: #409eff; flex-shrink: 0;"><Document /></el-icon>
+        <div>
+          <h3 style="margin: 0 0 4px; font-size: 18px; color: var(--nb-text-primary);">尚未创建整书蓝图</h3>
+          <p style="margin: 0; color: #888; font-size: 13px;">设置卷数等参数，一键生成世界圣经、大纲、角色、伏笔和卷册规划</p>
+        </div>
+      </div>
+
+      <el-divider />
+
+      <el-form ref="genFormRef" :model="genForm" :rules="genFormRules" label-width="130px" style="max-width: 560px; margin: 0 auto;">
+        <el-form-item label="卷数" prop="volume_count" required>
+          <el-input-number v-model="genForm.volume_count" :min="1" :max="30" :step="1" style="width: 160px;" />
+          <span class="form-hint">卷（规划整本书的卷册数量）</span>
+        </el-form-item>
+        <el-form-item label="每章最少字数">
+          <el-input-number v-model="genForm.chapter_words_min" :min="500" :max="10000" :step="500" style="width: 160px;" />
+          <span class="form-hint">字</span>
+        </el-form-item>
+        <el-form-item label="每章最多字数">
+          <el-input-number v-model="genForm.chapter_words_max" :min="500" :max="20000" :step="500" style="width: 160px;" />
+          <span class="form-hint">字</span>
+        </el-form-item>
+        <el-form-item label="补充创意方向">
+          <el-input v-model="genForm.idea" type="textarea" :rows="3"
+            placeholder="可选：额外的创作方向或改动要点；留空则完全使用项目描述" style="width: 340px;" />
+        </el-form-item>
+      </el-form>
+
+      <div style="text-align: center; margin-top: 20px;">
+        <el-button type="primary" size="large" :loading="generating" @click="quickGenerate">
+          <el-icon><Promotion /></el-icon>
+          一键生成整书蓝图
+        </el-button>
+      </div>
+    </el-card>
 
     <!-- Generating Progress -->
     <el-card v-if="generating" shadow="hover" style="text-align: center; padding: 40px 20px;">
@@ -233,9 +261,8 @@ function stopPolling() {
   }
 }
 
-async function openGenerateDialog(regen: boolean) {
-  isRegenerate.value = regen
-  // Load project defaults to pre-fill the form
+/** Load project defaults into the generation form. Called on mount and before opening the dialog. */
+async function loadProjectDefaults() {
   try {
     const res = await projectApi.get(projectId)
     const p = res?.data?.data
@@ -255,6 +282,24 @@ async function openGenerateDialog(regen: boolean) {
       genForm.value = { volume_count: vc, chapter_words_min: wMin, chapter_words_max: wMax, idea: '' }
     }
   } catch { /* keep defaults */ }
+}
+
+/** Direct "one-click" generate from the inline panel (no dialog confirmation needed). */
+async function quickGenerate() {
+  const valid = await genFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+  isRegenerate.value = false
+  await doGenerate()
+}
+
+async function openGenerateDialog(regen: boolean) {
+  isRegenerate.value = regen
+  // Pre-populate volume count from existing volumes when regenerating.
+  if (regen && volumes.value.length > 0) {
+    genForm.value = { ...genForm.value, volume_count: volumes.value.length, idea: '' }
+  } else {
+    await loadProjectDefaults()
+  }
   dialogVisible.value = true
 }
 
@@ -375,6 +420,10 @@ function parseGlobalTimeline(val: any): { point: string; event: string }[] {
 
 onMounted(async () => {
   await fetchAll()
+  // Pre-fill the inline generation form with project defaults (used when no blueprint exists yet).
+  if (!currentBlueprint.value) {
+    await loadProjectDefaults()
+  }
   // If a generation is already in progress (e.g., after page refresh) resume polling.
   if (currentBlueprint.value?.status === 'generating') {
     generating.value = true
@@ -490,12 +539,15 @@ async function rejectVolume(id: string) {
 .blueprint { max-width: 1200px; margin: 0 auto; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
-.status-bar { }
+.status-bar { padding: 0; }
 .status-label { color: #888; font-size: 13px; margin-bottom: 4px; }
 .status-value { color: var(--nb-text-primary); font-size: 14px; }
 .asset-card { text-align: center; }
 .blueprint-content { background: var(--nb-table-header-bg); border: 1px solid var(--nb-card-border); padding: 16px; border-radius: 8px; font-size: 12px; color: var(--nb-text-secondary); max-height: 500px; overflow: auto; white-space: pre-wrap; }
 
+/* Inline generation panel */
+.generate-panel { max-width: 700px; margin: 0 auto; }
+.generate-panel-header { display: flex; align-items: center; gap: 16px; }
 /* Generation dialog */
 .form-hint { color: #888; font-size: 12px; margin-left: 8px; }
 
