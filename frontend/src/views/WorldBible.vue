@@ -277,7 +277,6 @@ async function exportWorldBible() {
 }
 
 async function handleImportFile(file: File): Promise<boolean> {
-  importing.value = true
   try {
     const text = await file.text()
     const bundle = JSON.parse(text)
@@ -285,11 +284,20 @@ async function handleImportFile(file: File): Promise<boolean> {
       ElMessage.error('文件格式错误：不是有效的世界圣经导出包')
       return false
     }
+    // Confirm before overwriting — this is a destructive operation.
+    const { ElMessageBox } = await import('element-plus')
+    await ElMessageBox.confirm(
+      '导入将完全覆盖当前的世界观设定和世界宪法，此操作不可撤销，确定继续吗？',
+      '确认覆盖导入',
+      { type: 'warning', confirmButtonText: '确认覆盖', cancelButtonText: '取消' }
+    )
+    importing.value = true
     await worldBibleApi.import(projectId, bundle)
     ElMessage.success('导入成功，正在刷新...')
     // Reload the page data
     window.location.reload()
   } catch (e: any) {
+    if (e === 'cancel') return false // user cancelled the confirm dialog
     ElMessage.error(`导入失败：${e?.response?.data?.error || e?.message || '未知错误'}`)
   } finally {
     importing.value = false

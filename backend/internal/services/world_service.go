@@ -98,43 +98,22 @@ func (s *WorldBibleService) Export(ctx context.Context, projectID string) (*Worl
 	return bundle, nil
 }
 
-// Import merges a WorldBibleBundle into the project.
-// World bible fields: imported values fill blanks; existing user edits are kept.
-// Constitution: fully overwritten (explicit user action).
+// Import overwrites the project's world bible and constitution with the given bundle.
+// World bible content: fully replaced by the imported data.
+// Constitution: fully replaced if present in the bundle.
 func (s *WorldBibleService) Import(ctx context.Context, projectID string, bundle *WorldBibleBundle) error {
 	if bundle.Type != "world_bible_bundle" {
 		return fmt.Errorf("invalid bundle type: %q (expected world_bible_bundle)", bundle.Type)
 	}
 
-	// Merge world bible: existing fields win.
+	// Overwrite world bible with the imported content directly.
 	if len(bundle.WorldBible) > 4 {
-		existing, err := s.Get(ctx, projectID)
-		if err != nil {
-			return fmt.Errorf("import world bible get: %w", err)
+		// Validate the imported JSON before writing.
+		var check map[string]interface{}
+		if err := json.Unmarshal(bundle.WorldBible, &check); err != nil {
+			return fmt.Errorf("import: invalid world_bible JSON")
 		}
-		var merged json.RawMessage
-		if existing == nil || len(existing.Content) <= 4 {
-			merged = bundle.WorldBible
-		} else {
-			var imp, cur map[string]interface{}
-			if json.Unmarshal(bundle.WorldBible, &imp) != nil {
-				return fmt.Errorf("import: invalid world_bible JSON")
-			}
-			if json.Unmarshal(existing.Content, &cur) != nil {
-				cur = map[string]interface{}{}
-			}
-			for k, v := range imp {
-				if _, exists := cur[k]; !exists {
-					cur[k] = v
-				}
-			}
-			var mErr error
-			merged, mErr = json.Marshal(cur)
-			if mErr != nil {
-				return fmt.Errorf("import merge marshal: %w", mErr)
-			}
-		}
-		if _, err := s.Update(ctx, projectID, merged); err != nil {
+		if _, err := s.Update(ctx, projectID, bundle.WorldBible); err != nil {
 			return fmt.Errorf("import world bible update: %w", err)
 		}
 	}

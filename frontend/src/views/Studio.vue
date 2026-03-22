@@ -35,7 +35,7 @@
         <el-col :span="6">
           <el-button type="primary" size="large" class="quick-btn" @click="goTo('blueprint')">
             <el-icon><Document /></el-icon>
-            生成整书蓝图
+            整书蓝图
           </el-button>
         </el-col>
         <el-col :span="6">

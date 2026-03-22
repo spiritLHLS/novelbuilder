@@ -2,18 +2,19 @@
   <div class="blueprint">
     <div class="page-header">
       <h1>蓝图管理</h1>
-      <el-button type="primary" @click="openGenerateDialog(!!currentBlueprint)" :loading="generating"
-        :disabled="generating || currentBlueprint?.status === 'approved' || currentBlueprint?.status === 'pending_review'">
-        <el-icon><MagicStick /></el-icon>{{ currentBlueprint ? '重新生成' : '生成蓝图' }}
-      </el-button>
+      <div style="display: flex; gap: 8px;">
+        <el-button v-if="!currentBlueprint && !generating" type="primary" @click="openGenerateDialog(false)">
+          <el-icon><Plus /></el-icon>新建蓝图
+        </el-button>
+      </div>
     </div>
 
     <!-- Generation Config Dialog -->
-    <el-dialog v-model="dialogVisible" :title="isRegenerate ? '重新生成蓝图' : '生成蓝图'" width="520px" :close-on-click-modal="false">
-      <el-form :model="genForm" label-width="120px">
-        <el-form-item label="卷数" required>
+    <el-dialog v-model="dialogVisible" :title="isRegenerate ? '重新生成蓝图' : '新建蓝图'" width="520px" :close-on-click-modal="false">
+      <el-form ref="genFormRef" :model="genForm" :rules="genFormRules" label-width="120px">
+        <el-form-item label="卷数" prop="volume_count" required>
           <el-input-number v-model="genForm.volume_count" :min="1" :max="30" :step="1" style="width: 160px;" />
-          <span class="form-hint">卷</span>
+          <span class="form-hint">卷（必填，规划整本书的卷册数量）</span>
         </el-form-item>
         <el-form-item label="每章最少字数">
           <el-input-number v-model="genForm.chapter_words_min" :min="500" :max="10000" :step="500" style="width: 160px;" />
@@ -36,18 +37,16 @@
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="generating" @click="confirmGenerate">
-          {{ isRegenerate ? '确认重新生成' : '确认生成' }}
+          {{ isRegenerate ? '确认重新生成' : '确认新建' }}
         </el-button>
       </template>
     </el-dialog>
 
     <!-- No Blueprint -->
-    <el-empty v-if="!currentBlueprint && !generating" description="尚未生成蓝图">
-      <el-button type="primary" @click="openGenerateDialog(false)" :loading="generating">
-        一键生成完整蓝图
-      </el-button>
-      <p style="color: #888; margin-top: 12px; font-size: 13px;">
-        蓝图会根据世界设定自动生成世界圣经、大纲、角色、伏笔和卷册规划（至少4卷）
+    <el-empty v-if="!currentBlueprint && !generating" description="尚未创建蓝图">
+      <p style="color: #888; margin-top: 8px; font-size: 13px; text-align: center;">
+        点击右上角「新建蓝图」按钮，指定卷数后开始生成。<br>
+        蓝图将根据世界设定自动生成世界圣经、大纲、角色、伏笔和卷册规划。
       </p>
     </el-empty>
 
@@ -90,7 +89,9 @@
             <el-button v-if="currentBlueprint.status === 'pending_review'"
               type="danger" @click="rejectBlueprint">驳回</el-button>
             <el-button v-if="currentBlueprint.status === 'draft' || currentBlueprint.status === 'rejected' || currentBlueprint.status === 'failed'"
-              type="warning" @click="openGenerateDialog(true)">重新生成</el-button>
+              type="warning" :loading="generating" @click="openGenerateDialog(true)">
+              <el-icon><Refresh /></el-icon>重新生成
+            </el-button>
           </el-col>
         </el-row>
       </el-card>
@@ -194,7 +195,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, type FormInstance } from 'element-plus'
 import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, projectApi } from '@/api'
 
 const route = useRoute()
@@ -214,7 +215,14 @@ const foreshadowingCount = ref(0)
 // Generation dialog state
 const dialogVisible = ref(false)
 const isRegenerate = ref(false)
+const genFormRef = ref<FormInstance>()
 const genForm = ref({ volume_count: 4, chapter_words_min: 2000, chapter_words_max: 3500, idea: '' })
+const genFormRules = {
+  volume_count: [
+    { required: true, message: '请指定卷数', trigger: 'change' },
+    { type: 'number', min: 1, message: '卷数至少1卷', trigger: 'change' },
+  ],
+}
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -251,6 +259,8 @@ async function openGenerateDialog(regen: boolean) {
 }
 
 async function confirmGenerate() {
+  const valid = await genFormRef.value?.validate().catch(() => false)
+  if (!valid) return
   dialogVisible.value = false
   if (isRegenerate.value) {
     stopPolling()
