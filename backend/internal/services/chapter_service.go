@@ -567,6 +567,17 @@ func (s *ChapterService) Approve(ctx context.Context, id, comment string, versio
 	return nil
 }
 
+// AutoApprove approves a chapter unconditionally without optimistic-lock checking.
+// Used by background task pipelines (auto-write, batch-generate) in non-strict-review
+// mode so subsequent tasks can proceed without human intervention.
+func (s *ChapterService) AutoApprove(ctx context.Context, id, comment string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE chapters SET status = 'approved', review_comment = $1, version = version + 1, updated_at = NOW()
+		 WHERE id = $2 AND status NOT IN ('rejected')`,
+		comment, id)
+	return err
+}
+
 func (s *ChapterService) Reject(ctx context.Context, id, comment string, version int) error {
 	result, err := s.db.Exec(ctx,
 		`UPDATE chapters SET status = 'rejected', review_comment = $1, version = version + 1, updated_at = NOW()

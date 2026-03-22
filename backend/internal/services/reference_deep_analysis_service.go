@@ -892,28 +892,22 @@ func (s *ReferenceDeepAnalysisService) mergeChunks(
 }
 
 // buildPriorContext extracts a compact list of entity names already found in
-// completed chunks. A sliding window of the last windowSize chunks is used so
-// the hint stays bounded even for very long novels. Per-category caps and a
-// total byte budget provide an additional safety net.
+// completed chunks.  ALL completed chunks are scanned so that major recurring
+// characters (e.g. a protagonist who appears in every chapter) are always in
+// the hint and the LLM doesn't re-extract them indefinitely.
+// Per-category caps and a total byte budget keep the hint size bounded.
 //
 // Only names are included (no descriptions) to minimise prompt bloat.
 func buildPriorContext(completed []chunkResult) map[string]interface{} {
 	const (
-		windowSize = 8    // look back at most this many completed chunks
-		maxChars   = 30   // max character entries
-		maxLocs    = 20   // max location entries
-		maxSystems = 10   // max system/power entries
-		maxGloss   = 40   // max glossary term entries
-		maxTotalB  = 2000 // hard byte budget for the whole prior context payload
+		maxChars   = 150  // max character entries — big enough for long novels
+		maxLocs    = 50   // max location entries
+		maxSystems = 20   // max system/power entries
+		maxGloss   = 80   // max glossary term entries
+		maxTotalB  = 6000 // hard byte budget for the whole prior context payload
 	)
 	if len(completed) == 0 {
 		return nil
-	}
-
-	// Sliding window: only inspect the most recent chunks.
-	window := completed
-	if len(window) > windowSize {
-		window = window[len(window)-windowSize:]
 	}
 
 	charSet := map[string]bool{}
@@ -921,7 +915,7 @@ func buildPriorContext(completed []chunkResult) map[string]interface{} {
 	sysSet := map[string]bool{}
 	glossSet := map[string]bool{}
 
-	for _, r := range window {
+	for _, r := range completed {
 		if r == nil {
 			continue
 		}

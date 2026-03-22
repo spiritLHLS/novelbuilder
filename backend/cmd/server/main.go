@@ -260,6 +260,15 @@ func main() {
 		if _, err := h.RunAuditRevisePipeline(ctx, ch.ID, payload.AuditRevise); err != nil {
 			return fmt.Errorf("audit-revise pipeline: %w", err)
 		}
+
+		// In non-strict (auto) mode, auto-approve the chapter after a successful
+		// audit-revise cycle so the next background task iteration can proceed
+		// without waiting for a human to click approve.
+		if !wfEngine.IsStrictReview(ctx, projectID) {
+			if autoErr := chapterService.AutoApprove(ctx, ch.ID, "auto-approved by pipeline"); autoErr != nil {
+				logger.Warn("auto-approve failed", zap.String("chapter_id", ch.ID), zap.Error(autoErr))
+			}
+		}
 		return nil
 	})
 

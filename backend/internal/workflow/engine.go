@@ -70,6 +70,37 @@ func (e *Engine) CanGenerateNextChapter(ctx context.Context, projectID string) e
 		return nil
 	}
 
+	// Check the strict_review setting on the most recent workflow run.
+	// In non-strict (auto) mode, chapters are auto-approved by the task pipeline
+	// so we only block on explicitly rejected chapters.
+	// In strict mode (manual review), each chapter must be explicitly approved
+	// before the next can be generated.
+	var strictReview bool
+	if qErr := e.db.QueryRow(ctx,
+		`SELECT COALESCE(strict_review, true)
+		 FROM workflow_runs
+		 WHERE project_id = $1
+		 ORDER BY created_at DESC LIMIT 1`, projectID).Scan(&strictReview); qErr != nil {
+		// If no workflow run exists or query fails, default to strict for safety.
+		strictReview = true
+	}
+
+	if !strictReview {
+		// Auto mode: only block if the last chapter is explicitly rejected.
+		var rejected bool
+		if err = e.db.QueryRow(ctx,
+			`SELECT EXISTS(
+				SELECT 1 FROM chapters WHERE project_id = $1 AND chapter_num = $2 AND status = 'rejected'
+			)`, projectID, lastChapterNum).Scan(&rejected); err != nil {
+			return fmt.Errorf("check prev chapter rejected: %w", err)
+		}
+		if rejected {
+			return ErrPrevChapterNotApproved
+		}
+		return nil
+	}
+
+	// Strict mode: require explicit human approval.
 	var prevApproved bool
 	err = e.db.QueryRow(ctx,
 		`SELECT EXISTS(
@@ -83,6 +114,20 @@ func (e *Engine) CanGenerateNextChapter(ctx context.Context, projectID string) e
 	}
 
 	return nil
+}
+
+// IsStrictReview returns true if the latest workflow run for the project has
+// strict_review enabled (i.e. chapters require manual human approval).
+func (e *Engine) IsStrictReview(ctx context.Context, projectID string) bool {
+	var strict bool
+	if err := e.db.QueryRow(ctx,
+		`SELECT COALESCE(strict_review, true)
+		 FROM workflow_runs
+		 WHERE project_id = $1
+		 ORDER BY created_at DESC LIMIT 1`, projectID).Scan(&strict); err != nil {
+		return true // safe default
+	}
+	return strict
 }
 
 func (e *Engine) TransitStep(ctx context.Context, stepID string, toStatus string, version int) error {

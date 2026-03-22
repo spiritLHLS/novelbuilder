@@ -534,7 +534,7 @@ async def analyze_chunk(req: ChunkAnalyzeRequest):
     return {
         "job_id": req.job_id,
         "chunk_index": req.chunk_index,
-        "characters": chars,
+        "characters": _sort_by_importance(chars),
         "world": world,
         "outline": outline,
         "glossary": result.get("glossary", []),
@@ -556,7 +556,16 @@ _MERGE_CHARACTERS_PROMPT = """以下是从同一部小说不同章节片段提�
 2. 保留所有重要人物（主角、主要配角、反派等），不限数量
 3. traits为逗号分隔的字符串（最多5个特点），relationships为"角色：关系"用分号分隔（最多5条）
 4. 每个字段严格控制字数，优先保证JSON完整输出
-5. 只返回JSON数组，不要其他文字，确保所有括号/引号完整闭合
+5. 按重要度从高到低排列：主角最先，其次主要配角、反派，配角、其他类最后
+6. 只返回JSON数组，不要其他文字，确保所有括号/引号完整闭合
+"""
+
+_MERGE_WORLD_SETTING_PROMPT = """以下是从同一部小说不同章节片段提取的世界观背景描述（文字列表），
+请将这些描述综合整合成一段连贯的世界观summary，100字以内，不要列举原文，用自己的语言综合。
+只返回综合后的纯文字，不要任何JSON或其他格式。
+
+原始描述列表：
+{data}
 """
 
 _MERGE_WORLD_PROMPT = """以下是从同一部小说不同章节片段提取的世界观信息（JSON数组），
@@ -568,7 +577,7 @@ _MERGE_WORLD_PROMPT = """以下是从同一部小说不同章节片段提取的�
 
 要求：
 1. setting综合所有描述，100字以内
-2. locations取并集去重，不超过30条；systems取并集去重，不超过15条
+2. locations取并集去重，不超过50条；systems取并集去重，不超过25条
 3. 只返回JSON对象，不要其他文字，确保所有括号/引号完整闭合
 """
 
@@ -598,6 +607,247 @@ _MERGE_FORESHADOWINGS_PROMPT = """以下是从同一部小说不同章节片段�
 3. related_characters为字符串数组
 4. 只返回JSON数组，不要其他文字，确保所有括号/引号完整闭合
 """
+
+
+# ── Role importance helpers ──────────────────────────────────────────────────
+
+_ROLE_PRIORITY: dict[str, int] = {
+    "主角": 0,
+    "protagonist": 0,
+    "主要配角": 1,
+    "主要角色": 1,
+    "反派": 2,
+    "villain": 2,
+    "antagonist": 2,
+    "配角": 3,
+    "supporting": 3,
+    "其他": 4,
+    "other": 4,
+}
+
+
+def _role_priority(role: str) -> int:
+    """Return sort key for a character role string (lower = more important)."""
+    if not role:
+        return 4
+    r = role.strip()
+    if r in _ROLE_PRIORITY:
+        return _ROLE_PRIORITY[r]
+    rl = r.lower()
+    if "主角" in rl or "protagonist" in rl:
+        return 0
+    if "主要" in rl:
+        return 1
+    if "反派" in rl or "villain" in rl or "antagonist" in rl:
+        return 2
+    if "配角" in rl or "supporting" in rl:
+        return 3
+    return 4
+
+
+def _sort_by_importance(chars: list) -> list:
+    """Return characters sorted by role importance (most important first)."""
+    return sorted(chars, key=lambda c: _role_priority(c.get("role", "") if isinstance(c, dict) else ""))
+
+
+# ── World chunked merge ───────────────────────────────────────────────────────
+
+async def _merge_world_chunked(all_worlds: list, cfg: LLMConfig) -> dict:
+    """Merge world data from all chunks without any hard truncation.
+
+    Strategy:
+    - locations and systems: Python set-union (no LLM, no truncation).
+    - setting text: batch into ≤12 000-byte chunks and LLM-summarize each,
+      then do one final summary pass for multi-batch novels.
+    - time_period: pick the longest/most-informative value.
+    """
+    if not all_worlds:
+        return {}
+
+    loc_set: set[str] = set()
+    sys_set: set[str] = set()
+    settings: list[str] = []
+    time_candidates: list[str] = []
+
+    for w in all_worlds:
+        if not isinstance(w, dict):
+            continue
+        s = (w.get("setting") or "").strip()
+        if s:
+            settings.append(s)
+        t = (w.get("time_period") or "").strip()
+        if t:
+            time_candidates.append(t)
+        for loc in (w.get("locations") or []):
+            if isinstance(loc, str) and loc.strip():
+                loc_set.add(loc.strip())
+        for sys_ in (w.get("systems") or []):
+            if isinstance(sys_, str) and sys_.strip():
+                sys_set.add(sys_.strip())
+
+    # Pick the most informative time_period (longest non-empty string).
+    time_period = max(time_candidates, key=len) if time_candidates else ""
+
+    # Deduplicate settings text by 30-char prefix to remove near-duplicate short entries.
+    unique_settings: list[str] = []
+    seen_prefixes: set[str] = set()
+    for s in settings:
+        prefix = s[:30].lower()
+        if prefix not in seen_prefixes:
+            seen_prefixes.add(prefix)
+            unique_settings.append(s)
+
+    # Batch settings texts for LLM summarization (≤12 000 bytes per batch).
+    MAX_SETTING_BYTES = 12_000
+    batches: list[list[str]] = []
+    cur: list[str] = []
+    cur_size = 0
+    for s in unique_settings:
+        if cur and cur_size + len(s) > MAX_SETTING_BYTES:
+            batches.append(cur)
+            cur = [s]
+            cur_size = len(s)
+        else:
+            cur.append(s)
+            cur_size += len(s)
+    if cur:
+        batches.append(cur)
+
+    setting_summary = ""
+    if not batches:
+        pass
+    elif len(batches) == 1 and len(batches[0]) == 1:
+        setting_summary = batches[0][0][:200]
+    else:
+        batch_summaries: list[str] = []
+        for batch in batches:
+            data_text = "\n".join(f"{j+1}. {s}" for j, s in enumerate(batch))
+            result = await _llm_extract(_MERGE_WORLD_SETTING_PROMPT.format(data=data_text), cfg)
+            # _MERGE_WORLD_SETTING_PROMPT asks for plain text; LLM may wrap it in a JSON key
+            if isinstance(result, dict):
+                raw = result.get("setting") or result.get("text") or result.get("summary") or ""
+            else:
+                raw = ""
+            batch_summaries.append(raw or " ".join(batch)[:200])
+        if len(batch_summaries) == 1:
+            setting_summary = batch_summaries[0]
+        else:
+            combined = "\n".join(f"{j+1}. {s}" for j, s in enumerate(batch_summaries))
+            result = await _llm_extract(_MERGE_WORLD_SETTING_PROMPT.format(data=combined), cfg)
+            if isinstance(result, dict):
+                setting_summary = result.get("setting") or result.get("text") or result.get("summary") or ""
+            if not setting_summary:
+                setting_summary = " / ".join(batch_summaries)[:300]
+
+    return {
+        "setting": setting_summary,
+        "time_period": time_period,
+        "locations": sorted(loc_set),
+        "systems": sorted(sys_set),
+    }
+
+
+async def _merge_characters_chunked(all_chars: list, cfg: LLMConfig) -> list:
+    """Merge characters in multiple LLM passes to handle large novels correctly.
+
+    A single LLM call cannot fit hundreds of character entries from a long novel.
+    Strategy:
+    1. Python-level exact-name dedup first (keep richest entry per name).
+    2. Pack deduplicated entries into batches capped at MAX_BATCH_BYTES JSON bytes.
+    3. LLM-merge each batch independently.
+    4. If there is more than one batch, do a final LLM merge pass over all batch
+       results (they are now small enough since the LLM already condensed them).
+    5. Fall back to Python-name-dedup of the batch results when the final pass
+       also exceeds the byte budget (extremely large casts).
+    """
+    if not all_chars:
+        return []
+
+    # Step 1: Python dedup by exact name (case-insensitive). Keep the entry with
+    # the longest description, merging traits lists when present.
+    name_map: dict[str, dict] = {}
+    for ch in all_chars:
+        name = (ch.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key not in name_map:
+            name_map[key] = dict(ch)
+        else:
+            existing = name_map[key]
+            # Prefer the entry with a richer description.
+            if len(str(ch.get("description", ""))) > len(str(existing.get("description", ""))):
+                merged = {**existing, **{k: v for k, v in ch.items() if v}}
+                # Keep canonical name capitalisation from the richer entry.
+                name_map[key] = merged
+            else:
+                # Absorb non-empty fields from the newer entry that the existing lacks.
+                for k, v in ch.items():
+                    if v and not existing.get(k):
+                        existing[k] = v
+
+    deduped = list(name_map.values())
+    logger.info("merge_characters: %d raw → %d after python name-dedup", len(all_chars), len(deduped))
+
+    if not deduped:
+        return []
+
+    # Step 2: Pack into batches capped at MAX_BATCH_BYTES of JSON.
+    MAX_BATCH_BYTES = 14_000  # comfortably within a 16K-token window after the prompt
+    batches: list[list[dict]] = []
+    current_batch: list[dict] = []
+    current_size = 0
+    for ch in deduped:
+        ch_json = json.dumps(ch, ensure_ascii=False)
+        if current_batch and current_size + len(ch_json) > MAX_BATCH_BYTES:
+            batches.append(current_batch)
+            current_batch = [ch]
+            current_size = len(ch_json)
+        else:
+            current_batch.append(ch)
+            current_size += len(ch_json)
+    if current_batch:
+        batches.append(current_batch)
+
+    logger.info("merge_characters: %d deduped entries → %d LLM batch(es)", len(deduped), len(batches))
+
+    # Step 3: LLM-merge each batch.
+    batch_results: list[dict] = []
+    for i, batch in enumerate(batches):
+        logger.info("merge_characters: LLM batch %d/%d (%d chars)", i + 1, len(batches), len(batch))
+        chars_data = json.dumps(batch, ensure_ascii=False)
+        result = await _llm_extract(_MERGE_CHARACTERS_PROMPT.format(data=chars_data), cfg)
+        merged = result if isinstance(result, list) else result.get("characters", batch)
+        batch_results.extend(merged)
+
+    if len(batches) == 1:
+        return _sort_by_importance(batch_results)  # already done
+
+    # Step 4: Final merge pass over all batch results (they are now condensed).
+    final_data = json.dumps(batch_results, ensure_ascii=False)
+    if len(final_data) <= MAX_BATCH_BYTES * 2:
+        result = await _llm_extract(_MERGE_CHARACTERS_PROMPT.format(data=final_data), cfg)
+        merged = result if isinstance(result, list) else result.get("characters", batch_results)
+        return _sort_by_importance(merged)
+
+    # Step 5: Fallback — too many even after LLM condensation; Python-dedup only.
+    logger.warning(
+        "merge_characters: final data still %d bytes after %d batches; falling back to python dedup",
+        len(final_data), len(batches),
+    )
+    final_map: dict[str, dict] = {}
+    for ch in batch_results:
+        name = (ch.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key not in final_map:
+            final_map[key] = dict(ch)
+        else:
+            existing = final_map[key]
+            if len(str(ch.get("description", ""))) > len(str(existing.get("description", ""))):
+                final_map[key] = {**existing, **{k: v for k, v in ch.items() if v}}
+    return _sort_by_importance(list(final_map.values()))
 
 
 def _dedup_outline(nodes: list) -> list:
@@ -679,19 +929,16 @@ async def merge_chunks(req: MergeRequest):
             temperature=0.3,
         )
 
-    chars_data = json.dumps(all_chars, ensure_ascii=False)[:8000]
-    world_data = json.dumps(all_worlds, ensure_ascii=False)[:6000]
-
-    # Characters and world use LLM for intelligent merging.
-    # Outline, glossary and foreshadowings use fast Python dedup to avoid
-    # token limits losing data from long novels.
-    chars_result, world_result = await asyncio.gather(
-        _llm_extract(_MERGE_CHARACTERS_PROMPT.format(data=chars_data), cfg),
-        _llm_extract(_MERGE_WORLD_PROMPT.format(data=world_data), cfg),
+    # Characters: multi-pass chunked merge (handles 300w+ novels with 100s of
+    # unique characters without any truncation).
+    # World: also multi-pass — locations/systems via Python set-union, settings via
+    # batched LLM summarization — no hard byte cap anywhere.
+    logger.info("merge: %d raw character entries, %d world entries", len(all_chars), len(all_worlds))
+    final_chars_raw, world_result = await asyncio.gather(
+        _merge_characters_chunked(all_chars, cfg),
+        _merge_world_chunked(all_worlds, cfg),
     )
-
-    # Normalize: merge_* prompts return arrays for chars, dict for world
-    final_chars_raw = chars_result if isinstance(chars_result, list) else chars_result.get("characters", all_chars[:30])
+    logger.info("merge: %d characters after chunked merge", len(final_chars_raw) if isinstance(final_chars_raw, list) else 0)
     # Convert flat merge output (traits/relationships as strings) back to structured lists
     final_chars = []
     for ch in final_chars_raw:
@@ -716,6 +963,7 @@ async def merge_chunks(req: MergeRequest):
         elif not isinstance(rel_raw, list):
             ch["relationships"] = []
         final_chars.append(ch)
+    final_chars = _sort_by_importance(final_chars)
     final_world = world_result if isinstance(world_result, dict) else (all_worlds[0] if all_worlds else {})
 
     # Outline: Python dedup — preserve all nodes up to 300, ordered by level (macro first)

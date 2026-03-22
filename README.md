@@ -165,7 +165,7 @@ docker run -d \
   -v novelbuilder-pg:/var/lib/postgresql/data \
   -v novelbuilder-qdrant:/var/lib/qdrant \
   -v novelbuilder-neo4j:/opt/neo4j/data \
--e ADMIN_USERNAME=spiritlhl \
+  -e ADMIN_USERNAME=spiritlhl \
   -e ADMIN_PASSWORD=spiritlhl136@136 \
   novelbuilder
 docker logs -f nb
