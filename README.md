@@ -141,15 +141,15 @@ novelbuilder/
 
 ```bash
 docker rm -f nb
-···
+```
 
-···bash
+```bash
 docker volume rm novelbuilder-pg
 docker volume rm novelbuilder-qdrant
 docker volume rm novelbuilder-neo4j
-···
+```
 
-···bash
+```bash
 rm -rf novelbuilder
 docker system prune -a
 ```
