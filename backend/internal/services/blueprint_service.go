@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -30,8 +31,11 @@ func NewBlueprintService(db *pgxpool.Pool, ai *gateway.AIGateway, wf *workflow.E
 	return &BlueprintService{db: db, ai: ai, wf: wf, logger: logger}
 }
 
+// Generate creates a placeholder blueprint record immediately (status="generating") and
+// launches the actual AI generation in the background. The caller receives 202 and
+// should poll GET /projects/:id/blueprint until status changes.
 func (s *BlueprintService) Generate(ctx context.Context, projectID string, req models.GenerateBlueprintRequest) (*models.BookBlueprint, error) {
-	// Get project info
+	// Validate that the project exists before creating anything.
 	var project models.Project
 	err := s.db.QueryRow(ctx,
 		`SELECT id, title, genre, description FROM projects WHERE id = $1`, projectID).Scan(
@@ -39,6 +43,55 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 	if err != nil {
 		return nil, fmt.Errorf("project not found: %w", err)
 	}
+
+	// Create a workflow run (non-critical; ignore error).
+	runID, _ := s.wf.CreateRun(ctx, projectID, false)
+
+	// Insert a placeholder blueprint record immediately so the frontend can track status.
+	bpID := uuid.New().String()
+	var bp models.BookBlueprint
+	err = s.db.QueryRow(ctx,
+		`INSERT INTO book_blueprints (id, project_id, master_outline, relation_graph, global_timeline, status, version, created_at, updated_at)
+		 VALUES ($1, $2, '{}', '{}', '[]', 'generating', 1, NOW(), NOW())
+		 RETURNING id, project_id, world_bible_ref, master_outline, relation_graph, global_timeline, status, version, review_comment, error_message, created_at, updated_at`,
+		bpID, projectID).Scan(
+		&bp.ID, &bp.ProjectID, &bp.WorldBibleRef, &bp.MasterOutline, &bp.RelationGraph,
+		&bp.GlobalTimeline, &bp.Status, &bp.Version, &bp.ReviewComment, &bp.ErrorMessage,
+		&bp.CreatedAt, &bp.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("create blueprint placeholder: %w", err)
+	}
+
+	// Launch background generation with a generous timeout (LLM calls can be slow).
+	genCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	go func() {
+		defer cancel()
+		if genErr := s.doGenerateWork(genCtx, projectID, bpID, runID, project, req); genErr != nil {
+			s.logger.Error("blueprint background generation failed",
+				zap.String("project_id", projectID),
+				zap.String("blueprint_id", bpID),
+				zap.Error(genErr))
+			s.db.Exec(genCtx,
+				`UPDATE book_blueprints SET status='failed', error_message=$1, updated_at=NOW() WHERE id=$2`,
+				genErr.Error(), bpID)
+		}
+	}()
+
+	s.logger.Info("blueprint generation queued",
+		zap.String("project_id", projectID),
+		zap.String("blueprint_id", bpID))
+	return &bp, nil
+}
+
+// doGenerateWork performs the actual LLM call and DB writes for blueprint generation.
+// On success it updates the placeholder blueprint to status='draft'. On failure the
+// caller marks the blueprint as status='failed'.
+func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, runID string, project models.Project, req models.GenerateBlueprintRequest) error {
+	logger := s.logger.With(
+		zap.String("project_id", projectID),
+		zap.String("blueprint_id", bpID),
+	)
+	logger.Info("blueprint generation: starting LLM call")
 
 	genre := req.Genre
 	if genre == "" {
@@ -58,12 +111,6 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 	chaptersPerVolume := req.ChaptersPerVolume
 	if chaptersPerVolume == 0 {
 		chaptersPerVolume = 30
-	}
-
-	// Create workflow run
-	runID, err := s.wf.CreateRun(ctx, projectID, false)
-	if err != nil {
-		return nil, fmt.Errorf("create workflow run: %w", err)
 	}
 
 	prompt := fmt.Sprintf(`你是一位资深小说策划编辑。请根据以下信息生成一套完整的整书资产包（Book Blueprint）。
@@ -98,13 +145,13 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 		Messages: []gateway.ChatMessage{{Role: "user", Content: prompt}},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("AI generation failed: %w", err)
+		return fmt.Errorf("AI generation failed: %w", err)
 	}
+	logger.Info("blueprint generation: LLM call completed, parsing response")
 
 	content := extractJSON(resp.Content)
 
-	// Parse the response
-	var blueprint struct {
+	var parsed struct {
 		WorldBible json.RawMessage `json:"world_bible"`
 		Characters []struct {
 			Name     string          `json:"name"`
@@ -125,38 +172,36 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 			ChapterEnd   int    `json:"chapter_end"`
 		} `json:"volumes"`
 	}
-	if err := json.Unmarshal([]byte(content), &blueprint); err != nil {
-		s.logger.Warn("failed to parse blueprint JSON, storing raw", zap.Error(err))
-		// Store raw content as master_outline
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		logger.Warn("failed to parse blueprint JSON, storing raw response", zap.Error(err))
 		rawJSON, _ := json.Marshal(map[string]string{"raw_content": content})
-		blueprint.MasterOutline = rawJSON
+		parsed.MasterOutline = rawJSON
 	}
 
-	// Wrap all DB writes in a single atomic transaction to prevent partial state
-	// on storage failure. AI generation runs BEFORE this tx opens
-	// so the transaction is short and never held during slow LLM calls.
+	// All DB writes run inside a single short transaction (LLM call is already done).
+	logger.Info("blueprint generation: writing data to database")
 	tx, txErr := s.db.Begin(ctx)
 	if txErr != nil {
-		return nil, fmt.Errorf("begin transaction: %w", txErr)
+		return fmt.Errorf("begin transaction: %w", txErr)
 	}
 	defer tx.Rollback(ctx)
 
-	// Store world bible
-	if blueprint.WorldBible != nil {
+	// Store world bible.
+	if parsed.WorldBible != nil {
 		wbID := uuid.New().String()
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO world_bibles (id, project_id, content, version, created_at, updated_at)
 			 VALUES ($1, $2, $3, 1, NOW(), NOW())
 			 ON CONFLICT (project_id) DO UPDATE SET content = $3, version = world_bibles.version + 1, updated_at = NOW()`,
-			wbID, projectID, blueprint.WorldBible); err != nil {
-			return nil, fmt.Errorf("store world bible: %w", err)
+			wbID, projectID, parsed.WorldBible); err != nil {
+			return fmt.Errorf("store world bible: %w", err)
 		}
 	}
 
-	// Store characters (batch upsert — ON CONFLICT handles blueprint re-generation)
-	if len(blueprint.Characters) > 0 {
+	// Store characters (batch upsert).
+	if len(parsed.Characters) > 0 {
 		chBatch := &pgx.Batch{}
-		for _, ch := range blueprint.Characters {
+		for _, ch := range parsed.Characters {
 			profileJSON := ch.Profile
 			if profileJSON == nil {
 				profileJSON = json.RawMessage(`{}`)
@@ -165,27 +210,28 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 				`INSERT INTO characters (id, project_id, name, role_type, profile, created_at, updated_at)
 				 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
 				 ON CONFLICT (project_id, name) DO UPDATE
-				     SET role_type = EXCLUDED.role_type,
-				         profile   = EXCLUDED.profile,
+				     SET role_type  = EXCLUDED.role_type,
+				         profile    = EXCLUDED.profile,
 				         updated_at = NOW()`,
 				uuid.New().String(), projectID, ch.Name, ch.RoleType, profileJSON)
 		}
 		br := tx.SendBatch(ctx, chBatch)
-		for i := range blueprint.Characters {
+		for i := range parsed.Characters {
 			if _, err := br.Exec(); err != nil {
 				br.Close()
-				return nil, fmt.Errorf("insert character %d: %w", i, err)
+				return fmt.Errorf("insert character %d: %w", i, err)
 			}
 		}
 		if err := br.Close(); err != nil {
-			return nil, fmt.Errorf("character batch close: %w", err)
+			return fmt.Errorf("character batch close: %w", err)
 		}
+		logger.Info("blueprint generation: characters stored", zap.Int("count", len(parsed.Characters)))
 	}
 
-	// Store foreshadowings (batch insert)
-	if len(blueprint.Foreshadowings) > 0 {
+	// Store foreshadowings (batch insert).
+	if len(parsed.Foreshadowings) > 0 {
 		fsBatch := &pgx.Batch{}
-		for _, fs := range blueprint.Foreshadowings {
+		for _, fs := range parsed.Foreshadowings {
 			embedMethod := fs.EmbedMethod
 			if embedMethod == "" {
 				embedMethod = "implicit"
@@ -200,48 +246,42 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 				uuid.New().String(), projectID, fs.Content, embedMethod, priority)
 		}
 		br := tx.SendBatch(ctx, fsBatch)
-		for i := range blueprint.Foreshadowings {
+		for i := range parsed.Foreshadowings {
 			if _, err := br.Exec(); err != nil {
 				br.Close()
-				return nil, fmt.Errorf("insert foreshadowing %d: %w", i, err)
+				return fmt.Errorf("insert foreshadowing %d: %w", i, err)
 			}
 		}
 		if err := br.Close(); err != nil {
-			return nil, fmt.Errorf("foreshadowing batch close: %w", err)
+			return fmt.Errorf("foreshadowing batch close: %w", err)
 		}
 	}
 
-	// Create book blueprint record
-	bpID := uuid.New().String()
-	masterOutline := blueprint.MasterOutline
+	// Update the placeholder blueprint record with the generated content.
+	masterOutline := parsed.MasterOutline
 	if masterOutline == nil {
 		masterOutline = json.RawMessage(`{}`)
 	}
-	relationGraph := blueprint.RelationGraph
+	relationGraph := parsed.RelationGraph
 	if relationGraph == nil {
 		relationGraph = json.RawMessage(`{}`)
 	}
-	globalTimeline := blueprint.GlobalTimeline
+	globalTimeline := parsed.GlobalTimeline
 	if globalTimeline == nil {
-		globalTimeline = json.RawMessage(`{}`)
+		globalTimeline = json.RawMessage(`[]`)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE book_blueprints
+		 SET status = 'draft', master_outline = $1, relation_graph = $2, global_timeline = $3, updated_at = NOW()
+		 WHERE id = $4`,
+		masterOutline, relationGraph, globalTimeline, bpID); err != nil {
+		return fmt.Errorf("update blueprint content: %w", err)
 	}
 
-	var bp models.BookBlueprint
-	err = tx.QueryRow(ctx,
-		`INSERT INTO book_blueprints (id, project_id, master_outline, relation_graph, global_timeline, status, version, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, 'draft', 1, NOW(), NOW())
-		 RETURNING id, project_id, world_bible_ref, master_outline, relation_graph, global_timeline, status, version, review_comment, created_at, updated_at`,
-		bpID, projectID, masterOutline, relationGraph, globalTimeline).Scan(
-		&bp.ID, &bp.ProjectID, &bp.WorldBibleRef, &bp.MasterOutline, &bp.RelationGraph,
-		&bp.GlobalTimeline, &bp.Status, &bp.Version, &bp.ReviewComment, &bp.CreatedAt, &bp.UpdatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("store blueprint: %w", err)
-	}
-
-	// Store volumes (batch insert)
-	if len(blueprint.Volumes) > 0 {
+	// Store volumes (batch insert).
+	if len(parsed.Volumes) > 0 {
 		volBatch := &pgx.Batch{}
-		for i, vol := range blueprint.Volumes {
+		for i, vol := range parsed.Volumes {
 			title := vol.Title
 			if title == "" {
 				title = fmt.Sprintf("第%d卷", i+1)
@@ -252,41 +292,46 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 				uuid.New().String(), projectID, i+1, title, bpID, vol.ChapterStart, vol.ChapterEnd)
 		}
 		br := tx.SendBatch(ctx, volBatch)
-		for i := range blueprint.Volumes {
+		for i := range parsed.Volumes {
 			if _, err := br.Exec(); err != nil {
 				br.Close()
-				return nil, fmt.Errorf("insert volume %d: %w", i, err)
+				return fmt.Errorf("insert volume %d: %w", i, err)
 			}
 		}
 		if err := br.Close(); err != nil {
-			return nil, fmt.Errorf("volume batch close: %w", err)
+			return fmt.Errorf("volume batch close: %w", err)
 		}
 	}
 
-	// Update project status within the transaction for atomicity
-	if _, err := tx.Exec(ctx, `UPDATE projects SET status = 'blueprint_generated', updated_at = NOW() WHERE id = $1`, projectID); err != nil {
-		return nil, fmt.Errorf("update project status: %w", err)
+	// Update project status atomically.
+	if _, err := tx.Exec(ctx,
+		`UPDATE projects SET status = 'blueprint_generated', updated_at = NOW() WHERE id = $1`, projectID); err != nil {
+		return fmt.Errorf("update project status: %w", err)
 	}
 
 	if err = tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit blueprint transaction: %w", err)
+		return fmt.Errorf("commit blueprint transaction: %w", err)
 	}
 
-	// Create workflow step after successful commit (metadata; non-critical if this fails)
+	// Record the workflow step (non-critical).
 	stepID, _ := s.wf.CreateStep(ctx, runID, "blueprint", "blueprint_gate", 0)
 	s.wf.MarkStepGenerated(ctx, stepID, bpID)
 
-	s.logger.Info("blueprint generated", zap.String("project_id", projectID), zap.String("blueprint_id", bpID))
-	return &bp, nil
+	logger.Info("blueprint generation: completed successfully",
+		zap.Int("characters", len(parsed.Characters)),
+		zap.Int("foreshadowings", len(parsed.Foreshadowings)),
+		zap.Int("volumes", len(parsed.Volumes)))
+	return nil
 }
 
 func (s *BlueprintService) Get(ctx context.Context, projectID string) (*models.BookBlueprint, error) {
 	var bp models.BookBlueprint
 	err := s.db.QueryRow(ctx,
-		`SELECT id, project_id, world_bible_ref, master_outline, relation_graph, global_timeline, status, version, review_comment, created_at, updated_at
+		`SELECT id, project_id, world_bible_ref, master_outline, relation_graph, global_timeline, status, version, review_comment, error_message, created_at, updated_at
 		 FROM book_blueprints WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1`,
 		projectID).Scan(&bp.ID, &bp.ProjectID, &bp.WorldBibleRef, &bp.MasterOutline, &bp.RelationGraph,
-		&bp.GlobalTimeline, &bp.Status, &bp.Version, &bp.ReviewComment, &bp.CreatedAt, &bp.UpdatedAt)
+		&bp.GlobalTimeline, &bp.Status, &bp.Version, &bp.ReviewComment, &bp.ErrorMessage,
+		&bp.CreatedAt, &bp.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil

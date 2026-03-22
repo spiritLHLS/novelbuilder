@@ -88,7 +88,8 @@ type BookBlueprint struct {
 	GlobalTimeline json.RawMessage `json:"global_timeline" db:"global_timeline"`
 	Status         string          `json:"status" db:"status"`
 	Version        int             `json:"version" db:"version"`
-	ReviewComment  string          `json:"review_comment" db:"review_comment"`
+	ReviewComment  *string         `json:"review_comment" db:"review_comment"`
+	ErrorMessage   *string         `json:"error_message" db:"error_message"`
 	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at" db:"updated_at"`
 }

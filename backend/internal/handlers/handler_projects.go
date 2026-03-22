@@ -81,7 +81,8 @@ func (h *Handler) GenerateBlueprint(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(201, gin.H{"data": bp})
+	// 202: generation is running in the background; caller should poll GET blueprint.
+	c.JSON(202, gin.H{"data": bp})
 }
 
 func (h *Handler) GetBlueprint(c *gin.Context) {

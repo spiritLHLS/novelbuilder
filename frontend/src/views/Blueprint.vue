@@ -19,14 +19,25 @@
     </el-empty>
 
     <!-- Generating Progress -->
-    <el-card v-if="generating" shadow="hover" style="text-align: center; padding: 40px 0;">
+    <el-card v-if="generating" shadow="hover" style="text-align: center; padding: 40px 20px;">
       <el-icon :size="48" class="is-loading" style="color: #409eff;"><Loading /></el-icon>
       <h3 :style="{ color: 'var(--nb-text-primary)', marginTop: '16px' }">正在生成蓝图...</h3>
-      <p style="color: #888;">AI正在构建世界设定、角色体系、故事大纲和卷册结构</p>
+      <p style="color: #888; margin-bottom: 24px;">AI正在构建世界设定、角色体系、故事大纲和卷册结构，请稍候</p>
+      <el-steps :active="generatingStep" align-center style="max-width: 600px; margin: 0 auto;">
+        <el-step title="初始化" description="创建任务" />
+        <el-step title="AI创作" description="调用大模型" />
+        <el-step title="解析数据" description="处理返回内容" />
+        <el-step title="写入数据库" description="保存世界圣经/角色/大纲" />
+        <el-step title="完成" description="蓝图就绪" />
+      </el-steps>
     </el-card>
 
+    <!-- Generation Failed -->
+    <el-alert v-if="generationError" type="error" :title="'蓝图生成失败: ' + generationError"
+      show-icon closable style="margin-bottom: 16px;" @close="generationError = ''" />
+
     <!-- Blueprint Content -->
-    <template v-if="currentBlueprint">
+    <template v-if="currentBlueprint && !generating">
       <!-- Status Bar -->
       <el-card shadow="hover" class="status-bar">
         <el-row :gutter="20" align="middle">
@@ -119,7 +130,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi } from '@/api'
@@ -129,6 +140,8 @@ const projectId = route.params.projectId as string
 
 const currentBlueprint = ref<any>(null)
 const generating = ref(false)
+const generatingStep = ref(0)
+const generationError = ref('')
 const volumes = ref<any[]>([])
 
 const worldBibleCount = ref(0)
@@ -136,16 +149,51 @@ const characterCount = ref(0)
 const outlineCount = ref(0)
 const foreshadowingCount = ref(0)
 
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+function stopPolling() {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+async function pollBlueprintStatus() {
+  try {
+    const res = await blueprintApi.get(projectId)
+    const bp = res?.data?.data
+    if (!bp) return
+    currentBlueprint.value = bp
+    // Advance the step indicator while waiting
+    if (generatingStep.value < 3) generatingStep.value++
+    if (bp.status !== 'generating') {
+      stopPolling()
+      generating.value = false
+      if (bp.status === 'failed') {
+        generationError.value = bp.error_message || '未知错误'
+        currentBlueprint.value = null
+        ElMessage.error('蓝图生成失败')
+      } else {
+        generatingStep.value = 4
+        ElMessage.success('蓝图生成完成')
+        await fetchAll()
+      }
+    }
+  } catch {
+    // Network error – keep polling
+  }
+}
+
 const blueprintStatusType = computed(() => {
   const map: Record<string, string> = {
-    generated: 'info', pending_review: 'warning', approved: 'success', rejected: 'danger',
+    generating: 'info', draft: 'info', pending_review: 'warning', approved: 'success', rejected: 'danger', failed: 'danger',
   }
   return (map[currentBlueprint.value?.status] || 'info') as any
 })
 
 const blueprintStatusLabel = computed(() => {
   const map: Record<string, string> = {
-    generated: '已生成', pending_review: '待审核', approved: '已批准', rejected: '已驳回',
+    generating: '生成中', draft: '草稿', pending_review: '待审核', approved: '已批准', rejected: '已驳回', failed: '生成失败',
   }
   return map[currentBlueprint.value?.status] || currentBlueprint.value?.status
 })
@@ -154,7 +202,21 @@ function formatDate(d: string) {
   return d ? new Date(d).toLocaleString('zh-CN') : '-'
 }
 
-onMounted(fetchAll)
+onMounted(async () => {
+  await fetchAll()
+  // If a generation is already in progress (e.g., after page refresh) resume polling.
+  if (currentBlueprint.value?.status === 'generating') {
+    generating.value = true
+    generatingStep.value = 1
+    pollTimer = setInterval(pollBlueprintStatus, 3000)
+  } else if (currentBlueprint.value?.status === 'failed') {
+    // Show the error from the previous attempt and allow the user to retry.
+    generationError.value = currentBlueprint.value.error_message || '蓝图生成失败，请重试'
+    currentBlueprint.value = null
+  }
+})
+
+onBeforeUnmount(stopPolling)
 
 async function fetchAll() {
   try {
@@ -181,20 +243,27 @@ async function fetchAll() {
 
 async function generateBlueprint() {
   generating.value = true
+  generatingStep.value = 0
+  generationError.value = ''
   try {
     const res = await blueprintApi.generate(projectId, {})
-    currentBlueprint.value = res.data.data
-    ElMessage.success('蓝图生成完成')
-    await fetchAll()
+    // 202: generation is running in background, start polling
+    const bp = res.data?.data
+    if (bp) {
+      currentBlueprint.value = bp
+      generatingStep.value = 1
+    }
+    stopPolling()
+    pollTimer = setInterval(pollBlueprintStatus, 3000)
   } catch {
-    ElMessage.error('蓝图生成失败')
-  } finally {
     generating.value = false
+    ElMessage.error('蓝图生成请求失败')
   }
 }
 
 async function regenerateBlueprint() {
   await ElMessageBox.confirm('重新生成将覆盖当前蓝图内容，确认？', '重新生成', { type: 'warning' })
+  stopPolling()
   currentBlueprint.value = null
   await generateBlueprint()
 }

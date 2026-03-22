@@ -538,8 +538,9 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 	}
 
 	// Mark the reference material as completed so the RAG rebuild can find it.
+	// Note: reference_materials has no updated_at column, so omit it here.
 	if _, dbErr := s.db.Exec(ctx,
-		`UPDATE reference_materials SET status = 'completed', updated_at = NOW() WHERE id = $1`,
+		`UPDATE reference_materials SET status = 'completed' WHERE id = $1`,
 		job.RefID); dbErr != nil {
 		s.logger.Warn("could not mark reference as completed after import",
 			zap.String("ref_id", job.RefID), zap.Error(dbErr))
