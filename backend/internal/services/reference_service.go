@@ -382,31 +382,43 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 	}
 
 	// For references without sample_texts, extract style samples from chapter content.
-	// Read up to 60 chapters per reference and sample sentences evenly.
+	// Read ALL chapters per reference and sample sentences evenly.
+	// We stream in batches of 200 to bound memory for very large novels.
+	const chapterBatchSize = 200
 	for _, refID := range noSamplesRefIDs {
-		chapRows, chErr := s.db.Query(ctx,
-			`SELECT content FROM reference_book_chapters
-			 WHERE ref_id = $1 AND NOT is_deleted AND content <> ''
-			 ORDER BY chapter_no LIMIT 60`,
-			refID)
-		if chErr != nil {
-			s.logger.Warn("could not read chapters for RAG rebuild", zap.String("ref_id", refID), zap.Error(chErr))
-			continue
-		}
 		var allText strings.Builder
-		for chapRows.Next() {
-			var content string
-			if scanErr := chapRows.Scan(&content); scanErr == nil {
-				allText.WriteString(content)
-				allText.WriteByte('\n')
+		offset := 0
+		for {
+			chapRows, chErr := s.db.Query(ctx,
+				`SELECT content FROM reference_book_chapters
+				 WHERE ref_id = $1 AND NOT is_deleted AND content <> ''
+				 ORDER BY chapter_no LIMIT $2 OFFSET $3`,
+				refID, chapterBatchSize, offset)
+			if chErr != nil {
+				s.logger.Warn("could not read chapters for RAG rebuild", zap.String("ref_id", refID), zap.Error(chErr))
+				break
 			}
+			rowCount := 0
+			for chapRows.Next() {
+				var content string
+				if scanErr := chapRows.Scan(&content); scanErr == nil {
+					allText.WriteString(content)
+					allText.WriteByte('\n')
+				}
+				rowCount++
+			}
+			chapRows.Close()
+			if rowCount < chapterBatchSize {
+				break // last page — no more chapters
+			}
+			offset += chapterBatchSize
 		}
-		chapRows.Close()
 		if allText.Len() == 0 {
 			continue
 		}
-		// Sample up to 40 sentences evenly spaced from the combined text
-		sentences := sampleSentences(allText.String(), 40)
+		// Sample up to 300 sentences evenly spaced from the full combined text.
+		// For a 300万-character novel this yields dense, representative coverage.
+		sentences := sampleSentences(allText.String(), 300)
 		if len(sentences) == 0 {
 			continue
 		}
@@ -423,6 +435,94 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		rebuilt++
 	}
 
+	// ── world_knowledge: chunk world-bible content into paragraphs ─────────────
+	wbRows, wbErr := s.db.Query(ctx,
+		`SELECT id::text, content::text FROM world_bibles
+		 WHERE project_id = $1
+		 ORDER BY created_at`,
+		projectID)
+	if wbErr == nil {
+		for wbRows.Next() {
+			var wbID, content string
+			if scanErr := wbRows.Scan(&wbID, &content); scanErr != nil || content == "" {
+				continue
+			}
+			chunks := splitParagraphs(content, 300)
+			for _, chunk := range chunks {
+				allItems = append(allItems, BatchEmbedItem{
+					Collection: "world_knowledge",
+					Content:    chunk,
+					SourceType: "world_bible",
+					SourceID:   wbID,
+					Metadata:   map[string]interface{}{"project_id": projectID},
+				})
+			}
+		}
+		wbRows.Close()
+	} else {
+		s.logger.Warn("could not read world_bibles for RAG rebuild", zap.String("project_id", projectID), zap.Error(wbErr))
+	}
+
+	// ── character_voices: embed character profiles ───────────────────────────
+	charRows, charErr := s.db.Query(ctx,
+		`SELECT id::text, name, COALESCE(profile::text, '{}') FROM characters
+		 WHERE project_id = $1
+		 ORDER BY created_at`,
+		projectID)
+	if charErr == nil {
+		for charRows.Next() {
+			var charID, name, profile string
+			if scanErr := charRows.Scan(&charID, &name, &profile); scanErr != nil {
+				continue
+			}
+			text := name
+			if profile != "" && profile != "null" {
+				text = name + "\n" + profile
+			}
+			if len([]rune(text)) < 10 {
+				continue
+			}
+			for _, chunk := range splitParagraphs(text, 300) {
+				allItems = append(allItems, BatchEmbedItem{
+					Collection: "character_voices",
+					Content:    chunk,
+					SourceType: "character",
+					SourceID:   charID,
+					Metadata:   map[string]interface{}{"project_id": projectID, "name": name},
+				})
+			}
+		}
+		charRows.Close()
+	} else {
+		s.logger.Warn("could not read characters for RAG rebuild", zap.String("project_id", projectID), zap.Error(charErr))
+	}
+
+	// ── chapter_summaries: embed AI-generated summaries from novel chapters ──
+	sumRows, sumErr := s.db.Query(ctx,
+		`SELECT id::text, chapter_num, summary FROM chapters
+		 WHERE project_id = $1 AND summary IS NOT NULL AND summary <> ''
+		 ORDER BY chapter_num`,
+		projectID)
+	if sumErr == nil {
+		for sumRows.Next() {
+			var chapID, summary string
+			var chapNum int
+			if scanErr := sumRows.Scan(&chapID, &chapNum, &summary); scanErr != nil || len([]rune(summary)) < 10 {
+				continue
+			}
+			allItems = append(allItems, BatchEmbedItem{
+				Collection: "chapter_summaries",
+				Content:    summary,
+				SourceType: "chapter",
+				SourceID:   chapID,
+				Metadata:   map[string]interface{}{"project_id": projectID, "chapter_number": chapNum},
+			})
+		}
+		sumRows.Close()
+	} else {
+		s.logger.Warn("could not read chapter summaries for RAG rebuild", zap.String("project_id", projectID), zap.Error(sumErr))
+	}
+
 	if len(allItems) == 0 {
 		return rebuilt, nil
 	}
@@ -430,6 +530,59 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		return rebuilt, err
 	}
 	return rebuilt, nil
+}
+
+// splitParagraphs splits text into chunks of at most maxRunes runes, breaking on paragraph
+// boundaries where possible. Used when chunking world-bible and character-profile content.
+func splitParagraphs(text string, maxRunes int) []string {
+	var chunks []string
+	paragraphs := strings.Split(text, "\n")
+	var buf strings.Builder
+	for _, p := range paragraphs {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if buf.Len() > 0 && len([]rune(buf.String()))+len([]rune(p))+1 > maxRunes {
+			chunks = append(chunks, strings.TrimSpace(buf.String()))
+			buf.Reset()
+		}
+		if buf.Len() > 0 {
+			buf.WriteByte('\n')
+		}
+		buf.WriteString(p)
+	}
+	if buf.Len() > 0 {
+		chunks = append(chunks, strings.TrimSpace(buf.String()))
+	}
+	// If a single paragraph exceeds maxRunes, split it by runes directly.
+	var result []string
+	runes := []rune(text)
+	for _, chunk := range chunks {
+		cr := []rune(chunk)
+		if len(cr) <= maxRunes {
+			result = append(result, chunk)
+			continue
+		}
+		for i := 0; i < len(cr); i += maxRunes {
+			end := i + maxRunes
+			if end > len(cr) {
+				end = len(cr)
+			}
+			result = append(result, string(cr[i:end]))
+		}
+	}
+	// Fallback: if original text produced no chunks
+	if len(result) == 0 {
+		for i := 0; i < len(runes); i += maxRunes {
+			end := i + maxRunes
+			if end > len(runes) {
+				end = len(runes)
+			}
+			result = append(result, string(runes[i:end]))
+		}
+	}
+	return result
 }
 
 // sampleSentences extracts up to maxSamples evenly-spaced sentences from text for RAG indexing.

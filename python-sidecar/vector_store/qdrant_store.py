@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import threading
 import uuid
 from typing import Any
 
@@ -34,34 +35,96 @@ logger = logging.getLogger(__name__)
 VECTOR_DIM = 768
 COLLECTIONS = ["chapter_summaries", "style_samples", "character_voices", "world_knowledge"]
 
+# Sentinel — distinguishes "not yet tried" (None) from "permanently failed" (_FAILED)
+_FAILED = object()
+_embedder = None
+_embedder_lock = threading.Lock()
+
+
+def _load_embedder_transformers():
+    """Load embedding model via transformers directly, avoiding the SentenceTransformer
+    .to(device) meta-tensor bug present in sentence-transformers >= 3.0 + older PyTorch."""
+    import torch
+    import torch.nn.functional as F
+    from transformers import AutoTokenizer, AutoModel
+
+    model_name = "paraphrase-multilingual-mpnet-base-v2"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # low_cpu_mem_usage=False prevents meta-tensor creation which breaks .to(device)
+    model = AutoModel.from_pretrained(
+        model_name,
+        low_cpu_mem_usage=False,
+        torch_dtype=torch.float32,
+    )
+    model.eval()
+
+    class _Embedder:
+        def __init__(self, tok, mod):
+            self._tok = tok
+            self._mod = mod
+
+        def encode(self, text: str, normalize_embeddings: bool = True):
+            inputs = self._tok(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=512,
+                padding=True,
+            )
+            with torch.no_grad():
+                out = self._mod(**inputs)
+            hidden = out.last_hidden_state           # (1, seq, 768)
+            mask = inputs["attention_mask"].unsqueeze(-1).float()
+            pooled = (hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)  # (1, 768)
+            if normalize_embeddings:
+                pooled = F.normalize(pooled, p=2, dim=-1)
+            return pooled[0].cpu().numpy()
+
+    return _Embedder(tokenizer, model)
+
 
 def _get_embedder():
-    """Lazy-load sentence-transformers model."""
-    try:
-        from sentence_transformers import SentenceTransformer
-        # low_cpu_mem_usage=False avoids meta-tensor loading (sentence-transformers>=3.0)
-        # which would cause "Cannot copy out of meta tensor" when moving to device.
-        return SentenceTransformer(
-            "paraphrase-multilingual-mpnet-base-v2",
-            model_kwargs={"low_cpu_mem_usage": False},
-        )
-    except Exception as exc:
-        logger.warning("sentence-transformers unavailable: %s", repr(exc), exc_info=True)
+    """Lazy-load embedding model. Thread-safe. Permanent failures are cached."""
+    global _embedder
+    if _embedder is not None:
+        return None if _embedder is _FAILED else _embedder
+
+    with _embedder_lock:
+        # Re-check after acquiring lock (double-checked locking)
+        if _embedder is not None:
+            return None if _embedder is _FAILED else _embedder
+
+        # Strategy 1: load via transformers directly (avoids meta-tensor issue)
+        try:
+            model = _load_embedder_transformers()
+            _embedder = model
+            logger.info("Embedding model loaded via transformers")
+            return _embedder
+        except Exception as exc1:
+            logger.warning("transformers embedder failed: %s", repr(exc1))
+
+        # Strategy 2: sentence-transformers with explicit CPU device
+        try:
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer(
+                "paraphrase-multilingual-mpnet-base-v2",
+                device="cpu",
+                model_kwargs={"low_cpu_mem_usage": False},
+            )
+            _embedder = model
+            logger.info("Embedding model loaded via sentence-transformers")
+            return _embedder
+        except Exception as exc2:
+            logger.warning("sentence-transformers embedder also failed: %s", repr(exc2))
+
+        # Both strategies failed — mark as permanently unavailable
+        _embedder = _FAILED
+        logger.error("Embedding model unavailable; vector operations will be no-ops")
         return None
 
 
-_embedder = None
-
-
-def get_embedder():
-    global _embedder
-    if _embedder is None:
-        _embedder = _get_embedder()
-    return _embedder
-
-
 def embed(text: str) -> list[float] | None:
-    model = get_embedder()
+    model = _get_embedder()
     if model is None:
         return None
     vec = model.encode(text, normalize_embeddings=True)
