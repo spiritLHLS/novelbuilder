@@ -2,9 +2,9 @@
   <div class="blueprint">
     <div class="page-header">
       <h1>蓝图管理</h1>
-      <el-button type="primary" @click="generateBlueprint" :loading="generating"
-        :disabled="generating || currentBlueprint?.status === 'approved'">
-        <el-icon><MagicStick /></el-icon>生成蓝图
+      <el-button type="primary" @click="currentBlueprint ? regenerateBlueprint() : generateBlueprint()" :loading="generating"
+        :disabled="generating || currentBlueprint?.status === 'approved' || currentBlueprint?.status === 'pending_review'">
+        <el-icon><MagicStick /></el-icon>{{ currentBlueprint ? '重新生成' : '生成蓝图' }}
       </el-button>
     </div>
 
@@ -56,7 +56,7 @@
               type="success" @click="approveBlueprint">批准</el-button>
             <el-button v-if="currentBlueprint.status === 'pending_review'"
               type="danger" @click="rejectBlueprint">驳回</el-button>
-            <el-button v-if="currentBlueprint.status === 'rejected' || currentBlueprint.status === 'failed'"
+            <el-button v-if="currentBlueprint.status === 'draft' || currentBlueprint.status === 'rejected' || currentBlueprint.status === 'failed'"
               type="warning" @click="regenerateBlueprint">重新生成</el-button>
           </el-col>
         </el-row>
@@ -123,22 +123,18 @@
       <!-- Blueprint Raw Content -->
       <el-card shadow="hover" style="margin-top: 20px;">
         <template #header><span>蓝图详情</span></template>
-        <el-descriptions :column="1" border style="margin-bottom: 16px;" v-if="currentBlueprint.master_outline">
+        <el-descriptions :column="1" border style="margin-bottom: 16px;" v-if="hasData(currentBlueprint.master_outline)">
           <el-descriptions-item label="总体大纲">
             <span style="white-space: pre-wrap; font-size: 13px;">{{ formatBlueprintField(currentBlueprint.master_outline) }}</span>
           </el-descriptions-item>
-          <el-descriptions-item label="角色关系图" v-if="currentBlueprint.relation_graph">
+          <el-descriptions-item label="角色关系图" v-if="hasData(currentBlueprint.relation_graph)">
             <span style="white-space: pre-wrap; font-size: 13px;">{{ formatBlueprintField(currentBlueprint.relation_graph) }}</span>
           </el-descriptions-item>
-          <el-descriptions-item label="全局时间线" v-if="currentBlueprint.global_timeline">
+          <el-descriptions-item label="全局时间线" v-if="hasData(currentBlueprint.global_timeline)">
             <span style="white-space: pre-wrap; font-size: 13px;">{{ formatBlueprintField(currentBlueprint.global_timeline) }}</span>
           </el-descriptions-item>
         </el-descriptions>
-        <pre class="blueprint-content">{{ JSON.stringify({
-          master_outline: currentBlueprint.master_outline,
-          relation_graph: currentBlueprint.relation_graph,
-          global_timeline: currentBlueprint.global_timeline,
-        }, null, 2) }}</pre>
+        <el-empty v-if="!hasData(currentBlueprint.master_outline)" description="蓝图内容正在解析或生成失败，请查看错误信息" />
       </el-card>
     </template>
   </div>
@@ -221,6 +217,15 @@ function formatBlueprintField(val: any): string {
   if (val == null) return ''
   if (typeof val === 'string') return val
   return JSON.stringify(val, null, 2)
+}
+
+/** Returns true only when a blueprint JSONB field has meaningful content. */
+function hasData(val: any): boolean {
+  if (val == null || val === undefined) return false
+  if (typeof val === 'string') return val.trim() !== ''
+  if (Array.isArray(val)) return val.length > 0
+  if (typeof val === 'object') return Object.keys(val).length > 0
+  return Boolean(val)
 }
 
 onMounted(async () => {

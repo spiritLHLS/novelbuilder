@@ -329,7 +329,7 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 - 类型/流派：%s
 - 核心创意：%s
 - 风格描述：%s
-- 计划卷数：%d卷（**必须规划足够的卷数，不得少于%d卷**）
+- 计划卷数：%d卷（必须恰好 %d 卷，不得增减）
 - 每卷章节数：%d章
 - 全书目标字数：约%d万字
 - 每章目标字数：约%d字
@@ -337,27 +337,31 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 - 每卷预期字数：约%d万字（均匀分配）
 
 ---
-## 输出要求
+## 输出格式
 
-请**严格以 JSON 格式**返回以下资产（不要在 JSON 外输出任何文字）：
+请**严格以 JSON 格式**返回以下资产，JSON 之外不得有任何文字：
 
 {
-  "world_bible": {%s},
-  "characters": [{"name":"角色名","role_type":"protagonist|supporting|antagonist|mentor|minor","profile":"角色描述（100字以内纯字符串）"}],
-  "master_outline": "第1卷:主题/核心冲突/高潮点;第2卷:...",
-  "relation_graph": "角色A-角色B:关系描述;...",
-  "global_timeline": "时间节点1:事件描述;...",
+  "master_outline": "第1卷:主题/核心冲突/高潮点。第2卷:...（每卷一句，句号分隔，共 %d 卷）",
+  "volumes": [
+    {"title":"第一卷卷名","chapter_start":1,"chapter_end":%d},
+    {"title":"第二卷卷名","chapter_start":%d,"chapter_end":%d},
+    ...（按此格式列出全部 %d 卷，章节连续不重叠）
+  ],
+  "relation_graph": "角色A-角色B:关系描述;角色C-角色D:关系描述（分号分隔每对关系）",
+  "global_timeline": "序章:关键事件;第一卷末:关键事件;第二卷末:关键事件;...（分号分隔）",
   "foreshadowings": [{"content":"伏笔内容","embed_method":"explicit|implicit|symbolic","priority":8}],
-  "volumes": [{"title":"卷名","chapter_start":1,"chapter_end":%d}]
+  "characters": [{"name":"角色名","role_type":"protagonist|supporting|antagonist|mentor|minor","profile":"角色描述"}],
+  "world_bible": {%s}
 }
 
 **重要约束：**
 %s
-- volumes 数组**必须**包含恰好 %d 个卷，覆盖第1章到第%d章
-- characters 中已存在角色无需重复列出，只列出**新增**角色
-- foreshadowings 中已存在伏笔无需重复，只列出**新增**伏笔
+- volumes 数组必须恰好 %d 个元素，覆盖第1章到第%d章，章节连续不重叠
+- characters 中已存在角色无需重复，只列**新增**角色
+- foreshadowings 中已存在伏笔无需重复，只列**新增**伏笔
 - 所有内容须与已有世界观、角色、术语表保持一致
-- 确保所有伏笔在大纲时间线中都有合适的铺垫与解决安排
+- 确保所有伏笔在大纲时间线中安排铺垫与揭露
 `,
 		genre,
 		taskInstruction,
@@ -372,11 +376,16 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 		chapterWordsVal,
 		estimatedTotalChapters,
 		targetWordsWan/volumeCount,
+		// In JSON template comment:
+		volumeCount,         // "共 %d 卷"
+		chaptersPerVolume,   // first volume chapter_end
+		chaptersPerVolume+1, // second volume chapter_start
+		chaptersPerVolume*2, // second volume chapter_end
+		volumeCount,         // "全部 %d 卷"
 		worldBibleFields,
-		chaptersPerVolume,
 		buildGenreConstraints(genre, genreTemplate),
-		volumeCount,
-		volumeCount, volumeCount*chaptersPerVolume,
+		volumeCount,                   // constraint: %d 个元素
+		volumeCount*chaptersPerVolume, // constraint: 第%d章
 	)
 
 	// ── 6. Call the LLM ───────────────────────────────────────────────────────
@@ -390,7 +399,7 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 	}
 	logger.Info("blueprint generation: LLM call completed, parsing response")
 
-	content := extractJSON(resp.Content)
+	content := extractBlueprintJSON(resp.Content)
 
 	var parsed struct {
 		WorldBible json.RawMessage `json:"world_bible"`
@@ -414,7 +423,9 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 		} `json:"volumes"`
 	}
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-		logger.Warn("failed to parse blueprint JSON, storing raw response", zap.Error(err))
+		logger.Warn("failed to parse blueprint JSON, storing raw response",
+			zap.Error(err),
+			zap.String("raw_prefix", content[:min(200, len(content))]))
 		rawJSON, _ := json.Marshal(map[string]string{"raw_content": content})
 		parsed.MasterOutline = rawJSON
 	}
@@ -508,17 +519,18 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 	}
 
 	// Blueprint record: update with generated outlines.
+	// Use SQL NULL for missing fields so the frontend can reliably detect them.
 	masterOutline := parsed.MasterOutline
 	if len(masterOutline) == 0 {
-		masterOutline = json.RawMessage(`{}`)
+		masterOutline = json.RawMessage(`null`)
 	}
 	relationGraph := parsed.RelationGraph
 	if len(relationGraph) == 0 {
-		relationGraph = json.RawMessage(`{}`)
+		relationGraph = json.RawMessage(`null`)
 	}
 	globalTimeline := parsed.GlobalTimeline
 	if len(globalTimeline) == 0 {
-		globalTimeline = json.RawMessage(`[]`)
+		globalTimeline = json.RawMessage(`null`)
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE book_blueprints
@@ -577,6 +589,70 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 		zap.Int("new_foreshadowings", len(parsed.Foreshadowings)),
 		zap.Int("volumes", len(parsed.Volumes)))
 	return nil
+}
+
+// min returns the smaller of two ints (stdlib min is Go 1.21+).
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// extractBlueprintJSON strips markdown code fences, then extracts the outermost
+// JSON object while correctly tracking string literals so that { } inside
+// quoted values do not corrupt the depth counter.
+func extractBlueprintJSON(s string) string {
+	s = strings.TrimSpace(s)
+	// Strip markdown code fences: ```json ... ``` or ``` ... ```
+	if idx := strings.Index(s, "```"); idx != -1 {
+		rest := s[idx+3:]
+		if nl := strings.IndexByte(rest, '\n'); nl != -1 {
+			rest = rest[nl+1:]
+		}
+		if end := strings.LastIndex(rest, "```"); end != -1 {
+			rest = rest[:end]
+		}
+		s = strings.TrimSpace(rest)
+	}
+
+	start := strings.Index(s, "{")
+	if start == -1 {
+		return s
+	}
+
+	depth := 0
+	inStr := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		ch := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && inStr {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inStr = !inStr
+			continue
+		}
+		if inStr {
+			continue
+		}
+		switch ch {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[start : i+1]
+			}
+		}
+	}
+	// Truncated JSON — return what we have and let the caller attempt to parse.
+	return s[start:]
 }
 
 // buildWorldBibleFieldsHint returns JSON field hint string appropriate for the genre.
