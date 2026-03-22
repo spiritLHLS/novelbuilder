@@ -21,11 +21,22 @@ import (
 	"github.com/novelbuilder/backend/internal/services"
 	"github.com/novelbuilder/backend/internal/workflow"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func main() {
-	// Initialize logger
-	logger, _ := zap.NewProduction()
+	// Build a human-readable console logger (GVA style).
+	encCfg := zap.NewProductionEncoderConfig()
+	encCfg.EncodeTime = zapcore.TimeEncoderOfLayout("2006/01/02 - 15:04:05.000")
+	encCfg.EncodeLevel = zapcore.CapitalLevelEncoder
+	encCfg.EncodeCaller = zapcore.ShortCallerEncoder
+	encCfg.ConsoleSeparator = " "
+	logCore := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(encCfg),
+		zapcore.AddSync(os.Stdout),
+		zapcore.InfoLevel,
+	)
+	logger := zap.New(logCore, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
 	defer logger.Sync()
 
 	// Load infrastructure config (env-vars only, no config files)
@@ -270,6 +281,64 @@ func main() {
 			}
 		}
 		return nil
+	})
+
+	// chapter_generate: enqueued by GenerateChapter handler for explicit chapter creation.
+	taskQueueService.RegisterHandler("chapter_generate", func(ctx context.Context, task models.TaskQueueItem) error {
+		if task.ProjectID == nil || *task.ProjectID == "" {
+			return fmt.Errorf("chapter_generate: missing project_id")
+		}
+		projectID := *task.ProjectID
+
+		var payload struct {
+			ChapterNum      int    `json:"chapter_num"`
+			ChapterWordsMin int    `json:"chapter_words_min"`
+			ChapterWordsMax int    `json:"chapter_words_max"`
+			ContextHint     string `json:"context_hint"`
+		}
+		if len(task.Payload) > 0 {
+			_ = json.Unmarshal(task.Payload, &payload)
+		}
+		if payload.ChapterNum <= 0 {
+			return fmt.Errorf("chapter_generate: chapter_num must be > 0")
+		}
+
+		req := models.GenerateChapterRequest{
+			ChapterNum:      payload.ChapterNum,
+			ChapterWordsMin: payload.ChapterWordsMin,
+			ChapterWordsMax: payload.ChapterWordsMax,
+			ContextHint:     payload.ContextHint,
+		}
+		// Resolve LLM routing at execution time (never store API keys in task payload).
+		if writerCfg, wErr := agentRoutingService.ResolveForAgent(ctx, "writer", projectID); wErr == nil && writerCfg != nil {
+			req.LLMConfig = writerCfg
+		}
+
+		_, err := chapterService.Generate(ctx, projectID, payload.ChapterNum, req)
+		return err
+	})
+
+	// chapter_regenerate: enqueued by RegenerateChapter handler.
+	taskQueueService.RegisterHandler("chapter_regenerate", func(ctx context.Context, task models.TaskQueueItem) error {
+		var payload struct {
+			ChapterID string `json:"chapter_id"`
+		}
+		if len(task.Payload) > 0 {
+			_ = json.Unmarshal(task.Payload, &payload)
+		}
+		if payload.ChapterID == "" {
+			return fmt.Errorf("chapter_regenerate: missing chapter_id")
+		}
+
+		req := models.GenerateChapterRequest{}
+		if task.ProjectID != nil && *task.ProjectID != "" {
+			if writerCfg, wErr := agentRoutingService.ResolveForAgent(ctx, "writer", *task.ProjectID); wErr == nil && writerCfg != nil {
+				req.LLMConfig = writerCfg
+			}
+		}
+
+		_, err := chapterService.Regenerate(ctx, payload.ChapterID, req)
+		return err
 	})
 
 	// Setup Gin router

@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -53,11 +52,6 @@ type ChatResponse struct {
 	TokensUsed   int    `json:"tokens_used"`
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
-}
-
-type StreamChunk struct {
-	Content string `json:"content"`
-	Done    bool   `json:"done"`
 }
 
 // resolvedModel holds all parameters needed to make an API call.
@@ -258,24 +252,6 @@ func (gw *AIGateway) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, 
 	return nil, fmt.Errorf("unsupported api_style: %q (provider: %s)", resolved.APIStyle, resolved.Provider)
 }
 
-func (gw *AIGateway) ChatStream(ctx context.Context, req ChatRequest, handler func(chunk string) error) error {
-	resolved, err := gw.resolveModel(ctx, req)
-	if err != nil {
-		return err
-	}
-	switch apiProtocol(resolved.APIStyle, resolved.Provider) {
-	case "openai":
-		return gw.streamOpenAI(ctx, resolved, req.Messages, handler)
-	case "anthropic":
-		return gw.streamAnthropic(ctx, resolved, req.Messages, handler)
-	case "responses":
-		return gw.streamResponses(ctx, resolved, req.Messages, handler)
-	case "gemini":
-		return gw.streamGemini(ctx, resolved, req.Messages, handler)
-	}
-	return fmt.Errorf("unsupported api_style: %q (provider: %s)", resolved.APIStyle, resolved.Provider)
-}
-
 // resolvedFromCfg builds a resolvedModel from an explicit credentials map.
 func resolvedFromCfg(cfg map[string]interface{}, req ChatRequest) resolvedModel {
 	apiKey, _ := cfg["api_key"].(string)
@@ -367,30 +343,6 @@ func (gw *AIGateway) ChatWithConfig(ctx context.Context, req ChatRequest, cfg ma
 	return nil, fmt.Errorf("unsupported api_style: %q (provider: %s)", resolved.APIStyle, resolved.Provider)
 }
 
-// ChatStreamWithConfig is the streaming variant of ChatWithConfig.
-// For openai-compatible providers, if streaming fails it falls back to sync.
-func (gw *AIGateway) ChatStreamWithConfig(ctx context.Context, req ChatRequest, cfg map[string]interface{}, handler func(chunk string) error) error {
-	if cfg == nil {
-		return gw.ChatStream(ctx, req, handler)
-	}
-	apiKey, _ := cfg["api_key"].(string)
-	if apiKey == "" {
-		return gw.ChatStream(ctx, req, handler)
-	}
-	resolved := resolvedFromCfg(cfg, req)
-	switch apiProtocol(resolved.APIStyle, resolved.Provider) {
-	case "openai":
-		return gw.streamOpenAI(ctx, resolved, req.Messages, handler)
-	case "anthropic":
-		return gw.streamAnthropic(ctx, resolved, req.Messages, handler)
-	case "responses":
-		return gw.streamResponses(ctx, resolved, req.Messages, handler)
-	case "gemini":
-		return gw.streamGemini(ctx, resolved, req.Messages, handler)
-	}
-	return fmt.Errorf("unsupported api_style: %q (provider: %s)", resolved.APIStyle, resolved.Provider)
-}
-
 // ── OpenAI / Chat Completions ──────────────────────────────────────────────
 
 func (gw *AIGateway) openaiClient(r resolvedModel) *openai.Client {
@@ -428,55 +380,6 @@ func (gw *AIGateway) chatOpenAI(ctx context.Context, r resolvedModel, msgs []Cha
 		InputTokens:  resp.Usage.PromptTokens,
 		OutputTokens: resp.Usage.CompletionTokens,
 	}, nil
-}
-
-func (gw *AIGateway) streamOpenAI(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
-	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
-	oaiMsgs := make([]openai.ChatCompletionMessage, len(msgs))
-	for i, m := range msgs {
-		oaiMsgs[i] = openai.ChatCompletionMessage{Role: m.Role, Content: m.Content}
-	}
-	reqBody := openai.ChatCompletionRequest{Model: r.ModelID, Messages: oaiMsgs, Stream: true}
-	if !r.OmitMaxTokens {
-		reqBody.MaxTokens = r.MaxTokens
-	}
-	if !r.OmitTemperature {
-		reqBody.Temperature = float32(r.Temperature)
-	}
-	client := gw.openaiClient(r)
-	stream, streamErr := client.CreateChatCompletionStream(ctx, reqBody)
-	if streamErr != nil {
-		// Fall back to sync for providers that do not support SSE.
-		gw.logger.Warn("stream not supported by provider, falling back to sync",
-			zap.String("provider", r.Provider),
-			zap.Error(streamErr))
-		reqBody.Stream = false
-		resp, syncErr := client.CreateChatCompletion(ctx, reqBody)
-		if syncErr != nil {
-			return fmt.Errorf("sync fallback: %w", syncErr)
-		}
-		if len(resp.Choices) == 0 {
-			return errors.New("no choices in response")
-		}
-		return handler(resp.Choices[0].Message.Content)
-	}
-	defer stream.Close()
-	for {
-		resp, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("stream recv: %w", err)
-		}
-		if len(resp.Choices) > 0 {
-			if delta := resp.Choices[0].Delta.Content; delta != "" {
-				if err := handler(delta); err != nil {
-					return err
-				}
-			}
-		}
-	}
 }
 
 // ── Anthropic / Messages ──────────────────────────────────────────────
@@ -528,25 +431,6 @@ func (gw *AIGateway) chatAnthropic(ctx context.Context, r resolvedModel, msgs []
 		InputTokens:  resp.Usage.InputTokens,
 		OutputTokens: resp.Usage.OutputTokens,
 	}, nil
-}
-
-func (gw *AIGateway) streamAnthropic(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
-	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
-	var streamErr error
-	_, err := gw.anthropicClient(r).CreateMessagesStream(ctx, anthropic.MessagesStreamRequest{
-		MessagesRequest: buildAnthropicRequest(r, msgs),
-		OnContentBlockDelta: func(data anthropic.MessagesEventContentBlockDeltaData) {
-			if text := data.Delta.GetText(); text != "" {
-				if herr := handler(text); herr != nil {
-					streamErr = herr
-				}
-			}
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("anthropic stream: %w", err)
-	}
-	return streamErr
 }
 
 // ── OpenAI Responses API ────────────────────────────────────────────
@@ -624,57 +508,6 @@ func (gw *AIGateway) chatResponses(ctx context.Context, r resolvedModel, msgs []
 		OutputTokens: result.Usage.OutputTokens,
 		TokensUsed:   result.Usage.InputTokens + result.Usage.OutputTokens,
 	}, nil
-}
-
-func (gw *AIGateway) streamResponses(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
-	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
-	body := buildResponsesBody(r, msgs)
-	body["stream"] = true
-	bodyBytes, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("responses stream marshal: %w", err)
-	}
-	endpoint := strings.TrimRight(r.BaseURL, "/") + r.APIStyle
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+r.APIKey)
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("responses stream: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("responses stream error %d: %s", resp.StatusCode, string(b))
-	}
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1<<20), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			return nil
-		}
-		var event struct {
-			Type  string `json:"type"`
-			Delta string `json:"delta"`
-		}
-		if json.Unmarshal([]byte(data), &event) == nil {
-			if event.Type == "response.output_text.delta" && event.Delta != "" {
-				if err := handler(event.Delta); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	return scanner.Err()
 }
 
 // ── Google Gemini ───────────────────────────────────────────────
@@ -765,58 +598,4 @@ func (gw *AIGateway) chatGemini(ctx context.Context, r resolvedModel, msgs []Cha
 		OutputTokens: result.UsageMetadata.CandidatesTokenCount,
 		TokensUsed:   result.UsageMetadata.PromptTokenCount + result.UsageMetadata.CandidatesTokenCount,
 	}, nil
-}
-
-func (gw *AIGateway) streamGemini(ctx context.Context, r resolvedModel, msgs []ChatMessage, handler func(string) error) error {
-	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
-	bodyBytes, err := json.Marshal(buildGeminiBody(r, msgs))
-	if err != nil {
-		return fmt.Errorf("gemini stream marshal: %w", err)
-	}
-	// alt=sse requests Server-Sent Events streaming from Gemini
-	endpoint := strings.TrimRight(r.BaseURL, "/") + "/models/" + r.ModelID + ":streamGenerateContent?alt=sse&key=" + r.APIKey
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("gemini stream: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("gemini stream error %d: %s", resp.StatusCode, string(b))
-	}
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1<<20), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		var chunk struct {
-			Candidates []struct {
-				Content struct {
-					Parts []struct {
-						Text string `json:"text"`
-					} `json:"parts"`
-				} `json:"content"`
-			} `json:"candidates"`
-		}
-		if json.Unmarshal([]byte(data), &chunk) == nil {
-			for _, c := range chunk.Candidates {
-				for _, p := range c.Content.Parts {
-					if p.Text != "" {
-						if err := handler(p.Text); err != nil {
-							return err
-						}
-					}
-				}
-			}
-		}
-	}
-	return scanner.Err()
 }

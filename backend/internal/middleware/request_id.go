@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -24,21 +25,44 @@ func RequestID() gin.HandlerFunc {
 	}
 }
 
-// Logger logs every request with method, path, status, latency, and request-id.
+// Logger logs every HTTP request in a compact, human-readable format:
+// | 200 |    1.23ms | GET   /api/path
 func Logger(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
+		path := c.Request.URL.Path
+		if q := c.Request.URL.RawQuery; q != "" {
+			path = path + "?" + q
+		}
+
 		c.Next()
 
-		id, _ := c.Get(RequestIDKey)
-		logger.Info("http",
-			zap.String("request_id", toString(id)),
-			zap.String("method", c.Request.Method),
-			zap.String("path", c.Request.URL.Path),
-			zap.Int("status", c.Writer.Status()),
-			zap.Duration("latency", time.Since(start)),
+		latency := time.Since(start)
+		status := c.Writer.Status()
+
+		msg := fmt.Sprintf("| %3d | %10s | %-7s %s",
+			status,
+			fmtLatency(latency),
+			c.Request.Method,
+			path,
 		)
+
+		switch {
+		case status >= 500:
+			logger.Error(msg)
+		case status >= 400:
+			logger.Warn(msg)
+		default:
+			logger.Info(msg)
+		}
 	}
+}
+
+func fmtLatency(d time.Duration) string {
+	if d < time.Millisecond {
+		return fmt.Sprintf("%dμs", d.Microseconds())
+	}
+	return fmt.Sprintf("%.2fms", float64(d.Microseconds())/1000)
 }
 
 func toString(v any) string {

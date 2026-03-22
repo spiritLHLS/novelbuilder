@@ -55,60 +55,33 @@
 
     <!-- Generate Dialog -->
     <el-dialog v-model="showGenerateDialog" title="生成章节" width="700px" :close-on-click-modal="false">
-      <template v-if="!streaming">
-        <el-form :model="genForm" label-position="top">
-          <el-row :gutter="16">
-            <el-col :span="12">
-              <el-form-item label="章节号">
-                <el-input-number v-model="genForm.chapter_num" :min="1" style="width: 100%;" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="字数下限">
-                <el-input-number v-model="genForm.chapter_words_min" :min="500" :max="10000" :step="500" style="width: 100%;" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="字数上限">
-                <el-input-number v-model="genForm.chapter_words_max" :min="500" :max="20000" :step="500" style="width: 100%;" />
-              </el-form-item>
-            </el-col>
-          </el-row>
-          <el-form-item label="本章方向提示（可选）">
-            <el-input v-model="genForm.context_hint" type="textarea" :rows="3"
-              placeholder="描述本章的大致方向或特殊要求，如：本章重点写师徒矛盾" />
-          </el-form-item>
-          <el-form-item label="生成方式">
-            <el-radio-group v-model="genForm.stream">
-              <el-radio :value="true">流式生成（实时显示）</el-radio>
-              <el-radio :value="false">普通生成（完成后显示）</el-radio>
-            </el-radio-group>
-          </el-form-item>
-        </el-form>
-      </template>
-
-      <!-- Streaming Output -->
-      <template v-if="streaming">
-        <div class="stream-header">
-          <el-tag type="success" effect="dark">
-            <el-icon class="is-loading"><Loading /></el-icon> 正在生成中...
-          </el-tag>
-          <span class="stream-word-count">已生成: {{ streamContent.length }} 字</span>
-        </div>
-        <div class="stream-content" ref="streamBox">
-          <div class="stream-text" v-html="renderedStream"></div>
-        </div>
-      </template>
+      <el-form :model="genForm" label-position="top">
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="章节号">
+              <el-input-number v-model="genForm.chapter_num" :min="1" style="width: 100%;" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="字数下限">
+              <el-input-number v-model="genForm.chapter_words_min" :min="500" :max="10000" :step="500" style="width: 100%;" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="字数上限">
+              <el-input-number v-model="genForm.chapter_words_max" :min="500" :max="20000" :step="500" style="width: 100%;" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="本章方向提示（可选）">
+          <el-input v-model="genForm.context_hint" type="textarea" :rows="3"
+            placeholder="描述本章的大致方向或特殊要求，如：本章重点写师徒矛盾" />
+        </el-form-item>
+      </el-form>
 
       <template #footer>
-        <template v-if="!streaming">
-          <el-button @click="showGenerateDialog = false">取消</el-button>
-          <el-button type="primary" @click="startGenerate" :loading="generating">开始生成</el-button>
-        </template>
-        <template v-else>
-          <el-button @click="stopStream" type="danger">停止</el-button>
-          <el-button v-if="streamDone" type="primary" @click="finishGenerate">完成</el-button>
-        </template>
+        <el-button @click="showGenerateDialog = false">取消</el-button>
+        <el-button type="primary" @click="startGenerate" :loading="generating">开始生成</el-button>
       </template>
     </el-dialog>
 
@@ -131,7 +104,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
@@ -147,23 +120,14 @@ const canGenerate = ref(true)
 
 const showGenerateDialog = ref(false)
 const generating = ref(false)
-const streaming = ref(false)
-const streamContent = ref('')
-const streamDone = ref(false)
-const streamBox = ref<HTMLElement | null>(null)
-let abortController: AbortController | null = null
 
 const genForm = ref({
-  chapter_num: 1, chapter_words_min: 2000, chapter_words_max: 3500, context_hint: '', stream: true,
+  chapter_num: 1, chapter_words_min: 2000, chapter_words_max: 3500, context_hint: '',
 })
 
 const showBatchDialog = ref(false)
 const batchCount = ref(3)
 const batching = ref(false)
-
-const renderedStream = computed(() =>
-  streamContent.value.replace(/\n/g, '<br>')
-)
 
 function chapterStatusType(s: string) {
   const m: Record<string, string> = {
@@ -247,91 +211,33 @@ function showGenerate() {
   const maxNum = chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0)
   genForm.value.chapter_num = maxNum + 1
   genForm.value.context_hint = ''
-  streamContent.value = ''
-  streaming.value = false
-  streamDone.value = false
   showGenerateDialog.value = true
 }
 
 function regenerateChapter(ch: any) {
   genForm.value.chapter_num = ch.chapter_num
   genForm.value.context_hint = ''
-  streamContent.value = ''
-  streaming.value = false
-  streamDone.value = false
   showGenerateDialog.value = true
 }
 
 async function startGenerate() {
   generating.value = true
-
-  if (genForm.value.stream) {
-    streaming.value = true
-    streamContent.value = ''
-    streamDone.value = false
-    abortController = new AbortController()
-
-    try {
-      await chapterApi.streamGenerate(
-        projectId,
-        {
-          chapter_num: genForm.value.chapter_num,
-          chapter_words_min: genForm.value.chapter_words_min,
-          chapter_words_max: genForm.value.chapter_words_max,
-          context_hint: genForm.value.context_hint,
-        },
-        (chunk: string) => {
-          streamContent.value += chunk
-          nextTick(() => {
-            if (streamBox.value) {
-              streamBox.value.scrollTop = streamBox.value.scrollHeight
-            }
-          })
-        },
-        () => {
-          streamDone.value = true
-          generating.value = false
-          ElMessage.success('章节生成完成')
-        },
-        abortController.signal,
-      )
-    } catch (e: any) {
-      if (e.name !== 'AbortError') {
-        ElMessage.error('生成失败: ' + (e.message || '未知错误'))
-      }
-      generating.value = false
-    }
-  } else {
-    try {
-      await chapterApi.generate(projectId, {
-        chapter_num: genForm.value.chapter_num,
-        chapter_words_min: genForm.value.chapter_words_min,
-        chapter_words_max: genForm.value.chapter_words_max,
-        context_hint: genForm.value.context_hint,
-      })
-      ElMessage.success('章节生成完成')
-      showGenerateDialog.value = false
-      await fetchChapters()
-    } catch {
-      ElMessage.error('生成失败')
-    } finally {
-      generating.value = false
-    }
+  try {
+    await chapterApi.generate(projectId, {
+      chapter_num: genForm.value.chapter_num,
+      chapter_words_min: genForm.value.chapter_words_min,
+      chapter_words_max: genForm.value.chapter_words_max,
+      context_hint: genForm.value.context_hint,
+    })
+    showGenerateDialog.value = false
+    ElMessage({ message: '章节生成任务已加入队列，可在"任务队列"中查看进度', type: 'success', duration: 5000 })
+    await fetchChapters()
+  } catch (e: any) {
+    const msg = e.response?.data?.message || e.response?.data?.error || '生成失败'
+    ElMessage.error(msg)
+  } finally {
+    generating.value = false
   }
-}
-
-function stopStream() {
-  if (abortController) {
-    abortController.abort()
-    abortController = null
-  }
-  streamDone.value = true
-  generating.value = false
-}
-
-function finishGenerate() {
-  showGenerateDialog.value = false
-  fetchChapters()
 }
 </script>
 
@@ -339,8 +245,4 @@ function finishGenerate() {
 .chapters { max-width: 1200px; margin: 0 auto; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
-.stream-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.stream-word-count { color: #888; font-size: 13px; }
-.stream-content { background: var(--nb-table-header-bg); border: 1px solid var(--nb-card-border); border-radius: 8px; padding: 20px; max-height: 500px; overflow-y: auto; }
-.stream-text { color: var(--nb-text-primary); line-height: 2; font-size: 15px; }
 </style>

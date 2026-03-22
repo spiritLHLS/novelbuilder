@@ -122,45 +122,6 @@ export const chapterApi = {
     api.post(`/chapters/${id}/regenerate`, data),
   qualityCheck: (chapterId: string) =>
     api.post(`/chapters/${chapterId}/quality-check`),
-  streamGenerate: async (
-    projectId: string,
-    data: any,
-    onChunk: (content: string) => void,
-    onDone: () => void,
-    signal?: AbortSignal,
-  ) => {
-    const response = await fetch(`/api/projects/${projectId}/chapters/stream`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-      signal,
-    })
-    if (!response.ok) {
-      const errText = await response.text()
-      throw new Error(`Stream error ${response.status}: ${errText}`)
-    }
-    const reader = response.body?.getReader()
-    if (!reader) throw new Error('Stream not available')
-    const decoder = new TextDecoder()
-    let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const d = JSON.parse(line.slice(6))
-            if (d.done) { onDone(); return }
-            else if (d.content) onChunk(d.content)
-          } catch { /* skip */ }
-        }
-      }
-    }
-    onDone()
-  },
 }
 
 // Quality

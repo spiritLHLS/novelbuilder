@@ -22,6 +22,8 @@
       <el-select v-model="filterType" placeholder="全部类型" clearable style="width: 200px" @change="loadTasks">
         <el-option label="全部" value="" />
         <el-option label="章节生成" value="chapter_generate" />
+        <el-option label="章节重写" value="chapter_regenerate" />
+        <el-option label="自动续写" value="generate_next_chapter" />
         <el-option label="向量索引" value="rag_index" />
         <el-option label="质量检测" value="quality_check" />
       </el-select>
