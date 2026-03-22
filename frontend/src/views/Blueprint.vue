@@ -69,6 +69,7 @@
             <el-statistic title="世界设定" :value="worldBibleCount" suffix="项">
               <template #prefix><el-icon style="color: #409eff;"><Document /></el-icon></template>
             </el-statistic>
+          </el-card>
         </el-col>
         <el-col :span="6">
           <el-card shadow="hover" class="asset-card">
