@@ -94,15 +94,20 @@
             placeholder="提示词内容，可使用 {{变量名}} 语法插入变量"
           />
         </el-form-item>
-        <el-form-item label="变量 (JSON)">
-          <el-input
-            v-model="variablesJson"
-            type="textarea"
-            :rows="3"
-            placeholder='{"变量名": "默认值"}'
-            @blur="validateVariablesJson"
-          />
-          <div v-if="variablesError" class="json-error">{{ variablesError }}</div>
+        <el-form-item label="变量（可选）">
+          <div style="width:100%">
+            <div v-for="(kv, i) in variablesKV" :key="i" style="display:flex; gap:8px; margin-bottom:8px; align-items:center;">
+              <el-input v-model="kv.key" placeholder="变量名" style="width:140px; flex-shrink:0;"
+                @input="kv.key = kv.key.replace(/\s/g, '')" />
+              <span style="color:#888; font-size:13px;">→</span>
+              <el-input v-model="kv.value" placeholder="默认值" style="flex:1;" />
+              <el-button type="danger" :icon="Delete" size="small" circle @click="variablesKV.splice(i, 1)" />
+            </div>
+            <el-button size="small" @click="variablesKV.push({ key: '', value: '' })">
+              <el-icon><Plus /></el-icon> 添加变量
+            </el-button>
+            <div style="color:#888; font-size:12px; margin-top:6px;">在内容中使用 {{"{{"}}变量名{{"}}"}} 引用变量</div>
+          </div>
         </el-form-item>
         <el-row :gutter="12">
           <el-col :span="12">
@@ -129,7 +134,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { Plus, Search, Delete } from '@element-plus/icons-vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { promptPresetApi } from '@/api'
 
@@ -158,8 +163,7 @@ const dialogVisible = ref(false)
 const editingPreset = ref<PromptPreset | null>(null)
 const submitting = ref(false)
 const formRef = ref<FormInstance>()
-const variablesJson = ref('{}')
-const variablesError = ref('')
+const variablesKV = ref<Array<{ key: string; value: string }>>([])
 
 const form = ref({
   name: '',
@@ -198,14 +202,7 @@ function truncate(text: string, len: number) {
   return text.length > len ? text.slice(0, len) + '...' : text
 }
 
-function validateVariablesJson() {
-  try {
-    JSON.parse(variablesJson.value || '{}')
-    variablesError.value = ''
-  } catch {
-    variablesError.value = 'JSON 格式错误'
-  }
-}
+function validateVariablesJson() { /* no-op: replaced by KV editor */ }
 
 async function loadPresets() {
   loading.value = true
@@ -231,8 +228,7 @@ function handleTabChange() {
 function openCreateDialog() {
   editingPreset.value = null
   form.value = { name: '', content: '', category: 'system', is_global: activeTab.value === 'global', sort_order: 0 }
-  variablesJson.value = '{}'
-  variablesError.value = ''
+  variablesKV.value = []
   dialogVisible.value = true
 }
 
@@ -245,22 +241,26 @@ function openEditDialog(preset: PromptPreset) {
     is_global: preset.is_global,
     sort_order: preset.sort_order ?? 0,
   }
-  variablesJson.value = JSON.stringify(preset.variables ?? {}, null, 2)
-  variablesError.value = ''
+  const vars = preset.variables && typeof preset.variables === 'object' && !Array.isArray(preset.variables)
+    ? preset.variables as Record<string, string>
+    : {}
+  variablesKV.value = Object.entries(vars).map(([key, value]) => ({ key, value: String(value) }))
   dialogVisible.value = true
 }
 
 async function submitForm() {
   if (!formRef.value) return
-  validateVariablesJson()
-  if (variablesError.value) return
 
   await formRef.value.validate(async valid => {
     if (!valid) return
     submitting.value = true
     try {
-      let variables: Record<string, string> = {}
-      try { variables = JSON.parse(variablesJson.value || '{}') } catch { /* ignore */ }
+      // Build variables object from KV pairs (skip rows with empty keys)
+      const variables: Record<string, string> = {}
+      for (const kv of variablesKV.value) {
+        const k = kv.key.trim()
+        if (k) variables[k] = kv.value
+      }
 
       const payload = { ...form.value, variables }
 

@@ -41,21 +41,21 @@
               />
             </el-form-item>
 
-            <el-form-item label="旧内容（可选 JSON）">
+            <el-form-item label="旧内容（可选，变更前的简要描述）">
               <el-input
                 v-model="changeForm.old_snapshot_str"
                 type="textarea"
-                :rows="3"
-                placeholder='{"name":"林晨","personality":"冲动热血"}'
+                :rows="2"
+                placeholder="例如：林晨的性格是冲动热血，经常鲁莽行事"
               />
             </el-form-item>
 
-            <el-form-item label="新内容（可选 JSON）">
+            <el-form-item label="新内容（可选，变更后的简要描述）">
               <el-input
                 v-model="changeForm.new_snapshot_str"
                 type="textarea"
-                :rows="3"
-                placeholder='{"name":"林晨","personality":"内向稳重"}'
+                :rows="2"
+                placeholder="例如：林晨的性格变为内向稳重，遇事更加深思熟虑"
               />
             </el-form-item>
 
@@ -291,18 +291,8 @@ async function selectEvent(ev: ChangeEvent) {
 async function submitChange() {
   analyzing.value = true
   try {
-    let oldSnap: unknown = undefined
-    let newSnap: unknown = undefined
-    if (changeForm.value.old_snapshot_str.trim()) {
-      try { oldSnap = JSON.parse(changeForm.value.old_snapshot_str) } catch {
-        ElMessage.warning('旧内容 JSON 格式有误，已忽略')
-      }
-    }
-    if (changeForm.value.new_snapshot_str.trim()) {
-      try { newSnap = JSON.parse(changeForm.value.new_snapshot_str) } catch {
-        ElMessage.warning('新内容 JSON 格式有误，已忽略')
-      }
-    }
+    const oldSnap = changeForm.value.old_snapshot_str.trim() || undefined
+    const newSnap = changeForm.value.new_snapshot_str.trim() || undefined
     const resp = await propagationApi.createChangeEvent(projectId.value, {
       entity_type: changeForm.value.entity_type,
       entity_id: changeForm.value.entity_id,

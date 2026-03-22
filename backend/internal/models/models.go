@@ -211,10 +211,11 @@ type CreateProjectRequest struct {
 }
 
 type GenerateBlueprintRequest struct {
-	Idea              string `json:"idea"`
-	Genre             string `json:"genre"`
-	VolumeCount       int    `json:"volume_count"`
-	ChaptersPerVolume int    `json:"chapters_per_volume"`
+	Idea            string `json:"idea"`
+	Genre           string `json:"genre"`
+	VolumeCount     int    `json:"volume_count"`
+	ChapterWordsMin int    `json:"chapter_words_min"`
+	ChapterWordsMax int    `json:"chapter_words_max"`
 }
 
 type ReviewRequest struct {
@@ -240,8 +241,9 @@ type GenerateChapterRequest struct {
 	EndHookType     string  `json:"end_hook_type"`
 	EndHookStrength int     `json:"end_hook_strength"`
 	TensionLevel    float64 `json:"tension_level"`
-	// ChapterWords is the target word count for this chapter (0 = use project default or 3000).
-	ChapterWords int `json:"chapter_words"`
+	// ChapterWordsMin/Max define the word-count range for this chapter (0 = use project default or 2000/3500).
+	ChapterWordsMin int `json:"chapter_words_min"`
+	ChapterWordsMax int `json:"chapter_words_max"`
 	// ContextHint is an optional per-chapter creative direction injected into the user prompt.
 	ContextHint string `json:"context_hint"`
 	// LLMConfig is populated internally by the handler via agent routing; not sent from the frontend.

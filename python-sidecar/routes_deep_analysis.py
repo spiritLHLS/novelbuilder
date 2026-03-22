@@ -122,7 +122,7 @@ async def _rate_limit(cfg: LLMConfig) -> None:
 
 # ── LLM helper (async, with built-in retry) ───────────────────────────────────
 
-async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dict:
+async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6, _meta: dict | None = None) -> dict:
     """
     Call an OpenAI-compatible endpoint and return parsed JSON.
     Supports two API styles:
@@ -130,6 +130,10 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
       - "responses":        POST {base_url}/responses          (OpenAI Responses API)
     Retries up to max_retries times with exponential back-off on transient errors
     (429, 500, 502, 503, 504).  Returns {} on exhaustion.
+
+    Optional _meta dict:  caller can pass an empty dict to receive metadata.
+      _meta["truncated"] = True  when finish_reason=length (output cut short).
+      _meta["partial"]   = <parsed dict/list>  the repaired partial result.
     """
     api_key = cfg.api_key or os.getenv("OPENAI_API_KEY", "")
     if not api_key:
@@ -267,16 +271,22 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6) -> dic
                         continue
                     break
 
-                # finish_reason="length" means the model hit token limit → truncated output
-                # Try to repair and use the partial response before retrying
+                # finish_reason="length" means the model hit token limit → truncated output.
+                # Signal the caller via _meta so it can split the input and retry.
+                # Also attempt json_repair on the partial response as a fallback.
                 if finish_reason == "length":
                     logger.warning(
                         "LLM finish_reason=length (truncated) on attempt %d/%d, "
                         "trying json_repair on partial response (len=%d)",
                         attempt, max_retries, len(raw),
                     )
+                    if _meta is not None:
+                        _meta["truncated"] = True
                     try:
-                        return _parse_json(raw)
+                        partial = _parse_json(raw)
+                        if _meta is not None:
+                            _meta["partial"] = partial
+                        return partial
                     except Exception:
                         pass
                     if attempt < max_retries:
@@ -747,24 +757,109 @@ async def _merge_world_chunked(all_worlds: list, cfg: LLMConfig) -> dict:
     }
 
 
-async def _merge_characters_chunked(all_chars: list, cfg: LLMConfig) -> list:
-    """Merge characters in multiple LLM passes to handle large novels correctly.
+async def _llm_merge_chars_batch(batch: list, cfg: LLMConfig, depth: int = 0) -> list:
+    """Recursively merge a character batch, splitting in half when the output is
+    truncated (finish_reason=length).
 
-    A single LLM call cannot fit hundreds of character entries from a long novel.
+    When the LLM cannot fit all merged entries in its output token budget, we
+    split the input in half, merge each half independently (which produces
+    shorter outputs), then combine and optionally do one final merge pass.
+
+    Recursion is capped at depth 5 (≤ 32 sub-batches), which is more than
+    enough for any realistic novel character list.
+    """
+    MAX_DEPTH = 5
+    # Safety: single entry or recursion limit reached — return as-is.
+    if not batch:
+        return []
+    if len(batch) <= 1 or depth > MAX_DEPTH:
+        return batch
+
+    chars_data = json.dumps(batch, ensure_ascii=False)
+    meta: dict = {}
+    result = await _llm_extract(_MERGE_CHARACTERS_PROMPT.format(data=chars_data), cfg, _meta=meta)
+    merged = result if isinstance(result, list) else result.get("characters", [])
+
+    if not meta.get("truncated"):
+        # Complete result — use it directly.
+        logger.debug(
+            "_llm_merge_chars_batch: depth=%d %d entries → %d (complete)",
+            depth, len(batch), len(merged),
+        )
+        return merged
+
+    # ── Output truncated: split in half and merge each half recursively ───────
+    logger.warning(
+        "_llm_merge_chars_batch: truncated at depth=%d with %d entries, "
+        "splitting in half and retrying each side",
+        depth, len(batch),
+    )
+    mid = len(batch) // 2
+    left, right = await asyncio.gather(
+        _llm_merge_chars_batch(batch[:mid], cfg, depth + 1),
+        _llm_merge_chars_batch(batch[mid:], cfg, depth + 1),
+    )
+
+    # Python-level name-dedup on the combined halves before the final pass.
+    combined_map: dict[str, dict] = {}
+    for ch in left + right:
+        name = (ch.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key not in combined_map:
+            combined_map[key] = dict(ch)
+        else:
+            existing = combined_map[key]
+            if len(str(ch.get("description", ""))) > len(str(existing.get("description", ""))):
+                combined_map[key] = {**existing, **{k: v for k, v in ch.items() if v}}
+            else:
+                for k, v in ch.items():
+                    if v and not existing.get(k):
+                        existing[k] = v
+    combined = list(combined_map.values())
+
+    # Attempt one final LLM merge pass only if the payload is small enough.
+    # Use a conservative 6 000-byte cap so the output fits in ≤ 4 K tokens on
+    # any model (each condensed entry is ~150-300 bytes, so this is ~20-40 entries
+    # which produce ~6-12 K tokens of output — well within budget).
+    final_data = json.dumps(combined, ensure_ascii=False)
+    SAFE_FINAL_BYTES = 6_000
+    if len(final_data) <= SAFE_FINAL_BYTES:
+        final_meta: dict = {}
+        final_result = await _llm_extract(
+            _MERGE_CHARACTERS_PROMPT.format(data=final_data), cfg, _meta=final_meta,
+        )
+        if not final_meta.get("truncated"):
+            final_merged = final_result if isinstance(final_result, list) else final_result.get("characters", combined)
+            logger.debug(
+                "_llm_merge_chars_batch: depth=%d final-pass %d → %d",
+                depth, len(combined), len(final_merged),
+            )
+            return final_merged
+
+    logger.info(
+        "_llm_merge_chars_batch: returning python-deduped result (%d entries) after recursive split at depth=%d",
+        len(combined), depth,
+    )
+    return combined
+
+
+async def _merge_characters_chunked(all_chars: list, cfg: LLMConfig) -> list:
+    """Merge characters in multiple LLM passes without data loss.
+
     Strategy:
-    1. Python-level exact-name dedup first (keep richest entry per name).
-    2. Pack deduplicated entries into batches capped at MAX_BATCH_BYTES JSON bytes.
-    3. LLM-merge each batch independently.
-    4. If there is more than one batch, do a final LLM merge pass over all batch
-       results (they are now small enough since the LLM already condensed them).
-    5. Fall back to Python-name-dedup of the batch results when the final pass
-       also exceeds the byte budget (extremely large casts).
+    1. Python exact-name dedup (keep richest entry per name).
+    2. Pack into batches of ≤ MAX_BATCH_BYTES JSON bytes.
+    3. LLM-merge each batch via _llm_merge_chars_batch (recursive split on
+       finish_reason=length — no partial data loss on token-limit truncation).
+    4. Final LLM merge pass over all condensed batch results.
     """
     if not all_chars:
         return []
 
     # Step 1: Python dedup by exact name (case-insensitive). Keep the entry with
-    # the longest description, merging traits lists when present.
+    # the richest description; absorb non-empty fields from duplicates.
     name_map: dict[str, dict] = {}
     for ch in all_chars:
         name = (ch.get("name") or "").strip()
@@ -775,13 +870,9 @@ async def _merge_characters_chunked(all_chars: list, cfg: LLMConfig) -> list:
             name_map[key] = dict(ch)
         else:
             existing = name_map[key]
-            # Prefer the entry with a richer description.
             if len(str(ch.get("description", ""))) > len(str(existing.get("description", ""))):
-                merged = {**existing, **{k: v for k, v in ch.items() if v}}
-                # Keep canonical name capitalisation from the richer entry.
-                name_map[key] = merged
+                name_map[key] = {**existing, **{k: v for k, v in ch.items() if v}}
             else:
-                # Absorb non-empty fields from the newer entry that the existing lacks.
                 for k, v in ch.items():
                     if v and not existing.get(k):
                         existing[k] = v
@@ -792,8 +883,11 @@ async def _merge_characters_chunked(all_chars: list, cfg: LLMConfig) -> list:
     if not deduped:
         return []
 
-    # Step 2: Pack into batches capped at MAX_BATCH_BYTES of JSON.
-    MAX_BATCH_BYTES = 14_000  # comfortably within a 16K-token window after the prompt
+    # Step 2: Pack into batches capped at MAX_BATCH_BYTES.
+    # 8 000 bytes keeps the prompt+data within a narrow enough window that the
+    # condensed output (≈ 300 bytes/entry × ~25 entries = ~7 500 bytes ≈ 2 500
+    # tokens) fits comfortably in the 8 K output budget of deepseek-chat.
+    MAX_BATCH_BYTES = 8_000
     batches: list[list[dict]] = []
     current_batch: list[dict] = []
     current_size = 0
@@ -811,43 +905,23 @@ async def _merge_characters_chunked(all_chars: list, cfg: LLMConfig) -> list:
 
     logger.info("merge_characters: %d deduped entries → %d LLM batch(es)", len(deduped), len(batches))
 
-    # Step 3: LLM-merge each batch.
+    # Step 3: LLM-merge each batch with automatic recursive splitting on truncation.
     batch_results: list[dict] = []
     for i, batch in enumerate(batches):
-        logger.info("merge_characters: LLM batch %d/%d (%d chars)", i + 1, len(batches), len(batch))
-        chars_data = json.dumps(batch, ensure_ascii=False)
-        result = await _llm_extract(_MERGE_CHARACTERS_PROMPT.format(data=chars_data), cfg)
-        merged = result if isinstance(result, list) else result.get("characters", batch)
+        logger.info("merge_characters: LLM batch %d/%d (%d entries)", i + 1, len(batches), len(batch))
+        merged = await _llm_merge_chars_batch(batch, cfg)
         batch_results.extend(merged)
 
     if len(batches) == 1:
-        return _sort_by_importance(batch_results)  # already done
+        return _sort_by_importance(batch_results)
 
-    # Step 4: Final merge pass over all batch results (they are now condensed).
-    final_data = json.dumps(batch_results, ensure_ascii=False)
-    if len(final_data) <= MAX_BATCH_BYTES * 2:
-        result = await _llm_extract(_MERGE_CHARACTERS_PROMPT.format(data=final_data), cfg)
-        merged = result if isinstance(result, list) else result.get("characters", batch_results)
-        return _sort_by_importance(merged)
-
-    # Step 5: Fallback — too many even after LLM condensation; Python-dedup only.
-    logger.warning(
-        "merge_characters: final data still %d bytes after %d batches; falling back to python dedup",
-        len(final_data), len(batches),
+    # Step 4: Final merge pass over all condensed batch results.
+    # _llm_merge_chars_batch handles truncation recursively so no data is lost.
+    logger.info(
+        "merge_characters: final merge pass over %d entries from %d batches",
+        len(batch_results), len(batches),
     )
-    final_map: dict[str, dict] = {}
-    for ch in batch_results:
-        name = (ch.get("name") or "").strip()
-        if not name:
-            continue
-        key = name.lower()
-        if key not in final_map:
-            final_map[key] = dict(ch)
-        else:
-            existing = final_map[key]
-            if len(str(ch.get("description", ""))) > len(str(existing.get("description", ""))):
-                final_map[key] = {**existing, **{k: v for k, v in ch.items() if v}}
-    return _sort_by_importance(list(final_map.values()))
+    return _sort_by_importance(await _llm_merge_chars_batch(batch_results, cfg))
 
 
 def _dedup_outline(nodes: list) -> list:

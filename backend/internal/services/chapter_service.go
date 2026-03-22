@@ -161,13 +161,24 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		return nil, err
 	}
 
-	// Resolve target word count (request > project default > 3000)
-	targetWords := req.ChapterWords
-	if targetWords <= 0 {
-		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&targetWords)
-		if targetWords <= 0 {
-			targetWords = 3000
+	// Resolve word-count range (request > project default > sensible defaults).
+	wordsMin := req.ChapterWordsMin
+	wordsMax := req.ChapterWordsMax
+	if wordsMin <= 0 {
+		var pw int
+		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&pw)
+		if pw > 0 {
+			wordsMin = pw * 2 / 3
+			wordsMax = pw * 4 / 3
+		} else {
+			wordsMin, wordsMax = 2000, 3500
 		}
+	}
+	if wordsMax <= 0 {
+		wordsMax = wordsMin * 2
+	}
+	if wordsMin > wordsMax {
+		wordsMin, wordsMax = wordsMax, wordsMin
 	}
 
 	// Build system prompt using HEAD/MIDDLE/TAIL (Lost-in-Middle) layout
@@ -185,7 +196,7 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 - 张力水平：%.1f
 
 要求：
-1. 内容至少%d字
+1. 内容字数控制在 %d～%d 字之间（根据本章剧情密度自然调整，无需强行凑字数）
 2. 保持与前文的连贯性
 3. 按照大纲推进剧情
 4. 自然融入伏笔
@@ -193,7 +204,7 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
-		targetWords)
+		wordsMin, wordsMax)
 
 	if req.ContextHint != "" {
 		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
@@ -303,18 +314,29 @@ func (s *ChapterService) StreamGenerate(ctx context.Context, projectID string, c
 		return err
 	}
 
-	// Resolve target word count (request > project default > 3000)
-	targetWords := req.ChapterWords
-	if targetWords <= 0 {
-		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&targetWords)
-		if targetWords <= 0 {
-			targetWords = 3000
+	// Resolve word-count range (request > project default > sensible defaults).
+	wordsMin := req.ChapterWordsMin
+	wordsMax := req.ChapterWordsMax
+	if wordsMin <= 0 {
+		var pw int
+		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&pw)
+		if pw > 0 {
+			wordsMin = pw * 2 / 3
+			wordsMax = pw * 4 / 3
+		} else {
+			wordsMin, wordsMax = 2000, 3500
 		}
+	}
+	if wordsMax <= 0 {
+		wordsMax = wordsMin * 2
+	}
+	if wordsMin > wordsMax {
+		wordsMin, wordsMax = wordsMax, wordsMin
 	}
 
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
-	userPrompt := fmt.Sprintf(`请生成第 %d 章的完整内容。叙事视角：%s，POV角色：%s，目标节奏：%s，张力水平：%.1f，内容至少%d字。`,
-		chapterNum, req.NarrativeOrder, req.POVCharacter, req.TargetPace, req.TensionLevel, targetWords)
+	userPrompt := fmt.Sprintf(`请生成第 %d 章的完整内容。叙事视角：%s，POV角色：%s，目标节奏：%s，张力水平：%.1f，字数控制在 %d～%d 字之间（根据剧情自然调整）。`,
+		chapterNum, req.NarrativeOrder, req.POVCharacter, req.TargetPace, req.TensionLevel, wordsMin, wordsMax)
 	if req.ContextHint != "" {
 		userPrompt += fmt.Sprintf(" 本章特别方向：%s", req.ContextHint)
 	}
@@ -602,13 +624,24 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 	}
 	_ = s.CreateSnapshot(ctx, id, "before_regenerate", "before chapter regenerate")
 
-	// Resolve target word count (request > project default > 3000)
-	targetWords := req.ChapterWords
-	if targetWords <= 0 {
-		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&targetWords)
-		if targetWords <= 0 {
-			targetWords = 3000
+	// Resolve word-count range (request > project default > sensible defaults).
+	wordsMin := req.ChapterWordsMin
+	wordsMax := req.ChapterWordsMax
+	if wordsMin <= 0 {
+		var pw int
+		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&pw)
+		if pw > 0 {
+			wordsMin = pw * 2 / 3
+			wordsMax = pw * 4 / 3
+		} else {
+			wordsMin, wordsMax = 2000, 3500
 		}
+	}
+	if wordsMax <= 0 {
+		wordsMax = wordsMin * 2
+	}
+	if wordsMin > wordsMax {
+		wordsMin, wordsMax = wordsMax, wordsMin
 	}
 
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
@@ -623,7 +656,7 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 - 张力水平：%.1f
 
 要求：
-1. 内容至少%d字
+1. 内容字数控制在 %d～%d 字之间（根据本章剧情密度自然调整，无需强行凑字数）
 2. 保持与前文的连贯性
 3. 按照大纲推进剧情
 4. 自然融入伏笔
@@ -631,7 +664,7 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
-		targetWords)
+		wordsMin, wordsMax)
 	if req.ContextHint != "" {
 		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
 	}

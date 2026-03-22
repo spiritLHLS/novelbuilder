@@ -168,18 +168,26 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 			volumeCount = 4
 		}
 	}
-	chaptersPerVolume := req.ChaptersPerVolume
-	if chaptersPerVolume == 0 {
-		if project.ChapterWords > 0 && project.TargetWords > 0 {
-			totalChapters := project.TargetWords / project.ChapterWords
-			chaptersPerVolume = (totalChapters + volumeCount - 1) / volumeCount
-			if chaptersPerVolume < 10 {
-				chaptersPerVolume = 10
-			}
-		} else {
-			chaptersPerVolume = 30
+
+	// Resolve chapter word-count range (request > project default > sensible defaults).
+	chapterWordsMin := req.ChapterWordsMin
+	chapterWordsMax := req.ChapterWordsMax
+	if chapterWordsMin <= 0 {
+		chapterWordsMin = 2000
+	}
+	if chapterWordsMax <= 0 {
+		// Use project's chapter_words as max hint if set, else 3500.
+		chapterWordsMax = project.ChapterWords
+		if chapterWordsMax <= 0 {
+			chapterWordsMax = 3500
 		}
 	}
+	// Ensure min <= max.
+	if chapterWordsMin > chapterWordsMax {
+		chapterWordsMin, chapterWordsMax = chapterWordsMax, chapterWordsMin
+	}
+	// Midpoint used for total-chapter estimation.
+	avgChapterWords := (chapterWordsMin + chapterWordsMax) / 2
 
 	// ── 3. Build context sections from existing assets ────────────────────────
 
@@ -310,13 +318,12 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 	if targetWordsWan == 0 {
 		targetWordsWan = 50 // sensible default
 	}
-	chapterWordsVal := project.ChapterWords
-	if chapterWordsVal <= 0 {
-		chapterWordsVal = 3000
+	estimatedTotalChapters := 0
+	if avgChapterWords > 0 && project.TargetWords > 0 {
+		estimatedTotalChapters = project.TargetWords / avgChapterWords
 	}
-	estimatedTotalChapters := project.TargetWords / chapterWordsVal
 	if estimatedTotalChapters <= 0 {
-		estimatedTotalChapters = volumeCount * chaptersPerVolume
+		estimatedTotalChapters = volumeCount * 30 // fallback
 	}
 
 	prompt := fmt.Sprintf(`你是一位资深小说策划编辑，擅长%s类型的长篇小说规划。
@@ -330,11 +337,10 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 - 核心创意：%s
 - 风格描述：%s
 - 计划卷数：%d卷（必须恰好 %d 卷，不得增减）
-- 每卷章节数：%d章
+- 每章字数范围：%d～%d字（短故事弧可少于此范围，高潮章节可超出此范围，整体控制在此区间内）
 - 全书目标字数：约%d万字
-- 每章目标字数：约%d字
-- 推算总章节数：约%d章（目标字数 ÷ 每章字数）
-- 每卷预期字数：约%d万字（均匀分配）
+- 推算总章节数：约%d章（目标字数 ÷ 每章平均字数）
+- 各卷章节数：由你根据剧情弧度自由决定，无需均匀分配；剧情节奏紧凑的卷可章节少、字数短，高潮卷可章节多、字数长
 
 ---
 ## 输出格式
@@ -344,9 +350,9 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 {
   "master_outline": "第1卷:主题/核心冲突/高潮点。第2卷:...（每卷一句，句号分隔，共 %d 卷）",
   "volumes": [
-    {"title":"第一卷卷名","chapter_start":1,"chapter_end":%d},
-    {"title":"第二卷卷名","chapter_start":%d,"chapter_end":%d},
-    ...（按此格式列出全部 %d 卷，章节连续不重叠）
+    {"title":"第一卷卷名","chapter_start":1,"chapter_end":章节数},
+    {"title":"第二卷卷名","chapter_start":下一章节号,"chapter_end":章节数},
+    ...（按此格式列出全部 %d 卷，每卷的chapter_start/chapter_end由你根据剧情弧度自由决定，章节连续不重叠）
   ],
   "relation_graph": "角色A-角色B:关系描述;角色C-角色D:关系描述（分号分隔每对关系）",
   "global_timeline": "序章:关键事件;第一卷末:关键事件;第二卷末:关键事件;...（分号分隔）",
@@ -357,7 +363,8 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 
 **重要约束：**
 %s
-- volumes 数组必须恰好 %d 个元素，覆盖第1章到第%d章，章节连续不重叠
+- volumes 数组必须恰好 %d 个元素，所有卷的章节首尾相连（第一卷chapter_start=1，最后一卷chapter_end=推算总章节数附近），章节连续不重叠
+- 各卷章节数由你根据剧情自由规划（可多可少），不要求相同
 - characters 中已存在角色无需重复，只列**新增**角色
 - foreshadowings 中已存在伏笔无需重复，只列**新增**伏笔
 - 所有内容须与已有世界观、角色、术语表保持一致
@@ -371,21 +378,14 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 		idea,
 		project.StyleDescription,
 		volumeCount, volumeCount,
-		chaptersPerVolume,
+		chapterWordsMin, chapterWordsMax,
 		targetWordsWan,
-		chapterWordsVal,
 		estimatedTotalChapters,
-		targetWordsWan/volumeCount,
-		// In JSON template comment:
-		volumeCount,         // "共 %d 卷"
-		chaptersPerVolume,   // first volume chapter_end
-		chaptersPerVolume+1, // second volume chapter_start
-		chaptersPerVolume*2, // second volume chapter_end
-		volumeCount,         // "全部 %d 卷"
+		volumeCount,
+		volumeCount,
 		worldBibleFields,
 		buildGenreConstraints(genre, genreTemplate),
-		volumeCount,                   // constraint: %d 个元素
-		volumeCount*chaptersPerVolume, // constraint: 第%d章
+		volumeCount,
 	)
 
 	// ── 6. Call the LLM ───────────────────────────────────────────────────────
@@ -540,13 +540,27 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 		return fmt.Errorf("update blueprint content: %w", err)
 	}
 
-	// Volumes: replace existing draft volumes for this blueprint.
+	// Volumes: upsert new volumes and delete any excess from a previous generation.
 	if len(parsed.Volumes) > 0 {
-		// Delete any existing volumes linked to this specific blueprint placeholder.
+		newVolumeCount := len(parsed.Volumes)
+		// First, null out the volume_id on chapters that belong to volumes we are
+		// about to remove (those with a higher volume_num than the new total).
 		if _, err := tx.Exec(ctx,
-			`DELETE FROM volumes WHERE blueprint_id = $1`, bpID); err != nil {
-			return fmt.Errorf("clear placeholder volumes: %w", err)
+			`UPDATE chapters SET volume_id = NULL
+			 WHERE volume_id IN (
+			     SELECT id FROM volumes WHERE project_id = $1 AND volume_num > $2
+			 )`,
+			projectID, newVolumeCount); err != nil {
+			return fmt.Errorf("nullify excess chapter volume refs: %w", err)
 		}
+		// Delete volumes beyond the new count.
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM volumes WHERE project_id = $1 AND volume_num > $2`,
+			projectID, newVolumeCount); err != nil {
+			return fmt.Errorf("delete excess volumes: %w", err)
+		}
+		// Upsert all new volumes — ON CONFLICT preserves the row id so existing
+		// chapter → volume foreign-key references remain valid.
 		volBatch := &pgx.Batch{}
 		for i, vol := range parsed.Volumes {
 			title := vol.Title
@@ -555,14 +569,21 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 			}
 			volBatch.Queue(
 				`INSERT INTO volumes (id, project_id, volume_num, title, blueprint_id, chapter_start, chapter_end, status, created_at, updated_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', NOW(), NOW())`,
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', NOW(), NOW())
+				 ON CONFLICT (project_id, volume_num) DO UPDATE SET
+				     title         = EXCLUDED.title,
+				     blueprint_id  = EXCLUDED.blueprint_id,
+				     chapter_start = EXCLUDED.chapter_start,
+				     chapter_end   = EXCLUDED.chapter_end,
+				     status        = 'draft',
+				     updated_at    = NOW()`,
 				uuid.New().String(), projectID, i+1, title, bpID, vol.ChapterStart, vol.ChapterEnd)
 		}
 		br := tx.SendBatch(ctx, volBatch)
 		for i := range parsed.Volumes {
 			if _, err := br.Exec(); err != nil {
 				br.Close()
-				return fmt.Errorf("insert volume %d: %w", i, err)
+				return fmt.Errorf("upsert volume %d: %w", i, err)
 			}
 		}
 		if err := br.Close(); err != nil {

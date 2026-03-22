@@ -2,15 +2,45 @@
   <div class="blueprint">
     <div class="page-header">
       <h1>蓝图管理</h1>
-      <el-button type="primary" @click="currentBlueprint ? regenerateBlueprint() : generateBlueprint()" :loading="generating"
+      <el-button type="primary" @click="openGenerateDialog(!!currentBlueprint)" :loading="generating"
         :disabled="generating || currentBlueprint?.status === 'approved' || currentBlueprint?.status === 'pending_review'">
         <el-icon><MagicStick /></el-icon>{{ currentBlueprint ? '重新生成' : '生成蓝图' }}
       </el-button>
     </div>
 
+    <!-- Generation Config Dialog -->
+    <el-dialog v-model="dialogVisible" :title="isRegenerate ? '重新生成蓝图' : '生成蓝图'" width="520px" :close-on-click-modal="false">
+      <el-form :model="genForm" label-width="120px">
+        <el-form-item label="卷数" required>
+          <el-input-number v-model="genForm.volume_count" :min="1" :max="30" :step="1" style="width: 180px;" />
+          <span style="color:#888; margin-left:10px; font-size:12px;">推荐 4～12 卷</span>
+        </el-form-item>
+        <el-form-item label="每章最少字数">
+          <el-input-number v-model="genForm.chapter_words_min" :min="500" :max="10000" :step="500" style="width: 180px;" />
+          <span style="color:#888; margin-left:10px; font-size:12px;">默认 2000 字</span>
+        </el-form-item>
+        <el-form-item label="每章最多字数">
+          <el-input-number v-model="genForm.chapter_words_max" :min="500" :max="20000" :step="500" style="width: 180px;" />
+          <span style="color:#888; margin-left:10px; font-size:12px;">默认 3500 字</span>
+        </el-form-item>
+        <el-form-item label="覆盖核心创意">
+          <el-input v-model="genForm.idea" type="textarea" :rows="3" placeholder="可选：留空则使用项目描述" />
+        </el-form-item>
+        <el-alert v-if="isRegenerate" type="warning" :closable="false" style="margin-top:8px;">
+          重新生成将覆盖当前所有卷册规划和蓝图内容，已写入的章节不受影响。
+        </el-alert>
+      </el-form>
+      <template #footer>
+        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="generating" @click="confirmGenerate">
+          {{ isRegenerate ? '确认重新生成' : '开始生成' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- No Blueprint -->
     <el-empty v-if="!currentBlueprint && !generating" description="尚未生成蓝图">
-      <el-button type="primary" @click="generateBlueprint" :loading="generating">
+      <el-button type="primary" @click="openGenerateDialog(false)" :loading="generating">
         一键生成完整蓝图
       </el-button>
       <p style="color: #888; margin-top: 12px; font-size: 13px;">
@@ -57,7 +87,7 @@
             <el-button v-if="currentBlueprint.status === 'pending_review'"
               type="danger" @click="rejectBlueprint">驳回</el-button>
             <el-button v-if="currentBlueprint.status === 'draft' || currentBlueprint.status === 'rejected' || currentBlueprint.status === 'failed'"
-              type="warning" @click="regenerateBlueprint">重新生成</el-button>
+              type="warning" @click="openGenerateDialog(true)">重新生成</el-button>
           </el-col>
         </el-row>
       </el-card>
@@ -143,8 +173,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi } from '@/api'
+import { ElMessage } from 'element-plus'
+import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, projectApi } from '@/api'
 
 const route = useRoute()
 const projectId = route.params.projectId as string
@@ -160,6 +190,11 @@ const characterCount = ref(0)
 const outlineCount = ref(0)
 const foreshadowingCount = ref(0)
 
+// Generation dialog state
+const dialogVisible = ref(false)
+const isRegenerate = ref(false)
+const genForm = ref({ volume_count: 4, chapter_words_min: 2000, chapter_words_max: 3500, idea: '' })
+
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 function stopPolling() {
@@ -167,6 +202,40 @@ function stopPolling() {
     clearInterval(pollTimer)
     pollTimer = null
   }
+}
+
+async function openGenerateDialog(regen: boolean) {
+  isRegenerate.value = regen
+  // Load project defaults to pre-fill the form
+  try {
+    const res = await projectApi.get(projectId)
+    const p = res?.data?.data
+    if (p) {
+      const targetWords = p.target_words || 0
+      const chapterWords = p.chapter_words || 3000
+      let vc = genForm.value.volume_count
+      let wMin = genForm.value.chapter_words_min
+      let wMax = genForm.value.chapter_words_max
+      if (targetWords > 0) {
+        vc = Math.max(4, Math.round(targetWords / 100000))
+      }
+      if (chapterWords > 0) {
+        wMin = Math.round(chapterWords * 2 / 3)
+        wMax = Math.round(chapterWords * 4 / 3)
+      }
+      genForm.value = { volume_count: vc, chapter_words_min: wMin, chapter_words_max: wMax, idea: '' }
+    }
+  } catch { /* keep defaults */ }
+  dialogVisible.value = true
+}
+
+async function confirmGenerate() {
+  dialogVisible.value = false
+  if (isRegenerate.value) {
+    stopPolling()
+    currentBlueprint.value = null
+  }
+  await doGenerate()
 }
 
 async function pollBlueprintStatus() {
@@ -271,12 +340,18 @@ async function fetchAll() {
   } catch { /* empty */ }
 }
 
-async function generateBlueprint() {
+async function doGenerate() {
   generating.value = true
   generatingStep.value = 0
   generationError.value = ''
+  const payload: Record<string, any> = {
+    volume_count: genForm.value.volume_count,
+    chapter_words_min: genForm.value.chapter_words_min,
+    chapter_words_max: genForm.value.chapter_words_max,
+  }
+  if (genForm.value.idea.trim()) payload.idea = genForm.value.idea.trim()
   try {
-    const res = await blueprintApi.generate(projectId, {})
+    const res = await blueprintApi.generate(projectId, payload)
     // 202: generation is running in background, start polling
     const bp = res.data?.data
     if (bp) {
@@ -285,17 +360,11 @@ async function generateBlueprint() {
     }
     stopPolling()
     pollTimer = setInterval(pollBlueprintStatus, 3000)
-  } catch {
+  } catch (err: any) {
     generating.value = false
-    ElMessage.error('蓝图生成请求失败')
+    const msg = err?.response?.data?.error || '蓝图生成请求失败'
+    ElMessage.error(msg)
   }
-}
-
-async function regenerateBlueprint() {
-  await ElMessageBox.confirm('重新生成将覆盖当前蓝图内容，确认？', '重新生成', { type: 'warning' })
-  stopPolling()
-  currentBlueprint.value = null
-  await generateBlueprint()
 }
 
 async function submitReview() {
@@ -315,8 +384,8 @@ async function approveBlueprint() {
 }
 
 async function rejectBlueprint() {
-  const { value: reason } = await ElMessageBox.prompt('请输入驳回原因', '驳回蓝图', { type: 'warning' })
   try {
+    const { value: reason } = await (await import('element-plus')).ElMessageBox.prompt('请输入驳回原因', '驳回蓝图', { type: 'warning' })
     await blueprintApi.reject(projectId, currentBlueprint.value.id, reason || '')
     currentBlueprint.value.status = 'rejected'
     ElMessage.success('蓝图已驳回')
@@ -332,8 +401,8 @@ async function approveVolume(id: string) {
 }
 
 async function rejectVolume(id: string) {
-  const { value: reason } = await ElMessageBox.prompt('驳回原因', '驳回', { type: 'warning' })
   try {
+    const { value: reason } = await (await import('element-plus')).ElMessageBox.prompt('驳回原因', '驳回', { type: 'warning' })
     await volumeApi.reject(projectId, id, reason || '')
     ElMessage.success('卷已驳回')
     await fetchAll()

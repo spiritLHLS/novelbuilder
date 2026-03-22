@@ -139,9 +139,15 @@
         <el-form-item label="核心冲突">
           <el-input v-model="editForm.core_conflict" type="textarea" :rows="3" />
         </el-form-item>
-        <el-form-item label="其他设定（JSON）">
-          <el-input v-model="editForm.extra_json" type="textarea" :rows="4"
-            placeholder='{"customs": "...", "language": "..."}' />
+        <el-form-item label="其他自定义设定">
+          <div v-for="(kv, i) in extraKV" :key="i" style="display:flex; gap:8px; margin-bottom:8px; align-items:flex-start;">
+            <el-input v-model="kv.key" placeholder="字段名称" style="width:140px; flex-shrink:0;" />
+            <el-input v-model="kv.value" type="textarea" :rows="2" placeholder="内容" style="flex:1;" />
+            <el-button type="danger" :icon="Delete" size="small" circle @click="extraKV.splice(i, 1)" />
+          </div>
+          <el-button size="small" @click="extraKV.push({ key: '', value: '' })">
+            <el-icon><Plus /></el-icon> 添加字段
+          </el-button>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -156,7 +162,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Edit, Delete, Download, Upload } from '@element-plus/icons-vue'
+import { Edit, Delete, Download, Upload, Plus } from '@element-plus/icons-vue'
 import { worldBibleApi } from '@/api'
 
 const route = useRoute()
@@ -168,7 +174,7 @@ const showEditDlg = ref(false)
 const exporting = ref(false)
 const importing = ref(false)
 
-const STANDARD_WB_KEYS = new Set(['world_view', 'era_background', 'geography', 'social_structure', 'power_system', 'core_conflict', 'extra_json'])
+const STANDARD_WB_KEYS = new Set(['world_view', 'era_background', 'geography', 'social_structure', 'power_system', 'core_conflict'])
 
 const rawContent = ref<Record<string, any>>({})
 
@@ -186,10 +192,11 @@ const worldBible = ref({
   social_structure: '',
   power_system: '',
   core_conflict: '',
-  extra_json: '',
 })
 
 const editForm = ref({ ...worldBible.value })
+// Extra arbitrary key-value pairs from/for world bible content
+const extraKV = ref<Array<{ key: string; value: string }>>([])
 
 const isEmpty = computed(() =>
   !worldBible.value.world_view && !worldBible.value.era_background &&
@@ -219,8 +226,11 @@ onMounted(async () => {
         social_structure: c.social_structure || '',
         power_system: c.power_system || '',
         core_conflict: c.core_conflict || '',
-        extra_json: c.extra_json ? JSON.stringify(c.extra_json, null, 2) : '',
       }
+      // Populate extra KV pairs from fields not handled by standard keys
+      extraKV.value = Object.entries(c)
+        .filter(([k]) => !STANDARD_WB_KEYS.has(k))
+        .map(([k, v]) => ({ key: k, value: typeof v === 'string' ? v : JSON.stringify(v) }))
     }
   } catch {
     // new project, no world bible yet
@@ -242,6 +252,8 @@ onMounted(async () => {
 
 function openEditDialog() {
   editForm.value = { ...worldBible.value }
+  // Clone current extra KV pairs into the edit dialog
+  extraKV.value = extraFields.value.map(f => ({ key: f.key, value: f.value }))
   showEditDlg.value = true
 }
 
@@ -289,11 +301,15 @@ async function saveWorldBible() {
   saving.value = true
   try {
     const payload: any = { ...editForm.value }
-    if (payload.extra_json) {
-      try { payload.extra_json = JSON.parse(payload.extra_json) } catch { /* keep as string */ }
+    // Merge extra KV pairs (skip empty keys)
+    for (const kv of extraKV.value) {
+      const k = kv.key.trim()
+      if (k) payload[k] = kv.value
     }
     await worldBibleApi.update(projectId, payload)
     worldBible.value = { ...editForm.value }
+    // Refresh raw content so extraFields computed reflects the save
+    rawContent.value = { ...payload }
     showEditDlg.value = false
     ElMessage.success('世界圣经已保存')
   } catch {

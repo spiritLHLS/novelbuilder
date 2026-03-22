@@ -64,8 +64,13 @@
               </el-form-item>
             </el-col>
             <el-col :span="12">
-              <el-form-item label="目标字数">
-                <el-input-number v-model="genForm.chapter_words" :min="500" :max="20000" :step="500" style="width: 100%;" />
+              <el-form-item label="字数下限">
+                <el-input-number v-model="genForm.chapter_words_min" :min="500" :max="10000" :step="500" style="width: 100%;" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="字数上限">
+                <el-input-number v-model="genForm.chapter_words_max" :min="500" :max="20000" :step="500" style="width: 100%;" />
               </el-form-item>
             </el-col>
           </el-row>
@@ -149,7 +154,7 @@ const streamBox = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
 
 const genForm = ref({
-  chapter_num: 1, chapter_words: 3000, context_hint: '', stream: true,
+  chapter_num: 1, chapter_words_min: 2000, chapter_words_max: 3500, context_hint: '', stream: true,
 })
 
 const showBatchDialog = ref(false)
@@ -271,7 +276,8 @@ async function startGenerate() {
         projectId,
         {
           chapter_num: genForm.value.chapter_num,
-          chapter_words: genForm.value.chapter_words,
+          chapter_words_min: genForm.value.chapter_words_min,
+          chapter_words_max: genForm.value.chapter_words_max,
           context_hint: genForm.value.context_hint,
         },
         (chunk: string) => {
@@ -299,7 +305,8 @@ async function startGenerate() {
     try {
       await chapterApi.generate(projectId, {
         chapter_num: genForm.value.chapter_num,
-        chapter_words: genForm.value.chapter_words,
+        chapter_words_min: genForm.value.chapter_words_min,
+        chapter_words_max: genForm.value.chapter_words_max,
         context_hint: genForm.value.context_hint,
       })
       ElMessage.success('章节生成完成')
