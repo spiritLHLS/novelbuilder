@@ -1,0 +1,25 @@
+services:
+  novelbuilder:
+    image: novelbuilder
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nb
+    ports:
+      - "8080:8080"
+    volumes:
+      # Named volumes — persisted across container rebuilds.
+      # All three are required; omitting any will cause data loss on recreation.
+      - novelbuilder-pg:/var/lib/postgresql/data       # PostgreSQL: projects, chapters, characters...
+      - novelbuilder-qdrant:/var/lib/qdrant            # Qdrant: vector index (RAG rebuild results)
+      - novelbuilder-neo4j:/opt/neo4j/data             # Neo4j: knowledge graph / agent long-term memory
+    restart: unless-stopped
+    # Optional env overrides — defaults are safe for single-container deployment.
+    # environment:
+    #   DB_PASSWORD: changeme
+    #   NEO4J_PASSWORD: changeme
+
+volumes:
+  novelbuilder-pg:
+  novelbuilder-qdrant:
+  novelbuilder-neo4j:

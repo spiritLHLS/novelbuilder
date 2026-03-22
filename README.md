@@ -141,7 +141,15 @@ novelbuilder/
 
 ```bash
 docker rm -f nb
-docker volume rm novelbuilder-data
+···
+
+···bash
+docker volume rm novelbuilder-pg
+docker volume rm novelbuilder-qdrant
+docker volume rm novelbuilder-neo4j
+···
+
+···bash
 rm -rf novelbuilder
 docker system prune -a
 ```
@@ -154,9 +162,26 @@ docker build --no-cache -t novelbuilder .
 docker run -d \
   --name nb \
   -p 8080:8080 \
-  -v novelbuilder-data:/var/lib/postgresql/data \
+  -v novelbuilder-pg:/var/lib/postgresql/data \
+  -v novelbuilder-qdrant:/var/lib/qdrant \
+  -v novelbuilder-neo4j:/opt/neo4j/data \
   novelbuilder
 docker logs -f nb
+```
+
+> **重要：三个`-v`缺一不可。**
+> - `novelbuilder-pg` — 关系型数据库（项目、角色、章节等所有业务数据）
+> - `novelbuilder-qdrant` — 向量索引（知识库重建结果）← **缺少此项会导致重建的索引在容器重启后全部丢失**
+> - `novelbuilder-neo4j` — 知识图谱（Agent 长期记忆）
+>
+> 使用具名卷（named volume）而非匿名卷（anonymous volume）确保数据在容器重建后仍然保留。
+> 也可以使用下方的 `docker-compose.yml` 方式，自动管理所有卷。
+
+或者使用 Docker Compose（推荐，卷由 Compose 统一管理）：
+
+```bash
+docker compose up -d
+docker compose logs -f
 ```
 
 打开 http://localhost:8080，进入 **设置 → AI 模型配置** 添加 LLM Profile（填写 API Key），
