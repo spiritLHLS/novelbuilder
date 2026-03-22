@@ -210,7 +210,7 @@ type CreateProjectRequest struct {
 }
 
 type GenerateBlueprintRequest struct {
-	Idea              string `json:"idea" binding:"required"`
+	Idea              string `json:"idea"`
 	Genre             string `json:"genre"`
 	VolumeCount       int    `json:"volume_count"`
 	ChaptersPerVolume int    `json:"chapters_per_volume"`
@@ -261,7 +261,6 @@ type RestoreChapterSnapshotRequest struct {
 	SnapshotID string `json:"snapshot_id" binding:"required"`
 }
 
-
 // ============================================================
 // Chapter Import
 // ============================================================
@@ -304,4 +303,3 @@ type AutoWriteRequest struct {
 	IntervalMinutes int    `json:"interval_minutes"`
 	LLMProfileID    string `json:"llm_profile_id"`
 }
-

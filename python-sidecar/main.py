@@ -31,6 +31,8 @@ from humanizer.metrics import PerplexityBurstinessEstimator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("python-agent")
+# Suppress benign Neo4j schema-discovery warnings (empty DB, missing labels/props)
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 # ── DB connection (for legacy analyze endpoint) ───────────────────────────────
 def get_db():

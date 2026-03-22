@@ -186,20 +186,33 @@ async def analyze_reference(req: AnalyzeRequest, background_tasks: BackgroundTas
                 json.dumps({"style": style_samples, "sensory": sensory_samples}, ensure_ascii=False),
                 req.material_id,
             ))
-            for element in plot_result.get("elements", []):
-                cur.execute("""
-                    INSERT INTO quarantine_zone.plot_elements
-                    (id, material_id, element_type, content)
-                    VALUES (gen_random_uuid(), %s, %s, %s)
-                    ON CONFLICT DO NOTHING
-                """, (
-                    req.material_id,
-                    element.get("type", "unknown"),
-                    json.dumps(element.get("content", {}), ensure_ascii=False),
-                ))
-            conn.commit()
+        conn.commit()
     finally:
         conn.close()
+
+    # Best-effort: insert plot elements into quarantine_zone (separate transaction,
+    # so a permission failure does NOT roll back the main analysis results above)
+    if plot_result.get("elements"):
+        qconn = get_db()
+        try:
+            with qconn.cursor() as qcur:
+                for element in plot_result["elements"]:
+                    qcur.execute("""
+                        INSERT INTO quarantine_zone.plot_elements
+                        (id, material_id, element_type, content)
+                        VALUES (gen_random_uuid(), %s, %s, %s)
+                        ON CONFLICT DO NOTHING
+                    """, (
+                        req.material_id,
+                        element.get("type", "unknown"),
+                        json.dumps(element.get("content", {}), ensure_ascii=False),
+                    ))
+            qconn.commit()
+        except Exception as qe:
+            logger.warning("quarantine_zone insert skipped (check GRANT USAGE on quarantine_zone): %s", repr(qe))
+            qconn.rollback()
+        finally:
+            qconn.close()
 
     # Async: push style samples into Qdrant
     async def _push_to_qdrant():

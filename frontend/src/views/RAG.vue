@@ -145,6 +145,11 @@ import { ragApi, referenceApi } from '@/api/index'
 const route = useRoute()
 const projectId = computed(() => route.params.projectId as string)
 
+/** UUID v4 pattern guard — prevents poll requests when route param is stale */
+const isValidProjectId = computed(() =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId.value ?? '')
+)
+
 const totalChunks = ref(0)
 const collections = ref<{ collection: string; count: number }[]>([])
 const references = ref<any[]>([])
@@ -233,6 +238,7 @@ async function handleRebuild() {
 function startRebuildPoller() {
   stopRebuildPoller()
   rebuildPoller = setInterval(async () => {
+    if (!isValidProjectId.value) { stopRebuildPoller(); return }
     try {
       const res = await ragApi.rebuildStatus(projectId.value)
       const { status, rebuilt_sources, error } = res.data
@@ -313,6 +319,7 @@ async function handleAnalyze(ref: any) {
 function startAnalyzePoller(targetId: string) {
   stopAnalyzePoller()
   analyzePoller = setInterval(async () => {
+    if (!isValidProjectId.value) { stopAnalyzePoller(); return }
     try {
       const res = await referenceApi.list(projectId.value)
       const list: any[] = res.data.data ?? []
@@ -352,6 +359,7 @@ function recoverAnalyzeJob() {
 }
 
 onMounted(async () => {
+  if (!isValidProjectId.value) return
   await Promise.all([loadStatus(), loadReferences()])
   await recoverRebuildJob()
   recoverAnalyzeJob()

@@ -40,7 +40,12 @@ var fetchImportHTTPClient = &http.Client{
 }
 
 func (h *Handler) ListReferences(c *gin.Context) {
-	refs, err := h.references.List(c.Request.Context(), c.Param("id"))
+	id := c.Param("id")
+	if _, err := uuid.Parse(id); err != nil {
+		c.JSON(400, gin.H{"error": "invalid project id"})
+		return
+	}
+	refs, err := h.references.List(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

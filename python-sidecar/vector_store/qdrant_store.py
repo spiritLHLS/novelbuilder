@@ -184,6 +184,7 @@ class QdrantStore:
         limit: int = 5,
     ) -> list[dict]:
         """Semantic search. Returns [{id, score, content, metadata}]."""
+        await self.ensure_collection(project_id, collection)
         col = self._collection_name(project_id, collection)
         loop = asyncio.get_event_loop()
         vec = await loop.run_in_executor(None, embed, query)

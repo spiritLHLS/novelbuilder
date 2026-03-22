@@ -44,6 +44,13 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 	if genre == "" {
 		genre = project.Genre
 	}
+	idea := req.Idea
+	if idea == "" {
+		idea = project.Description
+	}
+	if idea == "" {
+		idea = project.Title
+	}
 	volumeCount := req.VolumeCount
 	if volumeCount == 0 {
 		volumeCount = 3
@@ -84,7 +91,7 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 7. volumes: 卷级结构，每卷的标题和章节范围
 
 请确保所有内容逻辑自洽，伏笔安排合理，角色弧线完整。`,
-		project.Title, genre, req.Idea, volumeCount, chaptersPerVolume)
+		project.Title, genre, idea, volumeCount, chaptersPerVolume)
 
 	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
 		Task:     "blueprint_generation",
