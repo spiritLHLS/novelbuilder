@@ -127,7 +127,7 @@ def embed(text: str) -> list[float] | None:
     model = _get_embedder()
     if model is None:
         return None
-    vec = model.encode(text, normalize_embeddings=True)
+    vec = model.encode(text, normalize_embeddings=True, show_progress_bar=False)
     return vec.tolist()
 
 
