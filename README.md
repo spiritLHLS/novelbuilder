@@ -165,22 +165,10 @@ docker run -d \
   -v novelbuilder-pg:/var/lib/postgresql/data \
   -v novelbuilder-qdrant:/var/lib/qdrant \
   -v novelbuilder-neo4j:/opt/neo4j/data \
+-e ADMIN_USERNAME=spiritlhl \
+  -e ADMIN_PASSWORD=spiritlhl136@136 \
   novelbuilder
 docker logs -f nb
-```
-
-**自定义登录凭据**（推荐在首次启动前设置）：
-
-```bash
-docker run -d \
-  --name nb \
-  -p 8080:8080 \
-  -v novelbuilder-pg:/var/lib/postgresql/data \
-  -v novelbuilder-qdrant:/var/lib/qdrant \
-  -v novelbuilder-neo4j:/opt/neo4j/data \
-  -e ADMIN_USERNAME=myuser \
-  -e ADMIN_PASSWORD=mypassword \
-  novelbuilder
 ```
 
 > **重要：三个`-v`缺一不可。**
