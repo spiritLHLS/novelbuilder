@@ -152,6 +152,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 
 	api.GET("/projects/:id/world-bible", h.GetWorldBible)
 	api.PUT("/projects/:id/world-bible", h.UpdateWorldBible)
+	api.GET("/projects/:id/world-bible/export", h.ExportWorldBible)
+	api.POST("/projects/:id/world-bible/import", h.ImportWorldBible)
 	api.GET("/projects/:id/constitution", h.GetConstitution)
 	api.PUT("/projects/:id/constitution", h.UpdateConstitution)
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/models"
+	"github.com/novelbuilder/backend/internal/services"
 )
 
 // ── Project CRUD ──────────────────────────────────────────────────────────────
@@ -188,6 +189,33 @@ func (h *Handler) UpdateConstitution(c *gin.Context) {
 }
 
 // ── Fan Fiction Settings ──────────────────────────────────────────────────────
+
+// ExportWorldBible streams a JSON bundle containing the world bible + constitution.
+func (h *Handler) ExportWorldBible(c *gin.Context) {
+	projectID := c.Param("id")
+	bundle, err := h.worldBibles.Export(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Content-Disposition", `attachment; filename="world_bible.json"`)
+	c.JSON(200, bundle)
+}
+
+// ImportWorldBible accepts a JSON bundle and merges it into the project's world bible.
+func (h *Handler) ImportWorldBible(c *gin.Context) {
+	projectID := c.Param("id")
+	var bundle services.WorldBibleBundle
+	if err := c.ShouldBindJSON(&bundle); err != nil {
+		c.JSON(400, gin.H{"error": "invalid bundle JSON: " + err.Error()})
+		return
+	}
+	if err := h.worldBibles.Import(c.Request.Context(), projectID, &bundle); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "imported"})
+}
 
 func (h *Handler) UpdateProjectFanfic(c *gin.Context) {
 	projectID := c.Param("id")

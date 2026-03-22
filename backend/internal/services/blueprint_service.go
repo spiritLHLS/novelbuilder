@@ -70,8 +70,9 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 	// Validate that the project exists before creating anything.
 	var project models.Project
 	err := s.db.QueryRow(ctx,
-		`SELECT id, title, genre, description, style_description FROM projects WHERE id = $1`, projectID).Scan(
-		&project.ID, &project.Title, &project.Genre, &project.Description, &project.StyleDescription)
+		`SELECT id, title, genre, description, style_description, target_words, chapter_words FROM projects WHERE id = $1`, projectID).Scan(
+		&project.ID, &project.Title, &project.Genre, &project.Description, &project.StyleDescription,
+		&project.TargetWords, &project.ChapterWords)
 	if err != nil {
 		return nil, fmt.Errorf("project not found: %w", err)
 	}
@@ -159,11 +160,25 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 	}
 	volumeCount := req.VolumeCount
 	if volumeCount == 0 {
-		volumeCount = 3
+		// Derive from target word count: ~100k words per volume is typical for CN web novels.
+		if project.TargetWords > 0 {
+			volumeCount = project.TargetWords / 100000
+		}
+		if volumeCount < 4 {
+			volumeCount = 4
+		}
 	}
 	chaptersPerVolume := req.ChaptersPerVolume
 	if chaptersPerVolume == 0 {
-		chaptersPerVolume = 30
+		if project.ChapterWords > 0 && project.TargetWords > 0 {
+			totalChapters := project.TargetWords / project.ChapterWords
+			chaptersPerVolume = (totalChapters + volumeCount - 1) / volumeCount
+			if chaptersPerVolume < 10 {
+				chaptersPerVolume = 10
+			}
+		} else {
+			chaptersPerVolume = 30
+		}
 	}
 
 	// ── 3. Build context sections from existing assets ────────────────────────
@@ -290,6 +305,20 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 		taskInstruction = "在现有素材基础上完成并扩展整书资产包（不要删改用户已有内容，只补全缺失部分并新增内容）"
 	}
 
+	// Compute human-readable word-count hints for the prompt.
+	targetWordsWan := project.TargetWords / 10000 // convert to 万字
+	if targetWordsWan == 0 {
+		targetWordsWan = 50 // sensible default
+	}
+	chapterWordsVal := project.ChapterWords
+	if chapterWordsVal <= 0 {
+		chapterWordsVal = 3000
+	}
+	estimatedTotalChapters := project.TargetWords / chapterWordsVal
+	if estimatedTotalChapters <= 0 {
+		estimatedTotalChapters = volumeCount * chaptersPerVolume
+	}
+
 	prompt := fmt.Sprintf(`你是一位资深小说策划编辑，擅长%s类型的长篇小说规划。
 请%s。
 
@@ -300,8 +329,12 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 - 类型/流派：%s
 - 核心创意：%s
 - 风格描述：%s
-- 计划卷数：%d
-- 每卷章节数：%d
+- 计划卷数：%d卷（**必须规划足够的卷数，不得少于%d卷**）
+- 每卷章节数：%d章
+- 全书目标字数：约%d万字
+- 每章目标字数：约%d字
+- 推算总章节数：约%d章（目标字数 ÷ 每章字数）
+- 每卷预期字数：约%d万字（均匀分配）
 
 ---
 ## 输出要求
@@ -315,11 +348,12 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
   "relation_graph": "角色A-角色B:关系描述;...",
   "global_timeline": "时间节点1:事件描述;...",
   "foreshadowings": [{"content":"伏笔内容","embed_method":"explicit|implicit|symbolic","priority":8}],
-  "volumes": [{"title":"卷名","chapter_start":1,"chapter_end":30}]
+  "volumes": [{"title":"卷名","chapter_start":1,"chapter_end":%d}]
 }
 
 **重要约束：**
 %s
+- volumes 数组**必须**包含恰好 %d 个卷，覆盖第1章到第%d章
 - characters 中已存在角色无需重复列出，只列出**新增**角色
 - foreshadowings 中已存在伏笔无需重复，只列出**新增**伏笔
 - 所有内容须与已有世界观、角色、术语表保持一致
@@ -332,10 +366,17 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 		genre,
 		idea,
 		project.StyleDescription,
-		volumeCount,
+		volumeCount, volumeCount,
 		chaptersPerVolume,
+		targetWordsWan,
+		chapterWordsVal,
+		estimatedTotalChapters,
+		targetWordsWan/volumeCount,
 		worldBibleFields,
+		chaptersPerVolume,
 		buildGenreConstraints(genre, genreTemplate),
+		volumeCount,
+		volumeCount, volumeCount*chaptersPerVolume,
 	)
 
 	// ── 6. Call the LLM ───────────────────────────────────────────────────────

@@ -2,7 +2,24 @@
   <div class="world-bible">
     <div class="page-header">
       <h1>世界圣经</h1>
-      <el-button type="primary" @click="openEditDialog"><el-icon><Edit /></el-icon>编辑世界观设定</el-button>
+      <div style="display: flex; gap: 8px;">
+        <el-button @click="exportWorldBible" :loading="exporting">
+          <el-icon><Download /></el-icon>导出设定
+        </el-button>
+        <el-upload
+          :show-file-list="false"
+          accept=".json"
+          :before-upload="handleImportFile"
+          style="display: inline-block;"
+        >
+          <el-button :loading="importing">
+            <el-icon><Upload /></el-icon>导入设定
+          </el-button>
+        </el-upload>
+        <el-button type="primary" @click="openEditDialog">
+          <el-icon><Edit /></el-icon>编辑世界观设定
+        </el-button>
+      </div>
     </div>
 
     <el-row :gutter="20">
@@ -139,7 +156,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Edit, Delete } from '@element-plus/icons-vue'
+import { Edit, Delete, Download, Upload } from '@element-plus/icons-vue'
 import { worldBibleApi } from '@/api'
 
 const route = useRoute()
@@ -148,6 +165,8 @@ const projectId = route.params.projectId as string
 const saving = ref(false)
 const savingConst = ref(false)
 const showEditDlg = ref(false)
+const exporting = ref(false)
+const importing = ref(false)
 
 const STANDARD_WB_KEYS = new Set(['world_view', 'era_background', 'geography', 'social_structure', 'power_system', 'core_conflict', 'extra_json'])
 
@@ -224,6 +243,46 @@ onMounted(async () => {
 function openEditDialog() {
   editForm.value = { ...worldBible.value }
   showEditDlg.value = true
+}
+
+async function exportWorldBible() {
+  exporting.value = true
+  try {
+    const res = await worldBibleApi.export(projectId)
+    const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `world_bible_${projectId}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('世界圣经已导出')
+  } catch {
+    ElMessage.error('导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function handleImportFile(file: File): Promise<boolean> {
+  importing.value = true
+  try {
+    const text = await file.text()
+    const bundle = JSON.parse(text)
+    if (bundle.type !== 'world_bible_bundle') {
+      ElMessage.error('文件格式错误：不是有效的世界圣经导出包')
+      return false
+    }
+    await worldBibleApi.import(projectId, bundle)
+    ElMessage.success('导入成功，正在刷新...')
+    // Reload the page data
+    window.location.reload()
+  } catch (e: any) {
+    ElMessage.error(`导入失败：${e?.response?.data?.error || e?.message || '未知错误'}`)
+  } finally {
+    importing.value = false
+  }
+  return false // prevent default upload behavior
 }
 
 async function saveWorldBible() {

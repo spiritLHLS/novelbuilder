@@ -3,7 +3,7 @@
     <div class="page-header">
       <h1>蓝图管理</h1>
       <el-button type="primary" @click="generateBlueprint" :loading="generating"
-        :disabled="!!currentBlueprint">
+        :disabled="generating || currentBlueprint?.status === 'approved'">
         <el-icon><MagicStick /></el-icon>生成蓝图
       </el-button>
     </div>
@@ -14,7 +14,7 @@
         一键生成完整蓝图
       </el-button>
       <p style="color: #888; margin-top: 12px; font-size: 13px;">
-        蓝图会根据世界设定自动生成世界圣经、大纲、角色、伏笔和卷册规划
+        蓝图会根据世界设定自动生成世界圣经、大纲、角色、伏笔和卷册规划（至少4卷）
       </p>
     </el-empty>
 
@@ -50,13 +50,13 @@
             <div class="status-value">{{ formatDate(currentBlueprint.created_at) }}</div>
           </el-col>
           <el-col :span="12" style="text-align: right;">
-            <el-button v-if="currentBlueprint.status === 'generated'"
+            <el-button v-if="currentBlueprint.status === 'draft'"
               type="success" @click="submitReview">提交审核</el-button>
             <el-button v-if="currentBlueprint.status === 'pending_review'"
               type="success" @click="approveBlueprint">批准</el-button>
             <el-button v-if="currentBlueprint.status === 'pending_review'"
               type="danger" @click="rejectBlueprint">驳回</el-button>
-            <el-button v-if="currentBlueprint.status === 'rejected'"
+            <el-button v-if="currentBlueprint.status === 'rejected' || currentBlueprint.status === 'failed'"
               type="warning" @click="regenerateBlueprint">重新生成</el-button>
           </el-col>
         </el-row>
@@ -69,7 +69,6 @@
             <el-statistic title="世界设定" :value="worldBibleCount" suffix="项">
               <template #prefix><el-icon style="color: #409eff;"><Document /></el-icon></template>
             </el-statistic>
-          </el-card>
         </el-col>
         <el-col :span="6">
           <el-card shadow="hover" class="asset-card">
@@ -98,7 +97,7 @@
       <el-card shadow="hover" style="margin-top: 20px;">
         <template #header><span>卷册规划</span></template>
         <el-table :data="volumes" style="width: 100%;">
-          <el-table-column prop="volume_number" label="卷号" width="80" />
+          <el-table-column prop="volume_num" label="卷号" width="80" />
           <el-table-column prop="title" label="卷名" />
           <el-table-column prop="chapter_start" label="起始章" width="100" />
           <el-table-column prop="chapter_end" label="结束章" width="100" />
@@ -123,7 +122,22 @@
       <!-- Blueprint Raw Content -->
       <el-card shadow="hover" style="margin-top: 20px;">
         <template #header><span>蓝图详情</span></template>
-        <pre class="blueprint-content">{{ JSON.stringify(currentBlueprint.content, null, 2) }}</pre>
+        <el-descriptions :column="1" border style="margin-bottom: 16px;" v-if="currentBlueprint.master_outline">
+          <el-descriptions-item label="总体大纲">
+            <span style="white-space: pre-wrap; font-size: 13px;">{{ formatBlueprintField(currentBlueprint.master_outline) }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="角色关系图" v-if="currentBlueprint.relation_graph">
+            <span style="white-space: pre-wrap; font-size: 13px;">{{ formatBlueprintField(currentBlueprint.relation_graph) }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="全局时间线" v-if="currentBlueprint.global_timeline">
+            <span style="white-space: pre-wrap; font-size: 13px;">{{ formatBlueprintField(currentBlueprint.global_timeline) }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
+        <pre class="blueprint-content">{{ JSON.stringify({
+          master_outline: currentBlueprint.master_outline,
+          relation_graph: currentBlueprint.relation_graph,
+          global_timeline: currentBlueprint.global_timeline,
+        }, null, 2) }}</pre>
       </el-card>
     </template>
   </div>
@@ -202,6 +216,12 @@ function formatDate(d: string) {
   return d ? new Date(d).toLocaleString('zh-CN') : '-'
 }
 
+function formatBlueprintField(val: any): string {
+  if (val == null) return ''
+  if (typeof val === 'string') return val
+  return JSON.stringify(val, null, 2)
+}
+
 onMounted(async () => {
   await fetchAll()
   // If a generation is already in progress (e.g., after page refresh) resume polling.
@@ -234,7 +254,11 @@ async function fetchAll() {
       outlineApi.list(projectId).catch(() => ({ data: { data: [] } })),
       foreshadowingApi.list(projectId).catch(() => ({ data: { data: [] } })),
     ])
-    worldBibleCount.value = wbRes.data.data ? 1 : 0
+    // Count distinct world bible fields (not just presence)
+    const wbContent = wbRes?.data?.data?.content
+    worldBibleCount.value = wbContent && typeof wbContent === 'object'
+      ? Object.keys(wbContent).filter(k => wbContent[k] != null && wbContent[k] !== '').length
+      : (wbContent ? 1 : 0)
     characterCount.value = (charRes.data.data || []).length
     outlineCount.value = (olRes.data.data || []).length
     foreshadowingCount.value = (fsRes.data.data || []).length

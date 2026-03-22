@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/gateway"
@@ -43,12 +45,119 @@ func (s *WorldBibleService) Get(ctx context.Context, projectID string) (*models.
 func (s *WorldBibleService) Update(ctx context.Context, projectID string, content json.RawMessage) (*models.WorldBible, error) {
 	var wb models.WorldBible
 	err := s.db.QueryRow(ctx,
-		`UPDATE world_bibles SET content = $1, version = version + 1
-		 WHERE project_id = $2
+		`INSERT INTO world_bibles (id, project_id, content, version, created_at, updated_at)
+		 VALUES ($1, $2, $3, 1, NOW(), NOW())
+		 ON CONFLICT (project_id) DO UPDATE
+		     SET content = EXCLUDED.content,
+		         version = world_bibles.version + 1,
+		         updated_at = NOW()
 		 RETURNING id, project_id, content, migration_source, version, created_at, updated_at`,
-		content, projectID).Scan(&wb.ID, &wb.ProjectID, &wb.Content, &wb.MigrationSource,
+		uuid.New().String(), projectID, content).Scan(&wb.ID, &wb.ProjectID, &wb.Content, &wb.MigrationSource,
 		&wb.Version, &wb.CreatedAt, &wb.UpdatedAt)
 	return &wb, err
+}
+
+// WorldBibleBundle is the JSON structure used for import/export.
+type WorldBibleBundle struct {
+	Version      string              `json:"version"`
+	Type         string              `json:"type"`
+	ExportedAt   time.Time           `json:"exported_at"`
+	WorldBible   json.RawMessage     `json:"world_bible,omitempty"`
+	Constitution *ConstitutionBundle `json:"constitution,omitempty"`
+}
+
+type ConstitutionBundle struct {
+	ImmutableRules   json.RawMessage `json:"immutable_rules"`
+	MutableRules     json.RawMessage `json:"mutable_rules"`
+	ForbiddenAnchors json.RawMessage `json:"forbidden_anchors"`
+}
+
+// Export returns a JSON bundle containing the world bible and constitution for the project.
+func (s *WorldBibleService) Export(ctx context.Context, projectID string) (*WorldBibleBundle, error) {
+	wb, err := s.Get(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("export world bible: %w", err)
+	}
+	wbc, _ := s.GetConstitution(ctx, projectID)
+
+	bundle := &WorldBibleBundle{
+		Version:    "1.0",
+		Type:       "world_bible_bundle",
+		ExportedAt: time.Now(),
+	}
+	if wb != nil {
+		bundle.WorldBible = wb.Content
+	}
+	if wbc != nil {
+		bundle.Constitution = &ConstitutionBundle{
+			ImmutableRules:   wbc.ImmutableRules,
+			MutableRules:     wbc.MutableRules,
+			ForbiddenAnchors: wbc.ForbiddenAnchors,
+		}
+	}
+	return bundle, nil
+}
+
+// Import merges a WorldBibleBundle into the project.
+// World bible fields: imported values fill blanks; existing user edits are kept.
+// Constitution: fully overwritten (explicit user action).
+func (s *WorldBibleService) Import(ctx context.Context, projectID string, bundle *WorldBibleBundle) error {
+	if bundle.Type != "world_bible_bundle" {
+		return fmt.Errorf("invalid bundle type: %q (expected world_bible_bundle)", bundle.Type)
+	}
+
+	// Merge world bible: existing fields win.
+	if len(bundle.WorldBible) > 4 {
+		existing, err := s.Get(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("import world bible get: %w", err)
+		}
+		var merged json.RawMessage
+		if existing == nil || len(existing.Content) <= 4 {
+			merged = bundle.WorldBible
+		} else {
+			var imp, cur map[string]interface{}
+			if json.Unmarshal(bundle.WorldBible, &imp) != nil {
+				return fmt.Errorf("import: invalid world_bible JSON")
+			}
+			if json.Unmarshal(existing.Content, &cur) != nil {
+				cur = map[string]interface{}{}
+			}
+			for k, v := range imp {
+				if _, exists := cur[k]; !exists {
+					cur[k] = v
+				}
+			}
+			var mErr error
+			merged, mErr = json.Marshal(cur)
+			if mErr != nil {
+				return fmt.Errorf("import merge marshal: %w", mErr)
+			}
+		}
+		if _, err := s.Update(ctx, projectID, merged); err != nil {
+			return fmt.Errorf("import world bible update: %w", err)
+		}
+	}
+
+	// Import constitution — fully overwrite if provided.
+	if bundle.Constitution != nil {
+		immutable := bundle.Constitution.ImmutableRules
+		if len(immutable) == 0 {
+			immutable = json.RawMessage(`[]`)
+		}
+		mutable := bundle.Constitution.MutableRules
+		if len(mutable) == 0 {
+			mutable = json.RawMessage(`[]`)
+		}
+		forbidden := bundle.Constitution.ForbiddenAnchors
+		if len(forbidden) == 0 {
+			forbidden = json.RawMessage(`[]`)
+		}
+		if _, err := s.UpdateConstitution(ctx, projectID, immutable, mutable, forbidden); err != nil {
+			return fmt.Errorf("import constitution: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *WorldBibleService) GetConstitution(ctx context.Context, projectID string) (*models.WorldBibleConstitution, error) {

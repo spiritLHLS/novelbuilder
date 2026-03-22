@@ -65,6 +65,10 @@ export const worldBibleApi = {
   update: (projectId: string, data: any) => api.put(`/projects/${projectId}/world-bible`, data),
   getConstitution: (projectId: string) => api.get(`/projects/${projectId}/constitution`),
   updateConstitution: (projectId: string, data: any) => api.put(`/projects/${projectId}/constitution`, data),
+  export: (projectId: string) =>
+    api.get(`/projects/${projectId}/world-bible/export`),
+  import: (projectId: string, bundle: any) =>
+    api.post(`/projects/${projectId}/world-bible/import`, bundle),
 }
 
 // Characters
