@@ -273,8 +273,25 @@ func main() {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger(logger))
 
-	// Register API routes
-	h.RegisterRoutes(r)
+	// ── Authentication ────────────────────────────────────────────────────────
+	authHandler := handlers.NewAuthHandler(
+		cfg.Auth.Username,
+		cfg.Auth.Password,
+		rdb,
+		cfg.Auth.SessionTTLHours,
+	)
+	sessionTTL := time.Duration(cfg.Auth.SessionTTLHours) * time.Hour
+	authMiddleware := middleware.RequireAuth(rdb, sessionTTL)
+
+	// Public auth endpoints — no token required.
+	r.POST("/api/auth/login", authHandler.Login)
+	r.POST("/api/auth/logout", authHandler.Logout) // reads token from header; no middleware needed
+
+	// Protected auth check — requires valid token.
+	r.GET("/api/auth/check", authMiddleware, authHandler.Check)
+
+	// Register all main API routes with auth middleware.
+	h.RegisterRoutes(r, authMiddleware)
 
 	// Serve Vue frontend static files
 	r.Static("/assets", "./frontend/dist/assets")

@@ -169,6 +169,20 @@ docker run -d \
 docker logs -f nb
 ```
 
+**自定义登录凭据**（推荐在首次启动前设置）：
+
+```bash
+docker run -d \
+  --name nb \
+  -p 8080:8080 \
+  -v novelbuilder-pg:/var/lib/postgresql/data \
+  -v novelbuilder-qdrant:/var/lib/qdrant \
+  -v novelbuilder-neo4j:/opt/neo4j/data \
+  -e ADMIN_USERNAME=myuser \
+  -e ADMIN_PASSWORD=mypassword \
+  novelbuilder
+```
+
 > **重要：三个`-v`缺一不可。**
 > - `novelbuilder-pg` — 关系型数据库（项目、角色、章节等所有业务数据）
 > - `novelbuilder-qdrant` — 向量索引（知识库重建结果）← **缺少此项会导致重建的索引在容器重启后全部丢失**
@@ -189,6 +203,14 @@ docker compose logs -f
 
 > **加密密钥** 由系统在首次启动时自动生成并存入数据库，无需手动指定 `ENCRYPTION_KEY`。
 > **AI API Key** 通过前端 Settings → AI 模型配置 页面配置，加密存储在数据库中。
+>
+> **登录认证**（默认凭据，建议通过环境变量覆盖）：
+>
+> | 环境变量 | 默认值 | 说明 |
+> |----------|--------|------|
+> | `ADMIN_USERNAME` | `spiritlhl` | 登录用户名 |
+> | `ADMIN_PASSWORD` | `spiritlhl136@136` | 登录密码（生产环境请务必修改） |
+> | `SESSION_TTL_HOURS` | `24` | 登录会话有效期（小时） |
 >
 > 如需覆盖基础设施参数（自建 PG/Redis 等），可传入以下可选环境变量：
 > `DB_HOST` `DB_PORT` `DB_USER` `DB_PASSWORD` `DB_NAME`

@@ -221,7 +221,13 @@ _SENSORY_WORDS = [
     "尝到","品尝","味道","甜","苦","酸","辣",
 ]
 
-def _extract_style_samples(sentences: list, max_samples: int = 20) -> list:
+def _extract_style_samples(sentences: list, max_samples: int = 100) -> list:
+    """Extract style samples evenly spaced from candidate sentences.
+
+    The default cap is 100 so that a reference book analysed once can
+    cover projects with up to 100 chapters. The Go rebuild service further
+    re-samples from full chapter text according to the actual chapter count.
+    """
     candidates = [s for s in sentences if 15 <= len(s) <= 120]
     if len(candidates) <= max_samples:
         return candidates

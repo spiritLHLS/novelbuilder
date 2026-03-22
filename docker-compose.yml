@@ -16,7 +16,13 @@ services:
     restart: unless-stopped
     # Optional env overrides — defaults are safe for single-container deployment.
     # environment:
+    #   # ── Authentication ──────────────────────────────────────────────────────
+    #   ADMIN_USERNAME: spiritlhl          # login username (default: spiritlhl)
+    #   ADMIN_PASSWORD: spiritlhl136@136   # login password (change this!)
+    #   SESSION_TTL_HOURS: "24"            # session lifetime in hours (default: 24)
+    #   # ── Database (only needed when connecting to an external PG instance) ───
     #   DB_PASSWORD: changeme
+    #   # ── Neo4j (only needed when connecting to an external Neo4j instance) ───
     #   NEO4J_PASSWORD: changeme
 
 volumes:

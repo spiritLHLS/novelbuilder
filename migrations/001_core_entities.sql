@@ -106,3 +106,34 @@ CREATE TABLE outlines (
     created_at      TIMESTAMP DEFAULT NOW(),
     updated_at      TIMESTAMP DEFAULT NOW()
 );
+
+-- ============================================================
+-- Characters unique constraint (project_id, name)
+-- Required by ON CONFLICT clauses in import/reference services.
+-- ============================================================
+
+-- Remove duplicate characters keeping the earliest row per (project_id, name).
+DELETE FROM characters
+WHERE id IN (
+    SELECT id
+    FROM (
+        SELECT id,
+               ROW_NUMBER() OVER (PARTITION BY project_id, name ORDER BY created_at) AS rn
+        FROM characters
+    ) ranked
+    WHERE rn > 1
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_characters_project_name
+    ON characters (project_id, name);
+
+-- ============================================================
+-- Quarantine zone permissions
+-- Grant the application user (novelbuilder) full access to the
+-- quarantine_zone schema so analysis routes can insert plot_elements.
+-- ============================================================
+
+GRANT USAGE ON SCHEMA quarantine_zone TO novelbuilder;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA quarantine_zone TO novelbuilder;
+ALTER DEFAULT PRIVILEGES IN SCHEMA quarantine_zone
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO novelbuilder;

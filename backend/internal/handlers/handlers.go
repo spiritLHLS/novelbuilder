@@ -129,8 +129,14 @@ func NewHandler(
 	}
 }
 
-func (h *Handler) RegisterRoutes(r *gin.Engine) {
+// RegisterRoutes wires all API routes onto r.
+// Pass authMiddleware to require authentication on all routes except
+// the public auth endpoints (login/logout) which must be registered separately.
+func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFunc) {
 	api := r.Group("/api")
+	if len(authMiddleware) > 0 {
+		api.Use(authMiddleware...)
+	}
 
 	api.GET("/projects", h.ListProjects)
 	api.POST("/projects", h.CreateProject)

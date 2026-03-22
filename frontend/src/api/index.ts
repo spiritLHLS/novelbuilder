@@ -1,6 +1,8 @@
 import axios from 'axios'
 import type { AxiosResponse } from 'axios'
 
+const TOKEN_KEY = 'nb_token'
+
 const api = axios.create({
   baseURL: '/api',
   timeout: 300000,
@@ -9,14 +11,35 @@ const api = axios.create({
   },
 })
 
+// Attach the session token to every request.
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem(TOKEN_KEY)
+  if (token) {
+    config.headers['Authorization'] = `Bearer ${token}`
+  }
+  return config
+})
+
 api.interceptors.response.use(
   (response: AxiosResponse) => response,
   (error) => {
     const msg = error.response?.data?.message || error.response?.data?.error || error.message
     console.error('API Error:', msg)
+    // Redirect to login on auth failure (skip login endpoint itself to avoid loops).
+    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/')) {
+      localStorage.removeItem(TOKEN_KEY)
+      window.location.href = '/login'
+    }
     return Promise.reject(error)
   }
 )
+
+// Auth
+export const authApi = {
+  login: (username: string, password: string) => api.post('/auth/login', { username, password }),
+  logout: () => api.post('/auth/logout'),
+  check: () => api.get('/auth/check'),
+}
 
 // Projects
 export const projectApi = {

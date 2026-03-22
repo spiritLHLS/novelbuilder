@@ -307,8 +307,8 @@ func (s *ReferenceService) IngestSamples(ctx context.Context, projectID, refID s
 }
 
 // RebuildProject re-ingests all cached samples for every completed reference in a project.
-// For references without cached sample_texts (e.g. those imported via deep analysis),
-// it reads chapter content directly from reference_book_chapters and builds style samples.
+// The number of style samples per reference scales with the project's chapter count so that
+// each chapter has at least one style sample to draw from during generation.
 // Returns the number of reference materials processed.
 func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string) (int, error) {
 	if s.rag == nil {
@@ -320,7 +320,22 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		return 0, fmt.Errorf("clear project vectors: %w", err)
 	}
 
-	// Fetch all completed references (with or without cached sample_texts)
+	// Determine how many project chapters exist so we can scale the sample count.
+	// Each chapter should have at least one representative style sample to look up,
+	// with a floor of 20 and no hard ceiling (handles 1000+ chapter web novels).
+	var projectChapterCount int
+	if err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM chapters WHERE project_id = $1`, projectID,
+	).Scan(&projectChapterCount); err != nil {
+		projectChapterCount = 0
+	}
+	const minSamples = 20
+	targetSamples := projectChapterCount
+	if targetSamples < minSamples {
+		targetSamples = minSamples
+	}
+
+	// Fetch all completed references.
 	rows, err := s.db.Query(ctx,
 		`SELECT id, sample_texts FROM reference_materials
 		 WHERE project_id = $1 AND status = 'completed'`,
@@ -335,57 +350,35 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		Sensory []string `json:"sensory"`
 	}
 
-	// Collect all batch items across all references before hitting the DB again
+	// Collect all batch items across all references.
 	var allItems []BatchEmbedItem
-	// Track references that need chapter-based sample generation
-	var noSamplesRefIDs []string
 
-	rebuilt := 0
+	// For each reference: prefer reading from reference_book_chapters (always fresh,
+	// properly sized). Fall back to cached sample_texts only when no chapters exist.
+	type refEntry struct {
+		id         string
+		cachedJSON []byte
+	}
+	var refs []refEntry
 	for rows.Next() {
 		var refID string
 		var samplesRaw []byte
 		if err := rows.Scan(&refID, &samplesRaw); err != nil {
 			continue
 		}
-		if len(samplesRaw) > 2 {
-			var cache sampleCache
-			if err := json.Unmarshal(samplesRaw, &cache); err == nil && (len(cache.Style) > 0 || len(cache.Sensory) > 0) {
-				meta := map[string]interface{}{"ref_id": refID}
-				for _, sample := range cache.Style {
-					allItems = append(allItems, BatchEmbedItem{
-						Collection: "style_samples",
-						Content:    sample,
-						SourceType: "reference",
-						SourceID:   refID,
-						Metadata:   meta,
-					})
-				}
-				for _, sample := range cache.Sensory {
-					allItems = append(allItems, BatchEmbedItem{
-						Collection: "sensory_samples",
-						Content:    sample,
-						SourceType: "reference",
-						SourceID:   refID,
-						Metadata:   meta,
-					})
-				}
-				rebuilt++
-				continue
-			}
-		}
-		// No cached samples — will build from chapter content
-		noSamplesRefIDs = append(noSamplesRefIDs, refID)
+		refs = append(refs, refEntry{id: refID, cachedJSON: samplesRaw})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return rebuilt, fmt.Errorf("rebuild project rows: %w", err)
+		return 0, fmt.Errorf("rebuild project rows: %w", err)
 	}
 
-	// For references without sample_texts, extract style samples from chapter content.
-	// Read ALL chapters per reference and sample sentences evenly.
-	// We stream in batches of 200 to bound memory for very large novels.
+	rebuilt := 0
 	const chapterBatchSize = 200
-	for _, refID := range noSamplesRefIDs {
+	for _, ref := range refs {
+		meta := map[string]interface{}{"ref_id": ref.id}
+
+		// ── Attempt 1: rebuild from reference_book_chapters ──────────────────
 		var allText strings.Builder
 		offset := 0
 		for {
@@ -393,9 +386,10 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 				`SELECT content FROM reference_book_chapters
 				 WHERE ref_id = $1 AND NOT is_deleted AND content <> ''
 				 ORDER BY chapter_no LIMIT $2 OFFSET $3`,
-				refID, chapterBatchSize, offset)
+				ref.id, chapterBatchSize, offset)
 			if chErr != nil {
-				s.logger.Warn("could not read chapters for RAG rebuild", zap.String("ref_id", refID), zap.Error(chErr))
+				s.logger.Warn("could not read chapters for RAG rebuild",
+					zap.String("ref_id", ref.id), zap.Error(chErr))
 				break
 			}
 			rowCount := 0
@@ -409,30 +403,53 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 			}
 			chapRows.Close()
 			if rowCount < chapterBatchSize {
-				break // last page — no more chapters
+				break
 			}
 			offset += chapterBatchSize
 		}
-		if allText.Len() == 0 {
+
+		if allText.Len() > 0 {
+			// Scale sample count to project chapter count.
+			sentences := sampleSentences(allText.String(), targetSamples)
+			for _, sentence := range sentences {
+				allItems = append(allItems, BatchEmbedItem{
+					Collection: "style_samples",
+					Content:    sentence,
+					SourceType: "reference",
+					SourceID:   ref.id,
+					Metadata:   meta,
+				})
+			}
+			rebuilt++
 			continue
 		}
-		// Sample up to 300 sentences evenly spaced from the full combined text.
-		// For a 300万-character novel this yields dense, representative coverage.
-		sentences := sampleSentences(allText.String(), 300)
-		if len(sentences) == 0 {
-			continue
+
+		// ── Attempt 2: fall back to cached sample_texts ───────────────────────
+		if len(ref.cachedJSON) > 2 {
+			var cache sampleCache
+			if err := json.Unmarshal(ref.cachedJSON, &cache); err == nil &&
+				(len(cache.Style) > 0 || len(cache.Sensory) > 0) {
+				for _, sample := range cache.Style {
+					allItems = append(allItems, BatchEmbedItem{
+						Collection: "style_samples",
+						Content:    sample,
+						SourceType: "reference",
+						SourceID:   ref.id,
+						Metadata:   meta,
+					})
+				}
+				for _, sample := range cache.Sensory {
+					allItems = append(allItems, BatchEmbedItem{
+						Collection: "sensory_samples",
+						Content:    sample,
+						SourceType: "reference",
+						SourceID:   ref.id,
+						Metadata:   meta,
+					})
+				}
+				rebuilt++
+			}
 		}
-		meta := map[string]interface{}{"ref_id": refID}
-		for _, s := range sentences {
-			allItems = append(allItems, BatchEmbedItem{
-				Collection: "style_samples",
-				Content:    s,
-				SourceType: "reference",
-				SourceID:   refID,
-				Metadata:   meta,
-			})
-		}
-		rebuilt++
 	}
 
 	// ── world_knowledge: chunk world-bible content into paragraphs ─────────────

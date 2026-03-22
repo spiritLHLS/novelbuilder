@@ -15,6 +15,7 @@ type Config struct {
 	Redis         RedisConfig
 	PythonSidecar PythonSidecarConfig
 	TaskQueue     TaskQueueConfig
+	Auth          AuthConfig
 }
 
 type ServerConfig struct {
@@ -48,6 +49,14 @@ type PythonSidecarConfig struct {
 type TaskQueueConfig struct {
 	Workers    int
 	MaxRetries int
+}
+
+// AuthConfig holds credentials for the built-in single-user authentication.
+// Credentials can be overridden via environment variables.
+type AuthConfig struct {
+	Username        string
+	Password        string // plain-text default; overridden by ADMIN_PASSWORD env var
+	SessionTTLHours int
 }
 
 func envStr(key, def string) string {
@@ -98,6 +107,11 @@ func Load() *Config {
 		TaskQueue: TaskQueueConfig{
 			Workers:    envInt("TASK_WORKERS", 4),
 			MaxRetries: envInt("TASK_MAX_RETRIES", 3),
+		},
+		Auth: AuthConfig{
+			Username:        envStr("ADMIN_USERNAME", "spiritlhl"),
+			Password:        envStr("ADMIN_PASSWORD", "spiritlhl136@136"),
+			SessionTTLHours: envInt("SESSION_TTL_HOURS", 24),
 		},
 	}
 }

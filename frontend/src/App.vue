@@ -1,6 +1,9 @@
 <template>
   <el-config-provider>
-    <div class="app-wrapper" :class="{ dark: isDark }">
+    <!-- Login page gets a clean fullscreen layout (no sidebar) -->
+    <router-view v-if="route.name === 'login'" />
+
+    <div v-else class="app-wrapper" :class="{ dark: isDark }">
       <aside class="app-sidebar">
         <div class="sidebar-logo">
           <span class="logo-icon">📖</span>
@@ -42,9 +45,17 @@
           </a>
         </nav>
         <div class="sidebar-footer">
+          <div class="user-info" v-if="auth.username">
+            <el-icon><UserFilled /></el-icon>
+            <span class="username">{{ auth.username }}</span>
+          </div>
           <button class="theme-btn" @click="themeStore.toggleTheme()">
             <span>{{ isDark ? '☀️' : '🌙' }}</span>
             <span>{{ isDark ? '切换亮色' : '切换暗色' }}</span>
+          </button>
+          <button class="logout-btn" @click="handleLogout">
+            <el-icon><SwitchButton /></el-icon>
+            <span>退出登录</span>
           </button>
         </div>
       </aside>
@@ -59,9 +70,11 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useProjectStore } from '@/stores/project'
 import { useThemeStore } from '@/stores/theme'
 import { useDownloadStore } from '@/stores/download'
+import { useAuthStore } from '@/stores/auth'
 import DownloadWidget from '@/components/DownloadWidget.vue'
 
 const route = useRoute()
@@ -69,11 +82,18 @@ const router = useRouter()
 const projectStore = useProjectStore()
 const themeStore = useThemeStore()
 const downloadStore = useDownloadStore()
+const auth = useAuthStore()
 
 onMounted(() => downloadStore.restoreAndPoll())
 
 const isDark = computed(() => themeStore.theme === 'dark')
 const currentProjectId = computed(() => projectStore.currentProjectId)
+
+async function handleLogout() {
+  await auth.logout()
+  ElMessage.info('已退出登录')
+  router.push('/login')
+}
 
 const workshopItems = computed(() => {
   const pid = currentProjectId.value
@@ -163,12 +183,27 @@ body {
 .nav-item.active { background-color: rgba(64,158,255,0.15); color: #409eff; font-weight: 500; }
 .nav-item .el-icon { font-size: 14px; flex-shrink: 0; }
 .sidebar-footer { border-top: 1px solid var(--nb-border-sidebar); padding: 10px; flex-shrink: 0; }
+.user-info {
+  display: flex; align-items: center; gap: 6px; padding: 5px 10px 8px;
+  font-size: 12px; color: var(--nb-text-sidebar); opacity: 0.8;
+  white-space: nowrap; overflow: hidden;
+}
+.user-info .username { overflow: hidden; text-overflow: ellipsis; }
 .theme-btn {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
   border: 1px solid var(--nb-border-sidebar); border-radius: 6px; background: transparent;
   color: var(--nb-text-sidebar); font-size: 12px; cursor: pointer;
   transition: background-color 0.12s, color 0.12s;
+  margin-bottom: 6px;
 }
 .theme-btn:hover { background-color: var(--nb-bg-sidebar-hover); color: var(--nb-accent); }
+.logout-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  color: var(--nb-text-sidebar); font-size: 12px; cursor: pointer;
+  transition: background-color 0.12s, color 0.12s;
+  opacity: 0.75;
+}
+.logout-btn:hover { background-color: rgba(245,108,108,0.12); color: #f56c6c; opacity: 1; }
 .app-main { flex: 1; overflow-y: auto; background-color: var(--nb-main-bg); padding: 24px; transition: background-color 0.2s; }
 </style>

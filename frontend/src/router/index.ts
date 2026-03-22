@@ -1,9 +1,16 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
+import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/Login.vue'),
+      meta: { public: true },
+    },
     {
       path: '/',
       redirect: '/projects',
@@ -188,11 +195,28 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to, _from, next) => {
+router.beforeEach(async (to, _from, next) => {
   const projectId = to.params.projectId as string
   if (projectId) {
     useProjectStore().setCurrentProject(projectId)
   }
+
+  // Allow public routes (login page) without authentication.
+  if (to.meta?.public) {
+    return next()
+  }
+
+  const auth = useAuthStore()
+  // On first navigation, verify the stored token with the backend.
+  if (!auth.checked) {
+    const ok = await auth.check()
+    if (!ok) {
+      return next({ name: 'login', query: { redirect: to.fullPath } })
+    }
+  } else if (!auth.token) {
+    return next({ name: 'login', query: { redirect: to.fullPath } })
+  }
+
   next()
 })
 
