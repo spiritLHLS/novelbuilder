@@ -411,6 +411,9 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	if req.TensionLevel > 0 {
 		narrativeSection.WriteString(fmt.Sprintf("张力值：%.1f  ", req.TensionLevel))
 	}
+	if req.ChapterWordsMin > 0 || req.ChapterWordsMax > 0 {
+		narrativeSection.WriteString(fmt.Sprintf("目标字数：%d-%d 字  ", req.ChapterWordsMin, req.ChapterWordsMax))
+	}
 	if narrativeSection.Len() > 0 {
 		sb.WriteString("=== 生成参数 ===\n")
 		sb.WriteString(narrativeSection.String())
@@ -425,7 +428,7 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		}
 	}
 
-	sb.WriteString("\n你是一位经验丰富的网络小说作者，请严格遵守世界观设定和宪法规则，保持角色性格一致性。")
+	sb.WriteString("\n你是一位经验丰富的网络小说作者，请严格遵守世界观设定和宪法规则，保持角色性格一致性。字数范围属于硬约束，必须落在要求区间内。")
 
 	return sb.String()
 }

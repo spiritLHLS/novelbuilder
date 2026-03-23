@@ -103,7 +103,8 @@
         <el-table-column label="操作" width="200">
           <template #default="{ row }">
             <el-button size="small" @click="viewChapter(row.id)">查看</el-button>
-            <el-button size="small" type="primary" @click="runQC(row.id)" v-if="row.status === 'generated'">质检</el-button>
+            <el-button size="small" type="success" @click="confirmAs正文(row)" v-if="row.status === 'draft' || row.status === 'needs_recheck' || row.status === 'generated'">确认为正文</el-button>
+            <el-button size="small" type="primary" @click="runQC(row.id)" v-if="row.status === 'draft' || row.status === 'needs_recheck' || row.status === 'generated'">质检</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -200,20 +201,33 @@ async function runQC(id: string) {
   }
 }
 
+async function confirmAs正文(ch: any) {
+  try {
+    await chapterApi.approve(projectId, ch.id, 'confirmed as final text', ch.version)
+    ch.status = 'approved'
+    ch.version = (ch.version || 0) + 1
+    stats.value.approved = recentChapters.value.filter((item: any) => item.status === 'approved').length
+    ElMessage.success('已确认为正文')
+  } catch (e: any) {
+    const msg = e.response?.data?.message || e.response?.data?.error || '确认失败'
+    ElMessage.error(msg)
+  }
+}
+
 function formatNumber(n: number) {
   return n.toLocaleString()
 }
 
 function statusType(status: string) {
   const map: Record<string, string> = {
-    pending: 'info', generated: '', pending_review: 'warning', approved: 'success', rejected: 'danger',
+    pending: 'info', draft: 'info', generated: 'info', pending_review: 'warning', approved: 'success', rejected: 'danger', needs_recheck: 'warning',
   }
   return (map[status] || 'info') as any
 }
 
 function statusText(status: string) {
   const map: Record<string, string> = {
-    pending: '待生成', generated: '已生成', pending_review: '待审核', approved: '已通过', rejected: '已驳回',
+    pending: '待生成', draft: '草稿', generated: '草稿', pending_review: '待审核', approved: '正文', rejected: '已驳回', needs_recheck: '待复核',
   }
   return map[status] || status
 }

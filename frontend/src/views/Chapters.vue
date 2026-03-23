@@ -45,6 +45,12 @@
       <el-table-column label="操作" width="280">
         <template #default="{ row }">
           <el-button size="small" @click="viewChapter(row)">查看</el-button>
+          <el-button
+            v-if="row.status === 'draft' || row.status === 'needs_recheck' || row.status === 'generated'"
+            size="small"
+            type="success"
+            @click="confirmAs正文(row)"
+          >确认为正文</el-button>
           <el-button size="small" type="primary" @click="regenerateChapter(row)"
             v-if="row.status === 'rejected'">重新生成</el-button>
           <el-button
@@ -140,14 +146,14 @@ const latestChapterNum = computed(() => chapters.value.reduce((m: number, c: any
 
 function chapterStatusType(s: string) {
   const m: Record<string, string> = {
-    draft: 'info', pending_review: 'warning', approved: 'success', rejected: 'danger', needs_recheck: 'warning',
+    draft: 'info', generated: 'info', pending_review: 'warning', approved: 'success', rejected: 'danger', needs_recheck: 'warning',
   }
   return (m[s] || 'info') as any
 }
 
 function chapterStatusLabel(s: string) {
   const m: Record<string, string> = {
-    draft: '草稿', pending_review: '待审核', approved: '已通过', rejected: '已驳回', needs_recheck: '待重检',
+    draft: '草稿', generated: '草稿', pending_review: '待审核', approved: '正文', rejected: '已驳回', needs_recheck: '待复核',
   }
   return m[s] || s
 }
@@ -227,6 +233,17 @@ function regenerateChapter(ch: any) {
   genForm.value.chapter_num = ch.chapter_num
   genForm.value.context_hint = ''
   showGenerateDialog.value = true
+}
+
+async function confirmAs正文(ch: any) {
+  try {
+    await chapterApi.approve(projectId, ch.id, 'confirmed as final text', ch.version)
+    ElMessage.success('已确认为正文')
+    await fetchChapters()
+  } catch (e: any) {
+    const msg = e.response?.data?.message || e.response?.data?.error || '确认失败'
+    ElMessage.error(msg)
+  }
 }
 
 async function startGenerate() {

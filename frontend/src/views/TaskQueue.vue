@@ -45,7 +45,7 @@
       </el-table-column>
       <el-table-column label="重试次数" prop="attempts" width="90" align="center">
         <template #default="{ row }">
-          {{ row.attempts ?? 0 }} / {{ row.max_retries ?? 3 }}
+          {{ row.attempts ?? 0 }} / {{ row.max_attempts ?? 3 }}
         </template>
       </el-table-column>
       <el-table-column label="创建时间" prop="created_at" width="180">
@@ -53,7 +53,7 @@
       </el-table-column>
       <el-table-column label="错误信息" prop="error" min-width="200" show-overflow-tooltip>
         <template #default="{ row }">
-          <span v-if="row.error" class="error-text">{{ row.error }}</span>
+          <span v-if="row.error_message" class="error-text">{{ row.error_message }}</span>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
@@ -95,12 +95,15 @@ interface Task {
   id: string
   project_id: string | null
   task_type: string
+  payload: Record<string, any> | null
   status: string
   attempts: number
-  max_retries: number
-  error: string | null
+  max_attempts: number
+  error_message: string | null
   created_at: string
-  run_at: string | null
+  scheduled_at: string
+  started_at: string | null
+  completed_at: string | null
 }
 
 const route = useRoute()
@@ -144,9 +147,11 @@ async function loadTasks() {
   loading.value = true
   try {
     const res = await taskApi.list(projectId.value)
-    tasks.value = (res.data ?? []).sort(
-      (a: Task, b: Task) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    )
+    const list = Array.isArray(res.data?.data) ? res.data.data : []
+    tasks.value = list
+      .filter((task: Task) => !filterStatus.value || task.status === filterStatus.value)
+      .filter((task: Task) => !filterType.value || task.task_type === filterType.value)
+      .sort((a: Task, b: Task) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
   } catch {
     ElMessage.error('加载任务列表失败')
   } finally {

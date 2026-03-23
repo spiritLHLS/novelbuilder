@@ -7,7 +7,16 @@
       </div>
       <div class="header-actions" v-if="chapter">
         <el-tag :type="statusType" size="large">{{ statusLabel }}</el-tag>
-        <el-button v-if="chapter.status === 'generated'" type="warning" @click="submitReview">提交审核</el-button>
+        <el-button
+          v-if="chapter.status === 'draft' || chapter.status === 'needs_recheck' || chapter.status === 'generated'"
+          type="success"
+          @click="confirmAs正文"
+        >确认为正文</el-button>
+        <el-button
+          v-if="chapter.status === 'draft' || chapter.status === 'needs_recheck' || chapter.status === 'generated'"
+          type="warning"
+          @click="submitReview"
+        >提交审核</el-button>
         <el-button v-if="chapter.status === 'pending_review'" type="success" @click="approveChapter">通过</el-button>
         <el-button v-if="chapter.status === 'pending_review'" type="danger" @click="rejectChapter">驳回</el-button>
         <el-button type="info" @click="runQualityCheck" :loading="checking">质量检查</el-button>
@@ -123,14 +132,14 @@ const checking = ref(false)
 
 const statusType = computed(() => {
   const m: Record<string, string> = {
-    draft: 'info', generated: '', pending_review: 'warning', approved: 'success', rejected: 'danger',
+    draft: 'info', generated: 'info', pending_review: 'warning', approved: 'success', rejected: 'danger', needs_recheck: 'warning',
   }
   return (m[chapter.value?.status] || 'info') as any
 })
 
 const statusLabel = computed(() => {
   const m: Record<string, string> = {
-    draft: '草稿', generated: '已生成', pending_review: '待审核', approved: '已通过', rejected: '已驳回',
+    draft: '草稿', generated: '草稿', pending_review: '待审核', approved: '正文', rejected: '已驳回', needs_recheck: '待复核',
   }
   return m[chapter.value?.status] || chapter.value?.status
 })
@@ -186,10 +195,24 @@ async function submitReview() {
   } catch { ElMessage.error('操作失败') }
 }
 
+async function confirmAs正文() {
+  if (!chapter.value) return
+  try {
+    await chapterApi.approve(projectId, chapterId, 'confirmed as final text', chapter.value.version)
+    chapter.value.status = 'approved'
+    chapter.value.version += 1
+    ElMessage.success('已确认为正文')
+  } catch (e: any) {
+    const msg = e.response?.data?.message || e.response?.data?.error || '确认失败'
+    ElMessage.error(msg)
+  }
+}
+
 async function approveChapter() {
   try {
     await chapterApi.approve(projectId, chapterId, '', chapter.value.version)
     chapter.value.status = 'approved'
+    chapter.value.version += 1
     ElMessage.success('章节已通过')
   } catch { ElMessage.error('操作失败') }
 }
@@ -199,6 +222,7 @@ async function rejectChapter() {
   try {
     await chapterApi.reject(projectId, chapterId, reason, chapter.value.version)
     chapter.value.status = 'rejected'
+    chapter.value.version += 1
     reviews.value.unshift({
       id: Date.now().toString(), decision: 'rejected', role_name: '人工审核',
       comment: reason, created_at: new Date().toISOString(),

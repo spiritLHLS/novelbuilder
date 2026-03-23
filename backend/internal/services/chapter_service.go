@@ -255,6 +255,8 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 	}
 
 	chapterContent := resp.Content
+	totalInputTokens := resp.InputTokens
+	totalOutputTokens := resp.OutputTokens
 
 	// ── Humanizer pipeline (8-step) ───────────────────────────────────────────
 	if humanized, hErr := s.humanizeContent(ctx, chapterContent, 0.7); hErr == nil {
@@ -262,6 +264,13 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 	} else {
 		s.logger.Warn("humanizer skipped", zap.Error(hErr))
 	}
+
+	chapterContent, extraIn, extraOut, err := s.ensureChapterWordCount(ctx, systemPrompt, chapterContent, wordsMin, wordsMax, req.LLMConfig)
+	if err != nil {
+		return nil, err
+	}
+	totalInputTokens += extraIn
+	totalOutputTokens += extraOut
 
 	wordCount := utf8.RuneCountInString(chapterContent)
 
@@ -293,7 +302,7 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
 		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at`,
 		chID, projectID, volumeID, chapterNum, title, chapterContent, wordCount, summary, genParams,
-		resp.InputTokens, resp.OutputTokens).Scan(
+		totalInputTokens, totalOutputTokens).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
@@ -668,14 +677,22 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 	}
 
 	chapterContent := resp.Content
+	totalInputTokens := resp.InputTokens
+	totalOutputTokens := resp.OutputTokens
 	if humanized, hErr := s.humanizeContent(ctx, chapterContent, 0.7); hErr == nil {
 		chapterContent = humanized
 	}
+	chapterContent, extraIn, extraOut, err := s.ensureChapterWordCount(ctx, systemPrompt, chapterContent, wordsMin, wordsMax, req.LLMConfig)
+	if err != nil {
+		return nil, err
+	}
+	totalInputTokens += extraIn
+	totalOutputTokens += extraOut
 
 	// Update token counts alongside content
 	s.db.Exec(ctx,
 		`UPDATE chapters SET input_tokens = input_tokens + $1, output_tokens = output_tokens + $2 WHERE id = $3`,
-		resp.InputTokens, resp.OutputTokens, id)
+		totalInputTokens, totalOutputTokens, id)
 
 	updated, err := s.UpdateContent(ctx, id, chapterContent, "draft")
 	if err != nil {
@@ -699,6 +716,60 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 	}(projectID, updated.ID, updated.Content)
 
 	return updated, nil
+}
+
+func (s *ChapterService) ensureChapterWordCount(
+	ctx context.Context,
+	systemPrompt, content string,
+	wordsMin, wordsMax int,
+	llmConfig map[string]interface{},
+) (string, int, int, error) {
+	if wordsMin <= 0 || wordsMax <= 0 {
+		return content, 0, 0, nil
+	}
+	current := utf8.RuneCountInString(content)
+	if current >= wordsMin && current <= wordsMax {
+		return content, 0, 0, nil
+	}
+
+	adjusted := content
+	totalInputTokens := 0
+	totalOutputTokens := 0
+
+	for attempt := 0; attempt < 2; attempt++ {
+		current = utf8.RuneCountInString(adjusted)
+		if current >= wordsMin && current <= wordsMax {
+			return adjusted, totalInputTokens, totalOutputTokens, nil
+		}
+
+		action := "压缩"
+		if current < wordsMin {
+			action = "扩写"
+		}
+
+		resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
+			Task: "chapter_length_adjustment",
+			Messages: []gateway.ChatMessage{
+				{Role: "system", Content: systemPrompt + "\n\n补充规则：字数范围是硬约束，如果正文超出范围必须压缩，如果不足范围必须扩写。不得输出解释，只输出修订后的完整正文。"},
+				{Role: "user", Content: fmt.Sprintf("当前正文约 %d 字，目标区间是 %d-%d 字。请对下面正文做%s，使最终长度严格落在目标区间内，同时保留本章核心剧情、人物关系和结尾功能。只输出修订后的完整正文。\n\n%s", current, wordsMin, wordsMax, action, adjusted)},
+			},
+		}, llmConfig)
+		if err != nil {
+			return content, totalInputTokens, totalOutputTokens, fmt.Errorf("adjust chapter length: %w", err)
+		}
+
+		adjusted = resp.Content
+		totalInputTokens += resp.InputTokens
+		totalOutputTokens += resp.OutputTokens
+	}
+
+	current = utf8.RuneCountInString(adjusted)
+	if current < wordsMin || current > wordsMax {
+		return content, totalInputTokens, totalOutputTokens,
+			fmt.Errorf("chapter length %d out of range %d-%d after adjustment", current, wordsMin, wordsMax)
+	}
+
+	return adjusted, totalInputTokens, totalOutputTokens, nil
 }
 
 // settleChapterState performs post-generation state settlement in a background goroutine.
