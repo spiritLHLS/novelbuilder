@@ -320,11 +320,15 @@ func (h *Handler) BatchGenerateChapters(c *gin.Context) {
 				"chapter_num":  chNum,
 				"context_hint": hint,
 			})
+			// Use priority to guarantee in-order execution when tasks are serialised
+			// per project+type: highest priority (lowest offset) for the first chapter
+			// in the volume so workers always pick them up in chapter order.
+			chapterPriority := 1000 - (chNum - vol.ChapterStart)
 			tasks = append(tasks, models.CreateTaskRequest{
 				ProjectID: projectID,
 				TaskType:  "chapter_generate",
 				Payload:   payloadBytes,
-				Priority:  5,
+				Priority:  chapterPriority,
 			})
 			idx++
 		}

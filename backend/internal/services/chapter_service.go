@@ -765,8 +765,15 @@ func (s *ChapterService) ensureChapterWordCount(
 
 	current = utf8.RuneCountInString(adjusted)
 	if current < wordsMin || current > wordsMax {
-		return content, totalInputTokens, totalOutputTokens,
-			fmt.Errorf("chapter length %d out of range %d-%d after adjustment", current, wordsMin, wordsMax)
+		// Best-effort: return the adjusted content (closer to target than original)
+		// rather than failing the task. The pipeline continues; a warning is logged
+		// so the overshoot is visible without blocking automated runs.
+		s.logger.Warn("chapter length still out of range after adjustment, using best-effort content",
+			zap.Int("length", current),
+			zap.Int("min", wordsMin),
+			zap.Int("max", wordsMax),
+		)
+		return adjusted, totalInputTokens, totalOutputTokens, nil
 	}
 
 	return adjusted, totalInputTokens, totalOutputTokens, nil

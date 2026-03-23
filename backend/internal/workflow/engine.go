@@ -244,6 +244,10 @@ func (e *Engine) GetRunHistory(ctx context.Context, projectID string) ([]RunHist
 		}
 
 		if stepID != nil {
+			rc := ""
+			if reviewComment != nil {
+				rc = *reviewComment
+			}
 			runMap[runID].Steps = append(runMap[runID].Steps, StepDetail{
 				ID:            *stepID,
 				StepKey:       *stepKey,
@@ -251,7 +255,7 @@ func (e *Engine) GetRunHistory(ctx context.Context, projectID string) ([]RunHist
 				GateLevel:     *gateLevel,
 				Status:        *stepStatus,
 				OutputRef:     outputRef,
-				ReviewComment: *reviewComment,
+				ReviewComment: rc,
 				Version:       *version,
 				GeneratedAt:   generatedAt,
 				ReviewedAt:    reviewedAt,

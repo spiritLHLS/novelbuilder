@@ -124,8 +124,17 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 	var task models.TaskQueueItem
 	err = tx.QueryRow(ctx,
 		`SELECT id, project_id, task_type, payload, status, priority, attempts, max_attempts, error_message, scheduled_at, created_at, updated_at
-		 FROM task_queue
+		 FROM task_queue t1
 		 WHERE status = 'pending' AND scheduled_at <= NOW()
+		   AND (
+		     t1.project_id IS NULL
+		     OR NOT EXISTS (
+		       SELECT 1 FROM task_queue t2
+		       WHERE t2.status = 'running'
+		         AND t2.project_id = t1.project_id
+		         AND t2.task_type = t1.task_type
+		     )
+		   )
 		 ORDER BY priority DESC, created_at ASC
 		 FOR UPDATE SKIP LOCKED
 		 LIMIT 1`).Scan(

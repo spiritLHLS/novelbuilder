@@ -314,8 +314,19 @@ func main() {
 			req.LLMConfig = writerCfg
 		}
 
-		_, err := chapterService.Generate(ctx, projectID, payload.ChapterNum, req)
-		return err
+		ch, err := chapterService.Generate(ctx, projectID, payload.ChapterNum, req)
+		if err != nil {
+			return err
+		}
+		// In non-strict (auto) mode, auto-approve so the next task in a batch
+		// can proceed without waiting for a human to click approve.
+		if !wfEngine.IsStrictReview(ctx, projectID) {
+			if autoErr := chapterService.AutoApprove(ctx, ch.ID, "auto-approved by pipeline"); autoErr != nil {
+				logger.Warn("chapter_generate: auto-approve failed",
+					zap.String("chapter_id", ch.ID), zap.Error(autoErr))
+			}
+		}
+		return nil
 	})
 
 	// chapter_regenerate: enqueued by RegenerateChapter handler.
