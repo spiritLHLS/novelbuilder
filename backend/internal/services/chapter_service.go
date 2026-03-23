@@ -74,8 +74,8 @@ func (s *ChapterService) PingRedis(ctx context.Context) error {
 
 func (s *ChapterService) List(ctx context.Context, projectID string) ([]models.Chapter, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT id, project_id, volume_id, chapter_num, title, content, word_count, summary,
-		 gen_params, quality_report, originality_score, status, version, review_comment, created_at, updated_at
+		`SELECT id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
+		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at
 		 FROM chapters WHERE project_id = $1 ORDER BY chapter_num`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list chapters: %w", err)
@@ -101,8 +101,8 @@ func (s *ChapterService) List(ctx context.Context, projectID string) ([]models.C
 func (s *ChapterService) Get(ctx context.Context, id string) (*models.Chapter, error) {
 	var ch models.Chapter
 	err := s.db.QueryRow(ctx,
-		`SELECT id, project_id, volume_id, chapter_num, title, content, word_count, summary,
-		 gen_params, quality_report, originality_score, status, version, review_comment, created_at, updated_at
+		`SELECT id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
+		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at
 		 FROM chapters WHERE id = $1`, id).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
@@ -159,8 +159,8 @@ func (s *ChapterService) GetRecentSummaries(ctx context.Context, projectID strin
 func (s *ChapterService) GetByProjectAndNum(ctx context.Context, projectID string, chapterNum int) (*models.Chapter, error) {
 	var ch models.Chapter
 	err := s.db.QueryRow(ctx,
-		`SELECT id, project_id, volume_id, chapter_num, title, content, word_count, summary,
-		 gen_params, quality_report, originality_score, status, version, review_comment, created_at, updated_at
+		`SELECT id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
+		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at
 		 FROM chapters WHERE project_id = $1 AND chapter_num = $2`, projectID, chapterNum).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
@@ -288,8 +288,8 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		 gen_params, input_tokens, output_tokens, status, version, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', 1, NOW(), NOW())
 		 ON CONFLICT (project_id, chapter_num) DO NOTHING
-		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, summary,
-		 gen_params, quality_report, originality_score, status, version, review_comment, created_at, updated_at`,
+		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
+		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at`,
 		chID, projectID, volumeID, chapterNum, title, chapterContent, wordCount, summary, genParams,
 		resp.InputTokens, resp.OutputTokens).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
@@ -448,8 +448,8 @@ func (s *ChapterService) RestoreFromSnapshot(ctx context.Context, chapterID, sna
 		     version = version + 1,
 		     updated_at = NOW()
 		 WHERE id = $7
-		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, summary,
-		           gen_params, quality_report, originality_score, status, version, review_comment, created_at, updated_at`,
+		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
+		           COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at`,
 		snapshot.Title, snapshot.Content, snapshot.WordCount, snapshot.Summary,
 		snapshot.QualityReport, snapshot.OriginalityScore, chapterID).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
@@ -485,8 +485,8 @@ func (s *ChapterService) UpdateContent(ctx context.Context, id, content, status 
 		     version = version + 1,
 		     updated_at = NOW()
 		 WHERE id = $5
-		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, summary,
-		           gen_params, quality_report, originality_score, status, version, review_comment, created_at, updated_at`,
+		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
+		           COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at`,
 		content, wordCount, summary, status, id).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,

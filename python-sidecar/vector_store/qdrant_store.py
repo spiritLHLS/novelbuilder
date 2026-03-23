@@ -48,7 +48,13 @@ def _load_embedder_transformers():
     import torch.nn.functional as F
     from transformers import AutoTokenizer, AutoModel
 
-    model_name = "paraphrase-multilingual-mpnet-base-v2"
+    # Allow overriding the model path/name via env var so Docker images can pre-bake
+    # the model weights without needing HuggingFace Hub access at runtime.
+    # Use the full HF path so transformers can resolve it without sentence-transformers.
+    model_name = os.getenv(
+        "EMBEDDING_MODEL_PATH",
+        "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+    )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     # low_cpu_mem_usage=False prevents meta-tensor creation which breaks .to(device)
     model = AutoModel.from_pretrained(
@@ -106,8 +112,12 @@ def _get_embedder():
         # Strategy 2: sentence-transformers with explicit CPU device
         try:
             from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer(
+            st_name = os.getenv(
+                "EMBEDDING_MODEL_PATH",
                 "paraphrase-multilingual-mpnet-base-v2",
+            )
+            model = SentenceTransformer(
+                st_name,
                 device="cpu",
                 model_kwargs={"low_cpu_mem_usage": False},
             )
