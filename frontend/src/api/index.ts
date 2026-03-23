@@ -109,6 +109,7 @@ export const volumeApi = {
 export const chapterApi = {
   list: (projectId: string) => api.get(`/projects/${projectId}/chapters`),
   get: (_projectId: string, id: string) => api.get(`/chapters/${id}`),
+  delete: (_projectId: string, id: string) => api.delete(`/chapters/${id}`),
   generate: (projectId: string, data: any) =>
     api.post(`/projects/${projectId}/chapters/generate`, data),
   continueGenerate: (projectId: string) =>

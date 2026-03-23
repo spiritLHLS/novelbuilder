@@ -273,19 +273,59 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	sb.WriteString("\n")
 
 	// Foreshadowing status
-	sb.WriteString("=== 伏笔状态 ===\n")
+	type promptForeshadowing struct {
+		Content           string
+		EmbedMethod       string
+		Status            string
+		Priority          int
+		EmbedChapterNum   int
+		ResolveChapterNum int
+	}
+	sb.WriteString("=== 本章可用伏笔 ===\n")
 	if fsRows, fsErr := s.db.Query(ctx,
-		`SELECT content, embed_method, status, priority FROM foreshadowings WHERE project_id = $1 ORDER BY priority DESC`,
+		`SELECT f.content,
+		        COALESCE(f.embed_method, ''),
+		        f.status,
+		        f.priority,
+		        COALESCE(ec.chapter_num, 0) AS embed_chapter_num,
+		        COALESCE(rc.chapter_num, 0) AS resolve_chapter_num
+		 FROM foreshadowings f
+		 LEFT JOIN chapters ec ON ec.id = f.embed_chapter_id
+		 LEFT JOIN chapters rc ON rc.id = f.resolve_chapter_id
+		 WHERE f.project_id = $1
+		 ORDER BY f.priority DESC, f.created_at ASC`,
 		projectID); fsErr != nil {
 		s.logger.Warn("failed to load foreshadowings for prompt", zap.Error(fsErr))
 	} else {
+		available := make([]promptForeshadowing, 0)
+		futureCount := 0
 		for fsRows.Next() {
-			var content, embedMethod, status string
-			var priority int
-			fsRows.Scan(&content, &embedMethod, &status, &priority)
-			sb.WriteString(fmt.Sprintf("- [%s] P%d %s（方式：%s）\n", status, priority, content, embedMethod))
+			var item promptForeshadowing
+			if err := fsRows.Scan(&item.Content, &item.EmbedMethod, &item.Status, &item.Priority, &item.EmbedChapterNum, &item.ResolveChapterNum); err != nil {
+				continue
+			}
+			if item.EmbedChapterNum > 0 && item.EmbedChapterNum > chapterNum {
+				futureCount++
+				continue
+			}
+			available = append(available, item)
 		}
 		fsRows.Close()
+		if len(available) == 0 {
+			sb.WriteString("- 本章无必须强行植入的既有伏笔，可优先稳住开场、人物关系与当前冲突。\n")
+		} else {
+			for _, item := range available {
+				resolveNote := "未指定回收章"
+				if item.ResolveChapterNum > 0 {
+					resolveNote = fmt.Sprintf("预计第%d章后回收", item.ResolveChapterNum)
+				}
+				sb.WriteString(fmt.Sprintf("- [%s] P%d %s（植入方式：%s；%s）\n",
+					item.Status, item.Priority, item.Content, item.EmbedMethod, resolveNote))
+			}
+		}
+		if futureCount > 0 {
+			sb.WriteString(fmt.Sprintf("- 另有 %d 条后续章节伏笔尚未到登场时机，禁止提前明示、解释或兑现。\n", futureCount))
+		}
 	}
 	sb.WriteString("\n")
 
@@ -301,6 +341,14 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		sb.WriteString(string(outlineContent))
 		sb.WriteString(fmt.Sprintf("\n目标张力值：%.1f\n", tensionTarget))
 	}
+	sb.WriteString("\n=== 章节推进约束 ===\n")
+	sb.WriteString("- 只推进本章大纲明确要求的事件，不要提前展开后续章节的设定、底牌、关系反转或高潮信息。\n")
+	sb.WriteString("- 未出现在“本章可用伏笔”里的后续设定，一律不能提前明示、解释、兑现。\n")
+	sb.WriteString("- 若需要铺垫后续内容，只能做轻量暗示，不能让角色在本章就把后续阶段的问题直接解决。\n")
+	if chapterNum == 1 {
+		sb.WriteString("- 第一章优先完成开场氛围、主角处境、核心矛盾引子，避免把中后期设定一次性打满。\n")
+	}
+	sb.WriteString("\n")
 
 	// Previous chapter's last paragraph (Re3 dual-track context)
 	if chapterNum > 1 {

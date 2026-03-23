@@ -42,11 +42,18 @@
       <el-table-column label="创建时间" width="180">
         <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="200">
+      <el-table-column label="操作" width="280">
         <template #default="{ row }">
           <el-button size="small" @click="viewChapter(row)">查看</el-button>
           <el-button size="small" type="primary" @click="regenerateChapter(row)"
             v-if="row.status === 'rejected'">重新生成</el-button>
+          <el-button
+            v-if="row.chapter_num === latestChapterNum"
+            size="small"
+            type="danger"
+            plain
+            @click="deleteChapter(row)"
+          >删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -104,9 +111,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
 import { chapterApi, exportApi, exportExtApi, batchWriteApi } from '@/api'
 
@@ -128,6 +135,8 @@ const genForm = ref({
 const showBatchDialog = ref(false)
 const batchCount = ref(3)
 const batching = ref(false)
+
+const latestChapterNum = computed(() => chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0))
 
 function chapterStatusType(s: string) {
   const m: Record<string, string> = {
@@ -237,6 +246,22 @@ async function startGenerate() {
     ElMessage.error(msg)
   } finally {
     generating.value = false
+  }
+}
+
+async function deleteChapter(ch: any) {
+  await ElMessageBox.confirm(
+    `确认删除第 ${ch.chapter_num} 章《${ch.title || '未命名章节'}》？仅允许删除最后一章。`,
+    '删除章节',
+    { type: 'warning' },
+  )
+  try {
+    await chapterApi.delete(projectId, ch.id)
+    ElMessage.success('章节已删除')
+    await fetchChapters()
+  } catch (e: any) {
+    const msg = e.response?.data?.message || e.response?.data?.error || '删除失败'
+    ElMessage.error(msg)
   }
 }
 </script>

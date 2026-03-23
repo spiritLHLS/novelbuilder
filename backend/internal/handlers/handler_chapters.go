@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -180,6 +181,19 @@ func (h *Handler) GetChapter(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"data": ch})
+}
+
+func (h *Handler) DeleteChapter(c *gin.Context) {
+	err := h.chapters.Delete(c.Request.Context(), c.Param("id"))
+	if err != nil && strings.Contains(err.Error(), "only the latest chapter can be deleted") {
+		c.JSON(409, gin.H{"error": err.Error(), "code": "CH_001", "message": "为了避免打乱后续章节与依赖关系，目前只允许删除最后一章。"})
+		return
+	}
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "deleted"})
 }
 
 func (h *Handler) SubmitChapterReview(c *gin.Context) {

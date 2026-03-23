@@ -11,6 +11,7 @@
         <el-button v-if="chapter.status === 'pending_review'" type="success" @click="approveChapter">通过</el-button>
         <el-button v-if="chapter.status === 'pending_review'" type="danger" @click="rejectChapter">驳回</el-button>
         <el-button type="info" @click="runQualityCheck" :loading="checking">质量检查</el-button>
+        <el-button type="danger" plain @click="deleteChapter">删除章节</el-button>
       </div>
     </div>
 
@@ -216,6 +217,23 @@ async function runQualityCheck() {
     ElMessage.error('质量检查失败')
   } finally {
     checking.value = false
+  }
+}
+
+async function deleteChapter() {
+  if (!chapter.value) return
+  await ElMessageBox.confirm(
+    `确认删除第 ${chapter.value.chapter_num} 章《${chapter.value.title || '未命名章节'}》？当前仅支持删除最后一章。`,
+    '删除章节',
+    { type: 'warning' },
+  )
+  try {
+    await chapterApi.delete(projectId, chapterId)
+    ElMessage.success('章节已删除')
+    goBack()
+  } catch (e: any) {
+    const msg = e.response?.data?.message || e.response?.data?.error || '删除失败'
+    ElMessage.error(msg)
   }
 }
 </script>

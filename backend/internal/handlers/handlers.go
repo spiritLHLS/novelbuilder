@@ -183,6 +183,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 	api.POST("/projects/:id/chapters/generate", h.GenerateChapter)
 	api.POST("/projects/:id/chapters/continue", h.ContinueGenerate)
 	api.GET("/chapters/:id", h.GetChapter)
+	api.DELETE("/chapters/:id", h.DeleteChapter)
 	api.POST("/chapters/:id/submit-review", h.SubmitChapterReview)
 	api.POST("/chapters/:id/approve", h.ApproveChapter)
 	api.POST("/chapters/:id/reject", h.RejectChapter)

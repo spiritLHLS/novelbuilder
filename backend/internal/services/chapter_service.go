@@ -39,6 +39,8 @@ type ChapterService struct {
 	logger      *zap.Logger
 }
 
+var ErrOnlyLatestChapterDeletable = errors.New("only the latest chapter can be deleted")
+
 func NewChapterService(
 	db *pgxpool.Pool,
 	rdb *redis.Client,
@@ -362,6 +364,62 @@ func (s *ChapterService) MaxChapterNum(ctx context.Context, projectID string) (i
 	err := s.db.QueryRow(ctx,
 		`SELECT COALESCE(MAX(chapter_num), 0) FROM chapters WHERE project_id = $1`, projectID).Scan(&n)
 	return n, err
+}
+
+func (s *ChapterService) Delete(ctx context.Context, id string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete chapter tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var projectID string
+	var chapterNum int
+	err = tx.QueryRow(ctx,
+		`SELECT project_id, chapter_num FROM chapters WHERE id = $1`, id).Scan(&projectID, &chapterNum)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load chapter for delete: %w", err)
+	}
+
+	var latestChapterNum int
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(chapter_num), 0) FROM chapters WHERE project_id = $1`, projectID).Scan(&latestChapterNum); err != nil {
+		return fmt.Errorf("load latest chapter num: %w", err)
+	}
+	if chapterNum != latestChapterNum {
+		return ErrOnlyLatestChapterDeletable
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM plot_graph_snapshots WHERE chapter_id = $1`, id); err != nil {
+		return fmt.Errorf("delete plot graph snapshots: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM content_dependencies WHERE dependent_type = 'chapter' AND dependent_id = $1`, id); err != nil {
+		return fmt.Errorf("delete chapter dependencies: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM patch_items WHERE item_type = 'chapter' AND item_id = $1`, id); err != nil {
+		return fmt.Errorf("delete chapter patch items: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM chapters WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("delete chapter: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete chapter: %w", err)
+	}
+
+	if s.rdb != nil {
+		s.rdb.Del(ctx,
+			fmt.Sprintf("chapter_summary:%s:%d", projectID, chapterNum),
+			fmt.Sprintf("chapter_content:%s:%d", projectID, chapterNum),
+		)
+	}
+
+	return nil
 }
 
 func (s *ChapterService) CreateSnapshot(ctx context.Context, chapterID, source, note string) error {
