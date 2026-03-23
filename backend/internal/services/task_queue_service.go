@@ -56,12 +56,36 @@ func (s *TaskQueueService) RegisterHandler(taskType string, h TaskHandler) {
 }
 
 // Start launches the worker goroutines. Call once at application startup.
+// It also recovers any tasks that were left in 'running' state by a previous
+// server crash so they can be retried.
 func (s *TaskQueueService) Start() {
+	s.recoverStaleRunning(context.Background())
 	for i := 0; i < s.workers; i++ {
 		s.wg.Add(1)
 		go s.worker()
 	}
 	s.logger.Info("task queue started", zap.Int("workers", s.workers))
+}
+
+// recoverStaleRunning resets tasks that have been stuck in 'running' state for more
+// than 30 minutes back to 'pending' so they can be retried. This handles the case
+// where the server crashed while a task was executing.
+func (s *TaskQueueService) recoverStaleRunning(ctx context.Context) {
+	tag, err := s.db.Exec(ctx,
+		`UPDATE task_queue
+		 SET status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
+		     error_message = COALESCE(error_message, '') || ' [recovered from stale running state]',
+		     scheduled_at = NOW(),
+		     updated_at = NOW()
+		 WHERE status = 'running'
+		   AND updated_at < NOW() - INTERVAL '30 minutes'`)
+	if err != nil {
+		s.logger.Warn("failed to recover stale running tasks", zap.Error(err))
+		return
+	}
+	if tag.RowsAffected() > 0 {
+		s.logger.Info("recovered stale running tasks", zap.Int64("count", tag.RowsAffected()))
+	}
 }
 
 // Stop signals workers to exit and waits for them.

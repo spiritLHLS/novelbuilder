@@ -155,7 +155,37 @@ func (s *ChapterService) GetRecentSummaries(ctx context.Context, projectID strin
 	return out, nil
 }
 
+// GetByProjectAndNum fetches a chapter by project and chapter number.
+func (s *ChapterService) GetByProjectAndNum(ctx context.Context, projectID string, chapterNum int) (*models.Chapter, error) {
+	var ch models.Chapter
+	err := s.db.QueryRow(ctx,
+		`SELECT id, project_id, volume_id, chapter_num, title, content, word_count, summary,
+		 gen_params, quality_report, originality_score, status, version, review_comment, created_at, updated_at
+		 FROM chapters WHERE project_id = $1 AND chapter_num = $2`, projectID, chapterNum).Scan(
+		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
+		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
+		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ch, nil
+}
+
 func (s *ChapterService) Generate(ctx context.Context, projectID string, chapterNum int, req models.GenerateChapterRequest) (*models.Chapter, error) {
+	// Idempotency guard: if this chapter already exists (e.g. due to a previous task
+	// attempt that succeeded at the DB step but failed to mark the task as done),
+	// return the existing chapter without re-generating or calling the AI again.
+	if existing, _ := s.GetByProjectAndNum(ctx, projectID, chapterNum); existing != nil {
+		s.logger.Info("chapter already exists, skipping generation (idempotent)",
+			zap.String("project_id", projectID),
+			zap.Int("chapter_num", chapterNum),
+			zap.String("chapter_id", existing.ID))
+		return existing, nil
+	}
+
 	// Enforce workflow gates
 	if err := s.wf.CanGenerateNextChapter(ctx, projectID); err != nil {
 		return nil, err
@@ -245,7 +275,11 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		`SELECT id FROM volumes WHERE project_id = $1 AND chapter_start <= $2 AND chapter_end >= $2`,
 		projectID, chapterNum).Scan(&volumeID)
 
-	// Save chapter (including token usage from AI response)
+	// Save chapter (including token usage from AI response).
+	// ON CONFLICT DO NOTHING handles the rare race where two workers both pass the
+	// idempotency pre-check above and race to insert the same chapter number. The
+	// winner inserts; the loser gets ErrNoRows from RETURNING, then falls back to
+	// fetching the already-inserted row.
 	chID := uuid.New().String()
 	genParams, _ := json.Marshal(req)
 	var ch models.Chapter
@@ -253,6 +287,7 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		`INSERT INTO chapters (id, project_id, volume_id, chapter_num, title, content, word_count, summary,
 		 gen_params, input_tokens, output_tokens, status, version, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', 1, NOW(), NOW())
+		 ON CONFLICT (project_id, chapter_num) DO NOTHING
 		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, summary,
 		 gen_params, quality_report, originality_score, status, version, review_comment, created_at, updated_at`,
 		chID, projectID, volumeID, chapterNum, title, chapterContent, wordCount, summary, genParams,
@@ -260,6 +295,17 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Another worker inserted this chapter in the narrow race window; fetch it.
+		existing, qErr := s.GetByProjectAndNum(ctx, projectID, chapterNum)
+		if qErr != nil || existing == nil {
+			return nil, fmt.Errorf("save chapter: conflict but fetch also failed: %w", qErr)
+		}
+		s.logger.Info("chapter insert skipped due to concurrent insert, returning existing",
+			zap.String("project_id", projectID),
+			zap.Int("chapter_num", chapterNum))
+		return existing, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("save chapter: %w", err)
 	}

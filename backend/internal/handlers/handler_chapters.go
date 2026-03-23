@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -10,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/workflow"
-	"go.uber.org/zap"
 )
 
 func (h *Handler) ListVolumes(c *gin.Context) {
@@ -327,18 +325,27 @@ func (h *Handler) GetChapterImport(c *gin.Context) {
 func (h *Handler) ProcessChapterImport(c *gin.Context) {
 	importID := c.Param("id")
 
-	llmCfg, err := h.resolveLLMConfig(c.Request.Context())
-	if err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+	// Look up the import to get the project_id for task association.
+	imp, err := h.imports.Get(c.Request.Context(), importID)
+	if err != nil || imp == nil {
+		c.JSON(404, gin.H{"error": "import not found"})
 		return
 	}
 
-	// Run in background so HTTP returns immediately
-	go func() {
-		if err := h.imports.Process(context.Background(), importID, llmCfg); err != nil {
-			h.logger.Error("import process failed", zap.String("import_id", importID), zap.Error(err))
-		}
-	}()
-
-	c.JSON(202, gin.H{"status": "processing", "import_id": importID})
+	// Enqueue as a tracked background task. LLM credentials are resolved at
+	// execution time inside the handler — never stored in the task payload.
+	payloadBytes, _ := json.Marshal(map[string]any{
+		"import_id": importID,
+	})
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+		ProjectID: imp.ProjectID,
+		TaskType:  "chapter_import_process",
+		Payload:   payloadBytes,
+		Priority:  5,
+	})
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(202, gin.H{"status": "processing", "import_id": importID, "task_id": task.ID})
 }

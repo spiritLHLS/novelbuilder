@@ -341,6 +341,30 @@ func main() {
 		return err
 	})
 
+	// chapter_import_process: enqueued by ProcessChapterImport handler.
+	// Runs the AI-assisted chapter-split and reverse-engineering pipeline for an import record.
+	taskQueueService.RegisterHandler("chapter_import_process", func(ctx context.Context, task models.TaskQueueItem) error {
+		var payload struct {
+			ImportID string `json:"import_id"`
+		}
+		if len(task.Payload) > 0 {
+			_ = json.Unmarshal(task.Payload, &payload)
+		}
+		if payload.ImportID == "" {
+			return fmt.Errorf("chapter_import_process: missing import_id")
+		}
+
+		// Resolve LLM config at execution time — never stored in task payload.
+		var llmCfg map[string]interface{}
+		if task.ProjectID != nil && *task.ProjectID != "" {
+			if writerCfg, wErr := agentRoutingService.ResolveForAgent(ctx, "writer", *task.ProjectID); wErr == nil && writerCfg != nil {
+				llmCfg = writerCfg
+			}
+		}
+
+		return importService.Process(ctx, payload.ImportID, llmCfg)
+	})
+
 	// Setup Gin router
 	r := gin.Default()
 
