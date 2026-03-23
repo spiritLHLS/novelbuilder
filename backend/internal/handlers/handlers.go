@@ -303,6 +303,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 	api.GET("/agent/sessions/:sid/status", h.AgentSessionStatus)
 	api.GET("/agent/sessions/:sid/stream", h.AgentSessionStream)
 
+	// ── Batch Agent (volume-based sequential generation) ─────────────────────
+	api.POST("/projects/:id/agent/batch-run", h.AgentBatchRun)
+	api.GET("/agent/batch/:bid/status", h.AgentBatchStatus)
+	api.GET("/agent/batch/:bid/stream", h.AgentBatchStream)
+
 	// ── Knowledge Graph (Neo4j) ───────────────────────────────────────────────
 	api.GET("/projects/:id/graph/entities", h.GetGraphEntities)
 	api.POST("/projects/:id/graph/query", h.QueryGraph)

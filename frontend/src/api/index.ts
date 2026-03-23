@@ -679,8 +679,19 @@ export const exportExtApi = {
 
 // ── Batch Chapter Write ───────────────────────────────────────────────────────
 export const batchWriteApi = {
-  generate: (projectId: string, count: number) =>
-    api.post(`/projects/${projectId}/chapters/batch-generate`, { count }),
+  /** Count-based: enqueue `count` sequential generate_next_chapter tasks. */
+  generate: (projectId: string, count: number, outlineHints?: string[]) =>
+    api.post(`/projects/${projectId}/chapters/batch-generate`, {
+      count,
+      outline_hints: outlineHints,
+    }),
+
+  /** Volume-based: enqueue one chapter_generate task per chapter in the volume's range. */
+  generateByVolume: (projectId: string, volumeId: string, outlineHints?: string[]) =>
+    api.post(`/projects/${projectId}/chapters/batch-generate`, {
+      volume_id: volumeId,
+      outline_hints: outlineHints,
+    }),
 }
 
 // ── Subplot Board ─────────────────────────────────────────────────────────────

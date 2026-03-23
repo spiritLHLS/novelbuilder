@@ -276,7 +276,9 @@ func (h *Handler) QualityCheck(c *gin.Context) {
 
 // BatchGenerateRequest is the body for POST /projects/:id/chapters/batch-generate.
 type BatchGenerateRequest struct {
-	Count int `json:"count" binding:"required,min=1,max=50"`
+	Count        int      `json:"count"`         // number of chapters; used when VolumeID is not set
+	VolumeID     *string  `json:"volume_id"`     // generate all chapters in this volume (chapter_start … chapter_end)
+	OutlineHints []string `json:"outline_hints"` // optional per-chapter hints (in order)
 }
 
 func (h *Handler) BatchGenerateChapters(c *gin.Context) {
@@ -286,21 +288,83 @@ func (h *Handler) BatchGenerateChapters(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	reqs := make([]models.CreateTaskRequest, req.Count)
-	for i := range reqs {
-		reqs[i] = models.CreateTaskRequest{
-			ProjectID: projectID,
-			TaskType:  "generate_next_chapter",
-			Payload:   json.RawMessage(`{}`),
-			Priority:  5,
+
+	var tasks []models.CreateTaskRequest
+
+	if req.VolumeID != nil && *req.VolumeID != "" {
+		// ── Volume-based: generate every chapter in [chapter_start, chapter_end] ──
+		vol, err := h.volumes.Get(c.Request.Context(), *req.VolumeID)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if vol == nil {
+			c.JSON(404, gin.H{"error": "volume not found"})
+			return
+		}
+		if vol.ProjectID != projectID {
+			c.JSON(403, gin.H{"error": "volume does not belong to this project"})
+			return
+		}
+		if vol.ChapterStart <= 0 || vol.ChapterEnd < vol.ChapterStart {
+			c.JSON(400, gin.H{"error": "volume has no valid chapter range; set chapter_start and chapter_end first"})
+			return
+		}
+		idx := 0
+		for chNum := vol.ChapterStart; chNum <= vol.ChapterEnd; chNum++ {
+			hint := ""
+			if idx < len(req.OutlineHints) {
+				hint = req.OutlineHints[idx]
+			}
+			payloadBytes, _ := json.Marshal(map[string]any{
+				"chapter_num":  chNum,
+				"context_hint": hint,
+			})
+			tasks = append(tasks, models.CreateTaskRequest{
+				ProjectID: projectID,
+				TaskType:  "chapter_generate",
+				Payload:   payloadBytes,
+				Priority:  5,
+			})
+			idx++
+		}
+	} else {
+		// ── Count-based: enqueue N sequential generate_next_chapter tasks ──
+		count := req.Count
+		if count <= 0 {
+			c.JSON(400, gin.H{"error": "count must be at least 1"})
+			return
+		}
+		if count > 50 {
+			c.JSON(400, gin.H{"error": "count must not exceed 50"})
+			return
+		}
+		for i := 0; i < count; i++ {
+			hint := ""
+			if i < len(req.OutlineHints) {
+				hint = req.OutlineHints[i]
+			}
+			var payloadBytes []byte
+			if hint != "" {
+				payloadBytes, _ = json.Marshal(map[string]any{"context_hint": hint})
+			} else {
+				payloadBytes = json.RawMessage(`{}`)
+			}
+			tasks = append(tasks, models.CreateTaskRequest{
+				ProjectID: projectID,
+				TaskType:  "generate_next_chapter",
+				Payload:   payloadBytes,
+				Priority:  5,
+			})
 		}
 	}
-	ids, err := h.taskQueue.EnqueueBatch(c.Request.Context(), reqs)
+
+	ids, err := h.taskQueue.EnqueueBatch(c.Request.Context(), tasks)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"data": gin.H{"count": req.Count, "task_ids": ids}})
+	c.JSON(200, gin.H{"data": gin.H{"count": len(tasks), "task_ids": ids}})
 }
 
 func (h *Handler) CreateChapterImport(c *gin.Context) {

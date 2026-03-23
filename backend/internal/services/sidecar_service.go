@@ -208,6 +208,38 @@ func (s *SidecarService) StreamURL(sessionID string) string {
 	return s.baseURL + "/agent/stream/" + sessionID
 }
 
+// BatchStreamURL returns the SSE URL for a batch generation session.
+func (s *SidecarService) BatchStreamURL(batchID string) string {
+	return s.baseURL + "/agent/batch-stream/" + batchID
+}
+
+// RunBatchAgent starts a sequential multi-chapter agent batch and returns the batch ID.
+func (s *SidecarService) RunBatchAgent(ctx context.Context, projectID string, req models.BatchAgentRunRequest) (string, error) {
+	body := map[string]interface{}{
+		"project_id":    projectID,
+		"chapter_nums":  req.ChapterNums,
+		"outline_hints": req.OutlineHints,
+		"llm_config":    req.LLMConfig,
+		"max_retries":   req.MaxRetries,
+	}
+	raw, err := s.post(ctx, "/agent/batch-run", body)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		BatchID string `json:"batch_id"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", fmt.Errorf("parse agent/batch-run response: %w", err)
+	}
+	return result.BatchID, nil
+}
+
+// GetBatchAgentStatus fetches the current state of a batch generation session.
+func (s *SidecarService) GetBatchAgentStatus(ctx context.Context, batchID string) (json.RawMessage, error) {
+	return s.get(ctx, "/agent/batch-status/"+batchID)
+}
+
 // SearchSensoryViaQdrant replaces the old pgvector-based SearchSensory.
 // Calls the Python sidecar's Qdrant-backed vector search.
 func (s *SidecarService) SearchSensoryViaQdrant(ctx context.Context, projectID, query, collection string, k int) ([]string, error) {

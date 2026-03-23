@@ -405,6 +405,160 @@ async def agent_stream(session_id: str):
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
 
+
+# ── Batch agent session store ──────────────────────────────────────────────────
+# Tracks multi-chapter sequential generation sessions.
+_batch_sessions: dict[str, dict] = {}
+
+
+class BatchAgentRunRequest(BaseModel):
+    """Request body for POST /agent/batch-run.
+
+    Chapters are generated *sequentially* in the order given so that each
+    chapter's memory update feeds into the next one (RecurrentGPT continuity).
+    """
+    project_id: str
+    chapter_nums: list[int]       # ordered list of chapter numbers to generate
+    outline_hints: dict = {}      # str(chapter_num) -> hint text
+    llm_config: dict = {}
+    max_retries: int = 2
+
+
+@app.post("/agent/batch-run")
+async def agent_batch_run(req: BatchAgentRunRequest, background_tasks: BackgroundTasks):
+    """Start a sequential multi-chapter generation session.
+
+    Returns immediately; poll /agent/batch-status/{batch_id} or subscribe to
+    /agent/batch-stream/{batch_id} for progress.
+    """
+    import time
+    _cleanup_expired_sessions()
+    if not req.chapter_nums:
+        raise HTTPException(status_code=400, detail="chapter_nums must not be empty")
+
+    batch_id = str(uuid.uuid4())
+    _batch_sessions[batch_id] = {
+        "status": "running",
+        "total": len(req.chapter_nums),
+        "completed": 0,
+        "current_chapter": None,
+        "chapters": {},
+        "error": None,
+        "_created_at": time.time(),
+    }
+
+    async def _run():
+        try:
+            from agent.graph import run_agent
+            from agent.state import AgentState
+
+            for chapter_num in req.chapter_nums:
+                if _batch_sessions[batch_id].get("status") == "error":
+                    break
+
+                _batch_sessions[batch_id]["current_chapter"] = chapter_num
+                hint = req.outline_hints.get(str(chapter_num), "")
+
+                initial: AgentState = {
+                    "project_id": req.project_id,
+                    "session_id": f"{batch_id}:ch{chapter_num}",
+                    "task_type": "generate_chapter",
+                    "user_prompt": hint or "请继续写下一章。",
+                    "chapter_num": chapter_num,
+                    "outline_hint": hint,
+                    "llm_config": req.llm_config,
+                    "max_retries": req.max_retries,
+                    "messages": [],
+                    "retry_count": 0,
+                    "done": False,
+                }
+
+                try:
+                    final = await run_agent(initial)
+                    ch_result = {
+                        "chapter_num": chapter_num,
+                        "status": "done",
+                        "final_text": final.get("final_text", final.get("draft", "")),
+                        "chapter_summary": final.get("chapter_summary", ""),
+                        "quality_score": final.get("quality_score", 0.0),
+                        "quality_issues": final.get("quality_issues", []),
+                    }
+                except Exception as ch_exc:
+                    logger.error(
+                        "Batch chapter %d failed in batch %s: %s",
+                        chapter_num, batch_id, ch_exc, exc_info=True,
+                    )
+                    ch_result = {
+                        "chapter_num": chapter_num,
+                        "status": "error",
+                        "error": str(ch_exc),
+                    }
+
+                _batch_sessions[batch_id]["chapters"][str(chapter_num)] = ch_result
+                _batch_sessions[batch_id]["completed"] += 1
+
+            _batch_sessions[batch_id]["status"] = "done"
+        except Exception as exc:
+            logger.error("Batch session %s failed: %s", batch_id, exc, exc_info=True)
+            _batch_sessions[batch_id]["status"] = "error"
+            _batch_sessions[batch_id]["error"] = str(exc)
+
+    background_tasks.add_task(_run)
+    return {
+        "batch_id": batch_id,
+        "status": "running",
+        "total": len(req.chapter_nums),
+    }
+
+
+@app.get("/agent/batch-status/{batch_id}")
+async def agent_batch_status(batch_id: str):
+    """Poll batch generation session status."""
+    session = _batch_sessions.get(batch_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Batch session not found")
+    return {k: v for k, v in session.items() if not k.startswith("_")}
+
+
+@app.get("/agent/batch-stream/{batch_id}")
+async def agent_batch_stream(batch_id: str):
+    """SSE stream for batch generation progress."""
+    if batch_id not in _batch_sessions:
+        raise HTTPException(status_code=404, detail="Batch session not found")
+
+    async def event_gen():
+        prev_completed = -1
+        for _ in range(600):  # max 10 minutes
+            session = _batch_sessions.get(batch_id, {})
+            completed = session.get("completed", 0)
+            if completed != prev_completed:
+                evt = {
+                    "completed": completed,
+                    "total": session.get("total", 0),
+                    "current_chapter": session.get("current_chapter"),
+                    "status": session.get("status"),
+                }
+                yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+                prev_completed = completed
+            if session.get("status") in ("done", "error"):
+                final_evt = {
+                    "status": session.get("status"),
+                    "completed": session.get("completed", 0),
+                    "total": session.get("total", 0),
+                    "chapters": session.get("chapters", {}),
+                    "error": session.get("error"),
+                }
+                yield f"data: {json.dumps(final_evt, ensure_ascii=False)}\n\n"
+                break
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # GRAPH (Neo4j) ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════════

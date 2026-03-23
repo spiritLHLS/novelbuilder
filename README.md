@@ -204,14 +204,191 @@ docker compose logs -f
 > `DB_HOST` `DB_PORT` `DB_USER` `DB_PASSWORD` `DB_NAME`
 > `REDIS_ADDR` `SIDECAR_URL` `SERVER_PORT`
 
-## API 端点（新增）
+## API 端点
+
+### 章节生成
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/projects/:id/agent/run` | 启动 Agent 生成任务 |
-| GET | `/api/agent/sessions/:sid/status` | 查询任务状态 |
-| GET | `/api/agent/sessions/:sid/stream` | SSE 流式进度 |
-| GET | `/api/projects/:id/graph/entities` | 知识图谱实体 |
-| POST | `/api/projects/:id/graph/query` | Cypher 查询 |
+| POST | `/api/projects/:id/chapters/generate` | 生成单章（加入任务队列） |
+| POST | `/api/projects/:id/chapters/continue` | 续写下一章（同步调用） |
+| POST | `/api/projects/:id/chapters/batch-generate` | 批量生成（按数量或按卷） |
+| POST | `/api/projects/:id/agent/run` | 启动 LangGraph Agent 单章生成 |
+| GET | `/api/agent/sessions/:sid/status` | 查询单章 Agent 任务状态 |
+| GET | `/api/agent/sessions/:sid/stream` | SSE 流式进度（单章） |
+| POST | `/api/projects/:id/agent/batch-run` | 启动 Agent 多章批量（以卷为单位，顺序生成） |
+| GET | `/api/agent/batch/:bid/status` | 查询批量生成状态 |
+| GET | `/api/agent/batch/:bid/stream` | SSE 流式进度（批量） |
+
+### 知识图谱 / 向量库
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/projects/:id/graph/entities` | 知识图谱实体列表 |
+| POST | `/api/projects/:id/graph/query` | Cypher 只读查询 |
+| POST | `/api/projects/:id/graph/upsert` | 插入/更新图谱实体 |
+| POST | `/api/projects/:id/graph/sync` | 同步 PG 数据 → Neo4j |
 | POST | `/api/projects/:id/vector/rebuild` | 重建向量索引 |
 | GET | `/api/projects/:id/vector/status` | 向量库统计 |
+| POST | `/api/projects/:id/vector/search` | 向量语义检索 |
+
+---
+
+## 章节生成详细设计
+
+### 单章节生成流程
+
+```
+前端 → POST /api/projects/:id/chapters/generate
+         │
+         ▼
+    Go Handler (GenerateChapter)
+    • 工作流检查 (CanGenerateNextChapter)
+    • 写入 task_queue 表（任务类型: chapter_generate）
+         │
+         ▼
+    Task Queue Worker (后台 goroutine)
+    • 解析 chapter_num / context_hint
+    • 调用 chapterService.Generate()
+         │
+         ▼
+    ChapterService.Generate()
+    • 组装 GenerateChapterRequest（含章节字数范围、提示）
+    • 调用 Go 内部生成管道（非 LangGraph 路径，适合快速单章）
+    • 写入 chapters 表（status: generated）
+    • 触发 webhook （chapter_generated 事件）
+```
+
+### LangGraph Agent 单章生成流程（高质量路径）
+
+```
+前端 → POST /api/projects/:id/agent/run
+         │
+         ▼
+    Go Handler (AgentRun)
+    • 解析 AgentRunRequest
+    • 自动注入默认 LLM Profile（从数据库读取，含解密 API Key）
+    • 代理调用 Python sidecar POST /agent/run
+         │
+         ▼
+    Python Agent Service
+    • 创建后台 asyncio 任务
+    • 初始化 AgentState（project_id, chapter_num, outline_hint 等）
+    • 调用 LangGraph StateGraph.arun()
+         │
+         ▼ (LangGraph 节点执行顺序)
+    1. planner_node
+       • LLM 调用：将写作任务拆解为 3-6 个 plan_steps
+       • 缺省计划：召回记忆 → 检索 → 组装上下文 → 生成 → 更新记忆 → 质量评估
+    2. recall_memory_node (RecurrentGPT)
+       • Redis：读取最近 5 段落（短期工作记忆）
+       • graphiti + Neo4j：搜索与当前任务相关的长期事实
+    3. parallel_retrieve_node（并行）
+       ├─ retrieve_world_node（Neo4j）
+       │   • 单次 Cypher 查询：角色核心设定 + 关系图
+       │   • 不变规则（immutable_rules）
+       │   • 活跃伏笔（foreshadowings.status = 'active'）
+       └─ retrieve_narrative_node（Qdrant）
+           • chapter_summaries 集合：最相关的 5 条章节摘要
+           • style_samples 集合：参考书风格样本（top 3）
+    4. assemble_context_node（Re³ Lost-in-Middle 排布）
+       ┌──────────────────────────────┐ ← ANCHOR_TOP（最重要，模型注意力最强）
+       │ 世界宪法不变规则              │
+       │ 核心角色设定 + 关系图          │
+       ├──────────────────────────────┤ ← MIDDLE（次要，LLM 易遗忘区）
+       │ 近期 N 章摘要（Qdrant 检索）  │
+       │ 风格样本（参考书片段）         │
+       │ 活跃伏笔列表                  │
+       │ 短期工作记忆（Redis 段落）    │
+       ├──────────────────────────────┤ ← ANCHOR_BOTTOM（最重要）
+       │ 当前章节 Outline / 提示       │
+       │ 写作任务指令                  │
+       └──────────────────────────────┘
+    5. generator_node
+       • 使用组装好的 prompt 调用 LLM（高 temperature: 0.85）
+       • 同步生成章节摘要（低 temperature: 0.3）
+    6. update_memory_node (RecurrentGPT 更新)
+       • Redis：RPush 最新段落到短期记忆（保留最近 20 条）
+       • graphiti：将章节摘要作为新 episode 写入 Neo4j
+    7. quality_check_node
+       • 启发式检查：字数 ≥ 500、无占位符、不含过多省略号
+       • 未达阈值（< 0.6）且重试次数 < max_retries → 回退到 generate 节点
+       • 通过 → final_text 输出，done = True
+```
+
+### 批量章节生成（Task Queue 路径）
+
+批量生成通过 `POST /api/projects/:id/chapters/batch-generate` 触发，后端将每个章节
+作为独立的任务写入 `task_queue` 表，由后台 Worker 依次执行。
+
+```
+请求体（按数量）:
+{
+  "count": 5,                          // 生成 5 章（从当前最大章节号顺序递增）
+  "outline_hints": ["第1章简介", ...]   // 可选：每章的提示（按顺序对应）
+}
+
+请求体（按卷）:
+{
+  "volume_id": "<uuid>",               // 该卷下 chapter_start ~ chapter_end 全部生成
+  "outline_hints": ["第1章简介", ...]   // 可选：每章提示（按章节顺序对应）
+}
+```
+
+**按卷生成**：系统读取目标卷的 `chapter_start` / `chapter_end`，为该区间内
+每一章编号生成一个 `chapter_generate` 任务（明确指定章节号），入队后由 Worker
+按优先级顺序处理。每个任务执行时自动从路由配置中解析 LLM 凭证，不在 Payload 中
+存储 API Key。
+
+### Agent 批量生成（以卷为单位，顺序 LangGraph 路径）
+
+通过 `POST /api/projects/:id/agent/batch-run` 触发，所有章节在 Python sidecar 内
+**串行**运行完整 LangGraph pipeline，确保每章的记忆更新（Neo4j + Redis + Qdrant）
+能够完整传递给下一章，保持叙事连贯性。
+
+```
+请求体:
+{
+  "chapter_nums": [1, 2, 3, 4, 5],    // 有序章节列表（卷的章节范围）
+  "outline_hints": {                   // 可选：per-chapter 提示
+    "1": "第一章：主角出场，交代背景",
+    "2": "第二章：冲突初现"
+  },
+  "max_retries": 1
+}
+
+响应:
+{
+  "batch_id": "<uuid>",
+  "status": "running",
+  "total": 5
+}
+
+进度轮询:
+GET /api/agent/batch/:bid/status
+{
+  "status": "running",
+  "total": 5,
+  "completed": 2,
+  "current_chapter": 3,
+  "chapters": {
+    "1": {"status": "done", "final_text": "...", "quality_score": 0.92},
+    "2": {"status": "done", ...},
+    "3": {"status": "error", "error": "LLM timeout"}   // 单章失败不中断整体
+  }
+}
+
+SSE 流:
+GET /api/agent/batch/:bid/stream
+data: {"completed":1,"total":5,"current_chapter":2,"status":"running"}
+data: {"completed":2,"total":5,"current_chapter":3,"status":"running"}
+data: {"status":"done","completed":5,"total":5,"chapters":{...}}
+```
+
+**串行设计原因**：
+- 每章生成后通过 `update_memory_node` 将事件写入 Neo4j graphiti 图记忆
+- Redis 短期记忆（最近 N 段落）在章节间累积，为下一章提供即时上下文
+- Qdrant `chapter_summaries` 在每章结束后更新，保证语义检索的连贯性
+- 并行生成会导致所有章节共享同一份「旧记忆」，破坏叙事一致性
+
+---

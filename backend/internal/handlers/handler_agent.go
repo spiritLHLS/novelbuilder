@@ -365,3 +365,104 @@ func (h *Handler) DeleteProjectAgentRoute(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"ok": true})
 }
+
+// ── Batch Agent (Volume-based sequential generation) ─────────────────────────
+
+// BatchAgentRunHTTPRequest is the HTTP body for POST /projects/:id/agent/batch-run.
+type BatchAgentRunHTTPRequest struct {
+	ChapterNums  []int             `json:"chapter_nums" binding:"required"`
+	OutlineHints map[string]string `json:"outline_hints"`
+	LLMProfileID string            `json:"llm_profile_id"`
+	MaxRetries   int               `json:"max_retries"`
+}
+
+// AgentBatchRun starts a sequential multi-chapter generation session via the Python sidecar.
+func (h *Handler) AgentBatchRun(c *gin.Context) {
+	projectID := c.Param("id")
+	var req BatchAgentRunHTTPRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.ChapterNums) == 0 {
+		c.JSON(400, gin.H{"error": "chapter_nums must not be empty"})
+		return
+	}
+	if len(req.ChapterNums) > 200 {
+		c.JSON(400, gin.H{"error": "chapter_nums must not exceed 200 entries"})
+		return
+	}
+	if req.MaxRetries <= 0 {
+		req.MaxRetries = 1
+	}
+
+	llmCfg, err := h.resolveAgentLLMConfig(c.Request.Context(), "writer", projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to resolve LLM config: " + err.Error()})
+		return
+	}
+
+	if req.OutlineHints == nil {
+		req.OutlineHints = map[string]string{}
+	}
+
+	batchReq := models.BatchAgentRunRequest{
+		ChapterNums:  req.ChapterNums,
+		OutlineHints: req.OutlineHints,
+		LLMConfig:    llmCfg,
+		MaxRetries:   req.MaxRetries,
+	}
+
+	batchID, err := h.sidecar.RunBatchAgent(c.Request.Context(), projectID, batchReq)
+	if err != nil {
+		h.logger.Error("batch agent run failed", zap.Error(err))
+		c.JSON(502, gin.H{"error": "agent service unavailable: " + err.Error()})
+		return
+	}
+	c.JSON(202, gin.H{"batch_id": batchID, "status": "running", "total": len(req.ChapterNums)})
+}
+
+func (h *Handler) AgentBatchStatus(c *gin.Context) {
+	raw, err := h.sidecar.GetBatchAgentStatus(c.Request.Context(), c.Param("bid"))
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	c.Data(200, "application/json", raw)
+}
+
+func (h *Handler) AgentBatchStream(c *gin.Context) {
+	bid := c.Param("bid")
+	streamURL := h.sidecar.BatchStreamURL(bid)
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, streamURL, nil)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "sidecar batch stream unavailable"})
+		return
+	}
+	defer resp.Body.Close()
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(200)
+
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			c.Writer.Write(buf[:n]) //nolint:errcheck
+			c.Writer.Flush()
+		}
+		if readErr != nil {
+			break
+		}
+	}
+}

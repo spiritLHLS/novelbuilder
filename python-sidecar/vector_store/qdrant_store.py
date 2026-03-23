@@ -69,7 +69,7 @@ def _load_embedder_transformers():
             self._tok = tok
             self._mod = mod
 
-        def encode(self, text: str, normalize_embeddings: bool = True):
+        def encode(self, text: str, normalize_embeddings: bool = True, show_progress_bar: bool = False):
             inputs = self._tok(
                 text,
                 return_tensors="pt",

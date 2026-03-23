@@ -99,12 +99,31 @@
     </el-dialog>
 
     <!-- Batch Generate Dialog -->
-    <el-dialog v-model="showBatchDialog" title="批量生成章节" width="400px">
+    <el-dialog v-model="showBatchDialog" title="批量生成章节" width="460px">
       <div class="space-y-4">
-        <p class="text-sm text-gray-500">从当前最大章节号之后，连续生成多个章节并加入任务队列。</p>
+        <p class="text-sm text-gray-500">可按数量生成（从当前最大章节号之后连续生成），也可选择按卷生成该卷所有章节。</p>
         <el-form label-position="top">
-          <el-form-item label="生成章节数量">
-            <el-input-number v-model="batchCount" :min="1" :max="20" style="width: 100%;" />
+          <el-form-item label="生成模式">
+            <el-radio-group v-model="batchMode">
+              <el-radio value="count">按数量生成</el-radio>
+              <el-radio value="volume">按卷生成</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="生成章节数量" v-if="batchMode === 'count'">
+            <el-input-number v-model="batchCount" :min="1" :max="50" style="width: 100%;" />
+          </el-form-item>
+          <el-form-item label="选择卷" v-if="batchMode === 'volume'">
+            <el-select v-model="batchVolumeId" placeholder="选择要生成的卷" style="width: 100%;" :loading="volumesLoading">
+              <el-option
+                v-for="vol in volumes"
+                :key="vol.id"
+                :label="`第${vol.volume_num}卷「${vol.title || '未命名'}」（第${vol.chapter_start}–${vol.chapter_end}章，共${vol.chapter_end - vol.chapter_start + 1}章）`"
+                :value="vol.id"
+              />
+            </el-select>
+            <div v-if="batchMode === 'volume' && volumes.length === 0 && !volumesLoading" class="text-xs text-gray-400 mt-1">
+              暂无卷数据，请先在蓝图中设置章节范围。
+            </div>
           </el-form-item>
         </el-form>
       </div>
@@ -121,7 +140,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
-import { chapterApi, exportApi, exportExtApi, batchWriteApi } from '@/api'
+import { chapterApi, exportApi, exportExtApi, batchWriteApi, volumeApi } from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -141,6 +160,10 @@ const genForm = ref({
 const showBatchDialog = ref(false)
 const batchCount = ref(3)
 const batching = ref(false)
+const batchMode = ref<'count' | 'volume'>('count')
+const batchVolumeId = ref('')
+const volumes = ref<any[]>([])
+const volumesLoading = ref(false)
 
 const latestChapterNum = computed(() => chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0))
 
@@ -164,9 +187,22 @@ function formatDate(d: string) {
 
 onMounted(async () => {
   await fetchChapters()
+  await fetchVolumes()
   const maxNum = chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0)
   genForm.value.chapter_num = maxNum + 1
 })
+
+async function fetchVolumes() {
+  volumesLoading.value = true
+  try {
+    const res = await volumeApi.list(projectId)
+    volumes.value = (res.data.data || []).sort((a: any, b: any) => a.volume_num - b.volume_num)
+  } catch {
+    volumes.value = []
+  } finally {
+    volumesLoading.value = false
+  }
+}
 
 async function fetchChapters() {
   loading.value = true
@@ -211,9 +247,19 @@ async function handleExport(format: 'txt' | 'markdown' | 'epub') {
 async function startBatchGenerate() {
   batching.value = true
   try {
-    const maxNum = chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0)
-    await batchWriteApi.generate(projectId, batchCount.value)
-    ElMessage.success(`已将 ${batchCount.value} 个章节加入生成队列`)
+    if (batchMode.value === 'volume') {
+      if (!batchVolumeId.value) {
+        ElMessage.warning('请选择要生成的卷')
+        return
+      }
+      await batchWriteApi.generateByVolume(projectId, batchVolumeId.value)
+      const vol = volumes.value.find((v: any) => v.id === batchVolumeId.value)
+      const count = vol ? vol.chapter_end - vol.chapter_start + 1 : '多'
+      ElMessage.success(`已将第${vol?.volume_num}卷共 ${count} 个章节加入生成队列`)
+    } else {
+      await batchWriteApi.generate(projectId, batchCount.value)
+      ElMessage.success(`已将 ${batchCount.value} 个章节加入生成队列`)
+    }
     showBatchDialog.value = false
   } catch (e: any) {
     ElMessage.error(e.response?.data?.error || '批量生成失败')

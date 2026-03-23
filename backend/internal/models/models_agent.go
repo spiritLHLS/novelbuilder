@@ -73,6 +73,16 @@ type AgentRunRequest struct {
 	MaxRetries   int                    `json:"max_retries,omitempty"`
 }
 
+// BatchAgentRunRequest drives POST /agent/batch-run on the Python sidecar.
+// Chapters are generated sequentially so that memory from each chapter
+// feeds into the next (RecurrentGPT continuity requirement).
+type BatchAgentRunRequest struct {
+	ChapterNums  []int                  `json:"chapter_nums"`  // ordered list of chapter numbers
+	OutlineHints map[string]string      `json:"outline_hints"` // str(chapter_num) -> hint
+	LLMConfig    map[string]interface{} `json:"llm_config,omitempty"`
+	MaxRetries   int                    `json:"max_retries,omitempty"`
+}
+
 type AgentSessionStatus struct {
 	SessionID string                   `json:"session_id"`
 	Status    string                   `json:"status"` // running | done | error

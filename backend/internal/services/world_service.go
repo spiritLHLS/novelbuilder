@@ -430,6 +430,20 @@ func (s *VolumeService) List(ctx context.Context, projectID string) ([]models.Vo
 	return vols, nil
 }
 
+func (s *VolumeService) Get(ctx context.Context, id string) (*models.Volume, error) {
+	var v models.Volume
+	err := s.db.QueryRow(ctx,
+		`SELECT id, project_id, volume_num, COALESCE(title, ''), blueprint_id, status,
+		        COALESCE(chapter_start, 0), COALESCE(chapter_end, 0), COALESCE(review_comment, ''), created_at, updated_at
+		 FROM volumes WHERE id = $1`, id,
+	).Scan(&v.ID, &v.ProjectID, &v.VolumeNum, &v.Title, &v.BlueprintID,
+		&v.Status, &v.ChapterStart, &v.ChapterEnd, &v.ReviewComment, &v.CreatedAt, &v.UpdatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	return &v, err
+}
+
 func (s *VolumeService) SubmitReview(ctx context.Context, id string) error {
 	// Check all chapters in this volume are approved
 	var unapproved int
