@@ -124,6 +124,8 @@ func (s *QualityService) reviewAsReader(ctx context.Context, content string) ([]
 4. 句子长度是否过于均匀（人类写作有极短句和极长句交替）
 5. 主语是否全程在场（人类中文写作常省略主语）
 6. 是否使用了"他心想"/"想到这里"等AI常用过渡
+7. 章节结尾是否有AI式总结/展望/升华段（"他知道这只是开始""更大的挑战还在后面"等）
+8. 一章内是否塞入了过多事件（超过3件主要事件=信息过载=AI感强烈）
 
 返回格式：[{"type": "ai_smell", "severity": "critical|warning|info", "location": "第X段/第X句", "message": "问题描述", "suggestion": "具体改写方向"}]
 只返回JSON数组。`},
@@ -199,14 +201,18 @@ func (s *QualityService) reviewAsLogicReviewer(ctx context.Context, content, pro
 func (s *QualityService) reviewAsAntiAIExpert(ctx context.Context, content string) ([]models.QualityIssue, float64) {
 	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
 		Messages: []gateway.ChatMessage{
-			{Role: "system", Content: `你是一位反AI检测专家，精通各种AI生成文本的检测方法。
+			{Role: "system", Content: `你是一位反AI检测专家，精通各种AI生成文本的检测方法。专注中文网络小说的AI痕迹检测。
 
 请从以下维度分析这段文本的AI特征：
 1. **困惑度评估**：词汇选择是否过于"安全"（高概率词多=AI味重）
 2. **爆发度评估**：句子长度的变异系数（CV）是否过低（AI生成句长均匀）
 3. **逻辑指纹**：是否存在"问题→分析→结论"的线性逻辑结构
 4. **对话特征**：对话是否每句完整（AI）vs有省略打断（人类）
-5. **标记段落**：标出AI特征最明显的具体段落
+5. **AI高频词检测**：统计"不禁""微微""缓缓""淡淡""默默"出现次数，每个词超过1次即扣分
+6. **AI句式检测**："一股XXX涌上心头""心中暗道""嘴角勾起一抹弧度""眼中闪过一丝XXX"等
+7. **章节结尾检测**：结尾是否有总结段/展望段/预告式升华（"他知道这只是开始""更大的风暴即将来临"）
+8. **视角一致性**：是否存在POV角色不可能知道的信息泄露
+9. **标记段落**：标出AI特征最明显的具体段落
 
 返回格式（必须严格JSON）：
 {

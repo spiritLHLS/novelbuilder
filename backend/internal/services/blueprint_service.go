@@ -369,6 +369,8 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 - foreshadowings 中已存在伏笔无需重复，只列**新增**伏笔
 - 所有内容须与已有世界观、角色、术语表保持一致
 - 确保所有伏笔在大纲时间线中安排铺垫与揭露
+- 【重要】每章大纲只安排 1～3 件核心事件或关系推进，不可在单章塞入过多事件。网文节奏讲究"一章一事"或"一章两事"，信息密度过高会导致后续生成时超字数且AI味浓重
+- 章节大纲不要写"本章总结""本章展望"类说明，只描述要发生的事件和场景
 `,
 		genre,
 		taskInstruction,

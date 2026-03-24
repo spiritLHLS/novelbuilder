@@ -12,17 +12,23 @@ import (
 
 func (h *Handler) StartWorkflow(c *gin.Context) {
 	projectID := c.Param("id")
-	runID, err := h.workflow.CreateRun(c.Request.Context(), projectID, true)
+	runID, resumed, err := h.workflow.ResumeOrCreateRun(c.Request.Context(), projectID, true)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	// Create initial workflow steps and sync with current blueprint state.
-	if initErr := h.workflow.InitRunSteps(c.Request.Context(), runID, projectID); initErr != nil {
-		h.logger.Warn("StartWorkflow: failed to init run steps",
-			zap.String("run_id", runID), zap.Error(initErr))
+	if !resumed {
+		// New run — create initial workflow steps and sync with current blueprint state.
+		if initErr := h.workflow.InitRunSteps(c.Request.Context(), runID, projectID); initErr != nil {
+			h.logger.Warn("StartWorkflow: failed to init run steps",
+				zap.String("run_id", runID), zap.Error(initErr))
+		}
 	}
-	c.JSON(201, gin.H{"data": gin.H{"run_id": runID}})
+	status := 201
+	if resumed {
+		status = 200
+	}
+	c.JSON(status, gin.H{"data": gin.H{"run_id": runID, "resumed": resumed}})
 }
 
 func (h *Handler) GetWorkflowHistory(c *gin.Context) {

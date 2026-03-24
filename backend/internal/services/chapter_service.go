@@ -227,12 +227,13 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 - 结尾钩子强度：%d
 - 张力水平：%.1f
 
-要求：
-1. 内容字数控制在 %d～%d 字之间（根据本章剧情密度自然调整，无需强行凑字数）
-2. 保持与前文的连贯性
-3. 按照大纲推进剧情
-4. 自然融入伏笔
-5. 章节结尾留有悬念`,
+硬性要求：
+1. 内容字数控制在 %d～%d 字之间
+2. 本章最多写 1～3 件事件进展，每件事用场景、对话、细节充分展开，不要蜻蜓点水
+3. 从上一章结尾处自然承接，禁止复述前文
+4. 严格锁定指定POV视角，不写该角色感知不到的信息
+5. 章节在场景动作、对话或悬念处自然断开，禁止写总结段、展望段、升华段
+6. 遵守系统提示中的全部反AI文风规则`,
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
@@ -241,7 +242,7 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 	if req.ContextHint != "" {
 		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
 	}
-	userPrompt += "\n\n请直接输出章节内容，不要包含任何元数据或标记。"
+	userPrompt += "\n\n请直接输出章节正文，不要包含章节号、标题、元数据或任何标记。"
 
 	resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_generation",
@@ -650,12 +651,13 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 - 结尾钩子强度：%d
 - 张力水平：%.1f
 
-要求：
-1. 内容字数控制在 %d～%d 字之间（根据本章剧情密度自然调整，无需强行凑字数）
-2. 保持与前文的连贯性
-3. 按照大纲推进剧情
-4. 自然融入伏笔
-5. 章节结尾留有悬念`,
+硬性要求：
+1. 内容字数控制在 %d～%d 字之间
+2. 本章最多写 1～3 件事件进展，每件事用场景、对话、细节充分展开，不要蜻蜓点水
+3. 从上一章结尾处自然承接，禁止复述前文
+4. 严格锁定指定POV视角，不写该角色感知不到的信息
+5. 章节在场景动作、对话或悬念处自然断开，禁止写总结段、展望段、升华段
+6. 遵守系统提示中的全部反AI文风规则`,
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
@@ -663,7 +665,7 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 	if req.ContextHint != "" {
 		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
 	}
-	userPrompt += "\n\n请直接输出章节内容，不要包含任何元数据或标记。"
+	userPrompt += "\n\n请直接输出章节正文，不要包含章节号、标题、元数据或任何标记。"
 
 	resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_regeneration",
@@ -750,8 +752,8 @@ func (s *ChapterService) ensureChapterWordCount(
 		resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 			Task: "chapter_length_adjustment",
 			Messages: []gateway.ChatMessage{
-				{Role: "system", Content: systemPrompt + "\n\n补充规则：字数范围是硬约束，如果正文超出范围必须压缩，如果不足范围必须扩写。不得输出解释，只输出修订后的完整正文。"},
-				{Role: "user", Content: fmt.Sprintf("当前正文约 %d 字，目标区间是 %d-%d 字。请对下面正文做%s，使最终长度严格落在目标区间内，同时保留本章核心剧情、人物关系和结尾功能。只输出修订后的完整正文。\n\n%s", current, wordsMin, wordsMax, action, adjusted)},
+				{Role: "system", Content: systemPrompt + "\n\n补充规则：字数范围是硬约束，如果正文超出范围必须压缩，如果不足范围必须扩写。压缩时优先删减重复的心理描写、冗余环境描写、多余的过渡句；扩写时优先补充场景细节、角色微表情和感官描写，不要添加新事件。结尾不得添加总结/展望段。不得输出解释，只输出修订后的完整正文。"},
+				{Role: "user", Content: fmt.Sprintf("当前正文约 %d 字，目标区间是 %d-%d 字。请对下面正文做%s，使最终长度严格落在目标区间内，同时保留本章核心剧情、人物关系和结尾功能。保持反AI文风规则（禁止使用微微缓缓淡淡等AI高频词）。只输出修订后的完整正文。\n\n%s", current, wordsMin, wordsMax, action, adjusted)},
 			},
 		}, llmConfig)
 		if err != nil {

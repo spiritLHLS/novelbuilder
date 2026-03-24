@@ -21,6 +21,7 @@ var (
 	ErrSnapshotNotFound       = errors.New("WF_005: 未找到可回退快照")
 	ErrOptimisticLock         = errors.New("WF_006: 并发修改冲突")
 	ErrStrictReviewRequired   = errors.New("WF_007: 严格审核模式需要人工审核")
+	ErrRunAlreadyActive       = errors.New("WF_008: 该项目已有运行中的管线")
 )
 
 type Engine struct {
@@ -42,6 +43,34 @@ func (e *Engine) CreateRun(ctx context.Context, projectID string, strictReview b
 		return "", fmt.Errorf("create run: %w", err)
 	}
 	return runID, nil
+}
+
+// ResumeOrCreateRun returns an existing active (running) workflow run for the project,
+// or creates a new one if none exists. This prevents duplicate active runs and supports
+// mid-pipeline resume (e.g. after the user manually finalises a blueprint).
+func (e *Engine) ResumeOrCreateRun(ctx context.Context, projectID string, strictReview bool) (runID string, resumed bool, err error) {
+	// Look for an existing running workflow run for this project.
+	qErr := e.db.QueryRow(ctx,
+		`SELECT id FROM workflow_runs
+		 WHERE project_id = $1 AND status = 'running'
+		 ORDER BY created_at DESC LIMIT 1`, projectID).Scan(&runID)
+	if qErr == nil {
+		// Active run found — return it so the caller can resume from where it left off.
+		e.logger.Info("resuming existing workflow run",
+			zap.String("project_id", projectID),
+			zap.String("run_id", runID))
+		return runID, true, nil
+	}
+	if !errors.Is(qErr, pgx.ErrNoRows) {
+		return "", false, fmt.Errorf("check active run: %w", qErr)
+	}
+
+	// No active run — create a new one.
+	newID, createErr := e.CreateRun(ctx, projectID, strictReview)
+	if createErr != nil {
+		return "", false, createErr
+	}
+	return newID, false, nil
 }
 
 func (e *Engine) CanGenerateNextChapter(ctx context.Context, projectID string) error {

@@ -1,5 +1,5 @@
 """
-8步人性化管线
+9步人性化管线
 Step 1: 逻辑指纹打断 (Logic Fingerprint Breaking)
 Step 2: 主语省略 (Subject Omission)
 Step 3: 对话压缩 (Dialogue Compression)
@@ -7,7 +7,8 @@ Step 4: 情感替换 (Emotion Replacement)
 Step 5: 感官注入 (Sensory Injection)
 Step 6: 自由间接引语 (Free Indirect Discourse)
 Step 7: 突发度优化 (Burstiness Optimization)
-Step 8: 叙事顺序检查 (Narrative Sequence Check)
+Step 8: AI结尾清除 (AI Ending Strip)
+Step 9: 叙事顺序检查 (Narrative Sequence Check)
 """
 import re
 import random
@@ -19,7 +20,7 @@ import jieba
 
 
 class HumanizationPipeline:
-    """8步人性化管线"""
+    """9步人性化管线"""
 
     def process(
         self,
@@ -62,9 +63,13 @@ class HumanizationPipeline:
         current_text, step7_info = self._step7_burstiness_optimization(current_text, intensity)
         steps_applied.append({"step": 7, "name": "突发度优化", **step7_info})
 
-        # Step 8: 叙事顺序检查
-        current_text, step8_info = self._step8_narrative_sequence_check(current_text)
-        steps_applied.append({"step": 8, "name": "叙事顺序检查", **step8_info})
+        # Step 8: AI结尾清除
+        current_text, step8_info = self._step8_strip_ai_ending(current_text)
+        steps_applied.append({"step": 8, "name": "AI结尾清除", **step8_info})
+
+        # Step 9: 叙事顺序检查
+        current_text, step9_info = self._step9_narrative_sequence_check(current_text)
+        steps_applied.append({"step": 9, "name": "叙事顺序检查", **step9_info})
 
         return {
             "original": text,
@@ -101,6 +106,38 @@ class HumanizationPipeline:
             "显而易见，": ["明摆着", ""],
             "综上所述，": ["", "这么看来"],
         }
+
+        # AI高频词/短语替换（网文反AI痕迹）
+        ai_phrase_replacements = {
+            "不禁": ["忍不住", ""],
+            "缓缓": ["慢慢", ""],
+            "淡淡": [""],
+            "微微": ["略", "稍稍", ""],
+            "默默": ["悄悄", ""],
+            "嘴角勾起一抹弧度": ["嘴角一翘", "撇了撇嘴笑了", "嘴角弯了弯"],
+            "一股暖流涌上心头": ["心里热乎乎的", "胸口暖了一下"],
+            "一股寒意涌上心头": ["打了个寒颤", "后脊梁一凉"],
+            "眼中闪过一丝": ["眼神一动", "目光微变"],
+            "心中涌起一股": ["心头一紧", "胸口一闷"],
+            "如同": ["像", "好比"],
+            "宛如": ["像是", "好似"],
+            "仿佛": ["好像", ""],
+            "不由自主": ["不自觉", "鬼使神差"],
+            "竟然": ["居然", "倒是"],
+        }
+        for original, alternatives in ai_phrase_replacements.items():
+            count = text.count(original)
+            if count > 0:
+                # 每个AI高频词最多保留1次出现
+                while text.count(original) > 1 and random.random() < 0.9:
+                    replacement = random.choice(alternatives)
+                    text = text.replace(original, replacement, 1)
+                    changes += 1
+                # 唯一一次出现也有概率替换
+                if original in text and random.random() < intensity * 0.5:
+                    replacement = random.choice(alternatives)
+                    text = text.replace(original, replacement, 1)
+                    changes += 1
 
         for original, alternatives in replacements.items():
             if original in text and random.random() < intensity:
@@ -445,7 +482,63 @@ class HumanizationPipeline:
 
         return "".join(result), {"changes": changes}
 
-    def _step8_narrative_sequence_check(self, text: str) -> tuple:
+    def _step8_strip_ai_ending(self, text: str) -> tuple:
+        """
+        Step 8: AI结尾清除
+        AI生成的章节常以总结段、展望段、升华段结尾，这在网文中非常不自然。
+        检测并移除章节末尾的AI式总结/展望段落。
+        """
+        stripped = 0
+
+        # AI典型结尾段落的开头特征
+        ai_ending_signals = [
+            r'(?:而)?这(?:一切|一天|一刻|一晚|个夜晚).*(?:才刚刚开始|不过是.*开始|只是.*序章)',
+            r'(?:他|她)(?:不知道|并不知道|还不知道).*(?:即将|等待着|正在等着)',
+            r'(?:命运|故事|一切).*(?:才刚刚|远未|从未).*(?:开始|结束|落幕)',
+            r'夜.*(?:很深|更深了|渐深|深了).*(?:而|但|可).*(?:还在|才刚|仍在)',
+            r'(?:新的|更大的|真正的).*(?:挑战|冒险|考验|风暴|篇章).*(?:即将|正在|已经在)',
+            r'(?:他|她)知道.*(?:从此|以后|未来).*(?:将会|不会再|再也不)',
+            r'殊不知',
+            r'(?:一场|一个)(?:更大|更深|更可怕)的.*(?:正在|已经在|悄悄地)',
+        ]
+
+        # 检查最后2-3个段落
+        paragraphs = text.rstrip().split("\n")
+        while paragraphs and not paragraphs[-1].strip():
+            paragraphs.pop()
+
+        if len(paragraphs) < 3:
+            return text, {"stripped": 0}
+
+        # 从最后一段开始往前检查，最多检查最后2段
+        removed = 0
+        for _ in range(2):
+            if len(paragraphs) < 3:
+                break
+            last_para = paragraphs[-1].strip()
+            if not last_para:
+                paragraphs.pop()
+                continue
+
+            is_ai_ending = False
+            for pattern in ai_ending_signals:
+                if re.search(pattern, last_para):
+                    is_ai_ending = True
+                    break
+
+            if is_ai_ending:
+                paragraphs.pop()
+                removed += 1
+            else:
+                break
+
+        if removed > 0:
+            text = "\n".join(paragraphs)
+            stripped = removed
+
+        return text, {"stripped": stripped}
+
+    def _step9_narrative_sequence_check(self, text: str) -> tuple:
         """
         Step 8: 叙事顺序检查
         检查时间顺序一致性，检测不合理的叙事跳跃。

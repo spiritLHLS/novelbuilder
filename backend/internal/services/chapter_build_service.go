@@ -341,13 +341,48 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		sb.WriteString(string(outlineContent))
 		sb.WriteString(fmt.Sprintf("\n目标张力值：%.1f\n", tensionTarget))
 	}
-	sb.WriteString("\n=== 章节推进约束 ===\n")
-	sb.WriteString("- 只推进本章大纲明确要求的事件，不要提前展开后续章节的设定、底牌、关系反转或高潮信息。\n")
-	sb.WriteString("- 未出现在“本章可用伏笔”里的后续设定，一律不能提前明示、解释、兑现。\n")
-	sb.WriteString("- 若需要铺垫后续内容，只能做轻量暗示，不能让角色在本章就把后续阶段的问题直接解决。\n")
+	sb.WriteString("\n=== 章节推进约束（硬规则）===\n")
+	sb.WriteString("- 本章只推进大纲明确要求的事件，禁止提前展开后续章节的设定、底牌、关系反转或高潮信息。\n")
+	sb.WriteString("- 未出现在【本章可用伏笔】里的后续设定，一律不能提前明示、解释、兑现。\n")
+	sb.WriteString("- 若需要铺垫后续内容，只能做轻量暗示（一笔带过的细节、角色一闪而逝的念头），不能让角色在本章就把后续阶段的问题直接解决。\n")
+	sb.WriteString("- 【信息密度控制】本章最多推进 1～3 件剧情事件或关系进展，不得更多。每件事件需要充足的场景描写、角色反应、感官细节来填充，而非流水账式快速略过。如果大纲本章要求超过3件事，请只完成其中最重要的2～3件，其余顺延到下一章。\n")
 	if chapterNum == 1 {
 		sb.WriteString("- 第一章优先完成开场氛围、主角处境、核心矛盾引子，避免把中后期设定一次性打满。\n")
 	}
+	sb.WriteString("\n")
+
+	// ===== Anti-AI Writing Craft Rules =====
+	sb.WriteString("=== 写作手法硬规则（反AI痕迹）===\n")
+	sb.WriteString("【章节结尾】\n")
+	sb.WriteString("- 禁止在章节结尾写总结段、展望段、心理独白升华段。\n")
+	sb.WriteString("- 禁止出现类似【他知道，这只是开始】【未来的路还很长】【更大的风暴即将来临】等带预告性质的句子。\n")
+	sb.WriteString("- 章节在一个场景动作、一句对话、一个悬念的自然节点处即可断开，不需要给读者【交代感】。\n")
+	sb.WriteString("- 允许在场景中途甚至对话中途断章。网文断章天然跨越数十章的起承转合，单章不需要完整闭合。\n")
+	sb.WriteString("- 结尾样式参考：一句冷对话 / 一个突发事件 / 一个角色做出决定的瞬间 / 某人转身离开 / 场景戛然而止。\n")
+	sb.WriteString("\n【叙事视角与时间线】\n")
+	sb.WriteString("- 锁定POV：如果指定了主视角角色，整章只能写该角色能感知到的信息（所见、所闻、所想）。不得插入该角色不可能知道的信息、其他角色的内心独白、或全知叙事者的评论。\n")
+	sb.WriteString("- 视角切换需要明确的场景分隔（空行或 *** 分隔符），不可在同一段内跳切视角。\n")
+	sb.WriteString("- 时间过渡用场景切换、具体动作或环境变化暗示（如：走出酒楼时，街上已经亮起了灯笼），禁止使用【时间飞逝】【不知不觉间】【转眼就到了】等AI惯用过渡词。\n")
+	sb.WriteString("\n【反AI文风规则】\n")
+	sb.WriteString("- 禁止使用以下AI高频词与句式：\n")
+	sb.WriteString("  · 【不禁】【微微】【缓缓】【淡淡】【默默】过度使用（每章每个词最多出现1次）\n")
+	sb.WriteString("  · 【一股XXX涌上心头】【心中暗道】【嘴角勾起一抹弧度】【眼中闪过一丝XXX】\n")
+	sb.WriteString("  · 连续三句以上使用【他/她+动词+了】的相同句式\n")
+	sb.WriteString("  · 【仿佛】【似乎】【好像】在同一段中出现超过1次\n")
+	sb.WriteString("  · 排比式心理描写（如：他想到了A，想到了B，想到了C）\n")
+	sb.WriteString("  · 段落开头堆叠环境描写超过3句再进入剧情\n")
+	sb.WriteString("- 优先使用：\n")
+	sb.WriteString("  · 短句与长句交替，制造阅读节奏（如3个短句后跟1个长句，或反之）\n")
+	sb.WriteString("  · 对话中夹叙夹议，用角色小动作打断对话（摸鼻子、移开视线、手指在桌上敲）\n")
+	sb.WriteString("  · 省略主语的连续动作句（如：推开门，扫了一眼，径直走到角落坐下。）\n")
+	sb.WriteString("  · 五感混用描写（声音→触感→画面交替），避免纯视觉化叙述\n")
+	sb.WriteString("  · 用具体数字和细节代替模糊形容（如：三步远、半碗饭的功夫，而非：不远处、片刻之后）\n")
+	sb.WriteString("  · 让角色通过行动和对话展示性格，而非旁白说明性格（Show Don't Tell）\n")
+	sb.WriteString("\n【节奏与密度】\n")
+	sb.WriteString("- 本章叙事时间跨度不宜超过一天（除非大纲明确要求跨多日），场景越集中，细节越饱满，AI味越低。\n")
+	sb.WriteString("- 每个场景至少包含一组有效对话（2-4轮以上的交锋/信息交换），禁止全篇纯心理独白或纯景物描写。\n")
+	sb.WriteString("- 战斗/紧张场景使用碎片化短句加速节奏；日常/铺垫场景可使用长句和环境描写减速。\n")
+	sb.WriteString("- 角色不能在一章之内完成态度大反转，情绪变化需要事件驱动且有过渡。\n")
 	sb.WriteString("\n")
 
 	// Previous chapter's last paragraph (Re3 dual-track context)
@@ -362,7 +397,7 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 				tailLines = lines[len(lines)-5:]
 			}
 			sb.WriteString(strings.Join(tailLines, "\n"))
-			sb.WriteString("\n")
+			sb.WriteString("\n请从上一章结尾自然承接，不要重述已发生的事件，不要重复上一章最后的场景描述。\n")
 		}
 	}
 
@@ -428,7 +463,7 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		}
 	}
 
-	sb.WriteString("\n你是一位经验丰富的网络小说作者，请严格遵守世界观设定和宪法规则，保持角色性格一致性。字数范围属于硬约束，必须落在要求区间内。")
+	sb.WriteString("\n你是一位笔法老练的网络小说作者，文字干净利落，擅长用场景和对话推动剧情。请严格遵守世界观设定和宪法规则，保持角色性格一致性。字数范围属于硬约束，必须落在要求区间内。严格遵守上述所有反AI写作规则。")
 
 	return sb.String()
 }
