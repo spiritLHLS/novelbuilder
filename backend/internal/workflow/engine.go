@@ -45,12 +45,20 @@ func (e *Engine) CreateRun(ctx context.Context, projectID string, strictReview b
 }
 
 func (e *Engine) CanGenerateNextChapter(ctx context.Context, projectID string) error {
+	// Check blueprint approval: first look for an approved workflow step (tracked path),
+	// then fall back to checking book_blueprints directly. This handles the common case
+	// where the user approves a blueprint before or without starting the workflow.
 	var bpApproved bool
 	err := e.db.QueryRow(ctx,
-		`SELECT EXISTS(
-			SELECT 1 FROM workflow_steps ws
-			JOIN workflow_runs wr ON ws.run_id = wr.id
-			WHERE wr.project_id = $1 AND ws.step_key = 'blueprint' AND ws.status = 'approved'
+		`SELECT (
+			EXISTS(
+				SELECT 1 FROM workflow_steps ws
+				JOIN workflow_runs wr ON ws.run_id = wr.id
+				WHERE wr.project_id = $1 AND ws.step_key = 'blueprint' AND ws.status = 'approved'
+			) OR EXISTS(
+				SELECT 1 FROM book_blueprints
+				WHERE project_id = $1 AND status = 'approved'
+			)
 		)`, projectID).Scan(&bpApproved)
 	if err != nil {
 		return fmt.Errorf("check blueprint: %w", err)
@@ -370,6 +378,36 @@ func (e *Engine) SaveSnapshot(ctx context.Context, runID, stepKey string, params
 	if err != nil {
 		return fmt.Errorf("save snapshot: %w", err)
 	}
+	return nil
+}
+
+// InitRunSteps creates the standard initial workflow steps for a new run and syncs
+// their status with the current blueprint state of the project.
+func (e *Engine) InitRunSteps(ctx context.Context, runID, projectID string) error {
+	// Always create the blueprint step as the first tracked step.
+	stepID, err := e.CreateStep(ctx, runID, "blueprint", "strict", 1)
+	if err != nil {
+		return fmt.Errorf("create blueprint step: %w", err)
+	}
+
+	// Sync the blueprint step with whatever state the blueprint is already in.
+	var bpID, bpStatus string
+	if qErr := e.db.QueryRow(ctx,
+		`SELECT id, status FROM book_blueprints
+		 WHERE project_id = $1
+		 ORDER BY created_at DESC LIMIT 1`, projectID).Scan(&bpID, &bpStatus); qErr == nil {
+		switch bpStatus {
+		case "approved":
+			// Blueprint already fully approved: mark step generated then approve it.
+			_ = e.MarkStepGenerated(ctx, stepID, bpID)
+			_ = e.TransitStep(ctx, stepID, "approved", 0)
+		case "pending_review", "generated":
+			// Blueprint exists but awaiting review: mark as generated.
+			_ = e.MarkStepGenerated(ctx, stepID, bpID)
+		}
+		// "draft" or other states: step stays in 'pending'.
+	}
+
 	return nil
 }
 

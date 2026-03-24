@@ -835,8 +835,12 @@ func (s *BlueprintService) Approve(ctx context.Context, id, comment string) erro
 	if err := s.db.QueryRow(ctx,
 		`SELECT ws.id, ws.version FROM workflow_steps ws
 		 JOIN workflow_runs wr ON ws.run_id = wr.id
-		 WHERE wr.project_id = $1 AND ws.step_key = 'blueprint' AND ws.status = 'generated'
+		 WHERE wr.project_id = $1 AND ws.step_key = 'blueprint' AND ws.status IN ('pending', 'generated')
+		 ORDER BY wr.created_at DESC
 		 LIMIT 1`, projectID).Scan(&stepID, &stepVersion); err == nil {
+		// Ensure the step is in 'generated' state before transitioning to 'approved'.
+		// MarkStepGenerated is idempotent if already generated.
+		_ = s.wf.MarkStepGenerated(ctx, stepID, id)
 		s.wf.TransitStep(ctx, stepID, "approved", stepVersion)
 	}
 

@@ -7,13 +7,20 @@ import (
 	"github.com/google/uuid"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/workflow"
+	"go.uber.org/zap"
 )
 
 func (h *Handler) StartWorkflow(c *gin.Context) {
-	runID, err := h.workflow.CreateRun(c.Request.Context(), c.Param("id"), true)
+	projectID := c.Param("id")
+	runID, err := h.workflow.CreateRun(c.Request.Context(), projectID, true)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
+	}
+	// Create initial workflow steps and sync with current blueprint state.
+	if initErr := h.workflow.InitRunSteps(c.Request.Context(), runID, projectID); initErr != nil {
+		h.logger.Warn("StartWorkflow: failed to init run steps",
+			zap.String("run_id", runID), zap.Error(initErr))
 	}
 	c.JSON(201, gin.H{"data": gin.H{"run_id": runID}})
 }

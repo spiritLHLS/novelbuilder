@@ -20,8 +20,8 @@
         </el-col>
         <el-col :span="4">
           <div class="stat-label">阶段</div>
-          <el-tag :type="phaseType(currentRun.current_phase)" size="large">
-            {{ phaseLabel(currentRun.current_phase) }}
+          <el-tag :type="phaseType(currentRun.current_step)" size="large">
+            {{ phaseLabel(currentRun.current_step) }}
           </el-tag>
         </el-col>
         <el-col :span="4">
@@ -29,8 +29,10 @@
           <div class="stat-value">{{ currentRun.steps?.length || 0 }}</div>
         </el-col>
         <el-col :span="4">
-          <div class="stat-label">快照数</div>
-          <div class="stat-value">{{ currentRun.snapshots?.length || 0 }}</div>
+          <div class="stat-label">审核模式</div>
+          <el-tag :type="currentRun.strict_review ? 'danger' : 'success'" size="small">
+            {{ currentRun.strict_review ? '严格审核' : '自动审核' }}
+          </el-tag>
         </el-col>
         <el-col :span="8">
           <div class="stat-label">启动时间</div>
@@ -55,31 +57,20 @@
               >
                 <el-card shadow="never" class="step-card" :class="step.status">
                   <div class="step-header">
-                    <span class="step-name">{{ step.step_name }}</span>
+                    <span class="step-name">{{ stepKeyLabel(step.step_key) }}</span>
                     <el-tag :type="stepType(step.status)" size="small">{{ stepLabel(step.status) }}</el-tag>
                   </div>
-                  <p v-if="step.description" class="step-desc">{{ step.description }}</p>
+                  <p v-if="step.review_comment" class="step-desc">{{ step.review_comment }}</p>
 
-                  <!-- Step Actions -->
-                  <div class="step-actions" v-if="step.status === 'pending_review'">
-                    <el-button size="small" type="success" @click="approveStep(step)">批准</el-button>
-                    <el-button size="small" type="danger" @click="rejectStep(step)">驳回</el-button>
-                  </div>
-
-                  <!-- Review Results -->
-                  <div v-if="step.reviews?.length" class="step-reviews">
-                    <div v-for="r in step.reviews" :key="r.id" class="review-row">
-                      <el-tag :type="r.decision === 'approved' ? 'success' : 'danger'" size="small">
-                        {{ r.role_name }}: {{ r.decision === 'approved' ? '通过' : '驳回' }}
-                      </el-tag>
-                      <span v-if="r.score" class="review-score">{{ r.score }}分</span>
-                    </div>
+                  <!-- Step Actions: navigate to the appropriate review page -->
+                  <div class="step-actions" v-if="step.status === 'pending_review' || step.status === 'generated'">
+                    <el-button size="small" type="primary" @click="goReview(step)">前往审核</el-button>
                   </div>
                 </el-card>
               </el-timeline-item>
             </el-timeline>
           </div>
-          <el-empty v-else description="暂无步骤" />
+          <el-empty v-else description="暂无步骤，请先启动工作流" />
         </el-card>
       </el-col>
 
@@ -120,23 +111,6 @@
           </div>
         </el-card>
 
-        <!-- Snapshots -->
-        <el-card shadow="hover" style="margin-top: 16px;">
-          <template #header><span>快照记录</span></template>
-          <el-table :data="snapshots" size="small">
-            <el-table-column prop="label" label="标签" />
-            <el-table-column label="时间" width="160">
-              <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="80">
-              <template #default="{ row }">
-                <el-button text size="small" type="primary" @click="rollbackTo(row.id)">恢复</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-empty v-if="!snapshots.length" description="暂无快照" :image-size="40" />
-        </el-card>
-
         <!-- Run History -->
         <el-card shadow="hover" style="margin-top: 16px;">
           <template #header><span>历史运行</span></template>
@@ -144,7 +118,10 @@
             <el-table-column label="ID" width="100">
               <template #default="{ row }">{{ row.id?.substring(0, 8) }}</template>
             </el-table-column>
-            <el-table-column prop="current_phase" label="阶段" />
+            <el-table-column label="阶段">
+              <template #default="{ row }">{{ phaseLabel(row.current_step) }}</template>
+            </el-table-column>
+            <el-table-column prop="status" label="状态" width="80" />
             <el-table-column label="时间" width="160">
               <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
             </el-table-column>
@@ -162,7 +139,7 @@
       <el-form label-position="top">
         <el-form-item label="回滚到步骤">
           <el-select v-model="rollbackTargetStep" style="width: 100%;">
-            <el-option v-for="s in steps" :key="s.id" :label="s.step_name" :value="s.id" />
+            <el-option v-for="s in steps" :key="s.id" :label="stepKeyLabel(s.step_key)" :value="s.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="回滚原因">
@@ -189,7 +166,6 @@ const projectId = route.params.projectId as string
 
 const currentRun = ref<any>(null)
 const steps = ref<any[]>([])
-const snapshots = ref<any[]>([])
 const history = ref<any[]>([])
 const starting = ref(false)
 
@@ -198,36 +174,63 @@ const rollbackTargetStep = ref('')
 const rollbackReason = ref('')
 const rollingBack = ref(false)
 
-function phaseType(phase: string) {
+function phaseType(step: string) {
   const m: Record<string, string> = {
-    blueprint: 'primary', generation: '', review: 'warning', completed: 'success',
+    blueprint: 'primary', chapter_generate: '', review: 'warning', completed: 'success',
   }
-  return (m[phase] || 'info') as any
+  return (m[step] || 'info') as any
 }
 
-function phaseLabel(phase: string) {
+function phaseLabel(step: string) {
   const m: Record<string, string> = {
-    blueprint: '蓝图阶段', generation: '生成阶段', review: '审核阶段', completed: '已完成',
+    blueprint: '蓝图阶段', chapter_generate: '生成阶段', review: '审核阶段', completed: '已完成',
   }
-  return m[phase] || phase
+  return m[step] || step || '-'
+}
+
+function stepKeyLabel(key: string) {
+  const m: Record<string, string> = {
+    blueprint: '整书蓝图',
+    chapter_generate: '章节生成',
+    review: '审核阶段',
+  }
+  if (m[key]) return m[key]
+  // Handle chapter_N patterns
+  const match = key?.match(/^chapter[_-]?(\d+)$/)
+  if (match) return `第 ${match[1]} 章`
+  return key || '-'
 }
 
 function stepType(status: string) {
   const m: Record<string, string> = {
     pending: 'info', generated: '', pending_review: 'warning', approved: 'success', rejected: 'danger',
+    needs_recheck: 'warning', rolled_back: 'info',
   }
   return (m[status] || 'info') as any
 }
 
 function stepLabel(status: string) {
   const m: Record<string, string> = {
-    pending: '等待中', generated: '已完成', pending_review: '待审核', approved: '已通过', rejected: '已驳回',
+    pending: '等待中', generated: '已生成', pending_review: '待审核',
+    approved: '已通过', rejected: '已驳回', needs_recheck: '需重检', rolled_back: '已回滚',
   }
   return m[status] || status
 }
 
 function formatDate(d: string) {
   return d ? new Date(d).toLocaleString('zh-CN') : '-'
+}
+
+// Navigate to the appropriate page to perform the review action for this step.
+function goReview(step: any) {
+  if (step.step_key === 'blueprint') {
+    router.push({ name: 'blueprint', params: { projectId } })
+  } else if (step.output_ref) {
+    // For chapter steps, output_ref holds the chapter ID.
+    router.push({ name: 'chapter-detail', params: { projectId, chapterId: step.output_ref } })
+  } else {
+    router.push({ name: 'chapters', params: { projectId } })
+  }
 }
 
 onMounted(fetchWorkflow)
@@ -239,8 +242,11 @@ async function fetchWorkflow() {
     if (runs.length) {
       currentRun.value = runs[0]
       steps.value = currentRun.value.steps || []
-      snapshots.value = []
       history.value = runs
+    } else {
+      currentRun.value = null
+      steps.value = []
+      history.value = []
     }
   } catch { /* empty */ }
 }
@@ -248,10 +254,7 @@ async function fetchWorkflow() {
 async function startWorkflow() {
   starting.value = true
   try {
-    const res = await workflowApi.start(projectId)
-    currentRun.value = res.data.data
-    steps.value = []
-    snapshots.value = []
+    await workflowApi.start(projectId)
     ElMessage.success('工作流已启动')
     await fetchWorkflow()
   } catch {
@@ -259,21 +262,6 @@ async function startWorkflow() {
   } finally {
     starting.value = false
   }
-}
-
-async function approveStep(step: any) {
-  try {
-    step.status = 'approved'
-    ElMessage.success('步骤已通过')
-  } catch { ElMessage.error('操作失败') }
-}
-
-async function rejectStep(step: any) {
-  const { value: reason } = await ElMessageBox.prompt('驳回原因', '驳回', { type: 'warning' })
-  try {
-    step.status = 'rejected'
-    ElMessage.success('步骤已驳回')
-  } catch { ElMessage.error('操作失败') }
 }
 
 function showRollback() {
@@ -304,20 +292,6 @@ async function executeRollback() {
     rollingBack.value = false
   }
 }
-
-async function rollbackTo(snapshotId: string) {
-  await ElMessageBox.confirm('确认恢复到此快照？', '恢复快照', { type: 'warning' })
-  try {
-    await workflowApi.rollback(projectId, {
-      run_id: currentRun.value.id,
-      snapshot_id: snapshotId,
-    })
-    ElMessage.success('已恢复')
-    await fetchWorkflow()
-  } catch {
-    ElMessage.error('恢复失败')
-  }
-}
 </script>
 
 <style scoped>
@@ -332,13 +306,11 @@ async function rollbackTo(snapshotId: string) {
 .step-card.approved { border-left: 3px solid #67c23a; }
 .step-card.rejected { border-left: 3px solid #f56c6c; }
 .step-card.pending_review { border-left: 3px solid #e6a23c; }
+.step-card.generated { border-left: 3px solid #409eff; }
 .step-header { display: flex; justify-content: space-between; align-items: center; }
 .step-name { color: var(--nb-text-primary); font-weight: 500; }
 .step-desc { color: var(--nb-text-secondary); font-size: 13px; margin-top: 8px; }
 .step-actions { margin-top: 12px; }
-.step-reviews { margin-top: 8px; }
-.review-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.review-score { color: #e6a23c; font-size: 12px; }
 .rule-list { }
 .rule-item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--nb-divider); color: var(--nb-text-secondary); font-size: 13px; }
 </style>
