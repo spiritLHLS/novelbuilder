@@ -205,10 +205,17 @@ func (r *RAGService) DeleteBySourceID(ctx context.Context, projectID, sourceID s
 	return nil
 }
 
-// DeleteForProject is a no-op here; Qdrant collections are project-prefixed.
+// DeleteForProject removes all vector data across every Qdrant collection for
+// the given project. Called before a full rebuild so stale vectors don't linger.
 func (r *RAGService) DeleteForProject(ctx context.Context, projectID string) error {
-	r.logger.Info("DeleteForProject: use /vector/rebuild to replace collection",
-		zap.String("project_id", projectID))
+	body := map[string]interface{}{
+		"project_id": projectID,
+	}
+	_, err := r.sidecarPost(ctx, "/vector/delete-project", body)
+	if err != nil {
+		r.logger.Warn("Qdrant delete_for_project failed",
+			zap.String("project_id", projectID), zap.Error(err))
+	}
 	return nil
 }
 

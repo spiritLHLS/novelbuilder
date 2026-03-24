@@ -33,7 +33,7 @@ from qdrant_client.models import (
 logger = logging.getLogger(__name__)
 
 VECTOR_DIM = 768
-COLLECTIONS = ["chapter_summaries", "style_samples", "character_voices", "world_knowledge"]
+COLLECTIONS = ["chapter_summaries", "style_samples", "character_voices", "world_knowledge", "sensory_samples"]
 
 # Sentinel — distinguishes "not yet tried" (None) from "permanently failed" (_FAILED)
 _FAILED = object()
@@ -169,18 +169,19 @@ class QdrantStore:
         return f"{safe}__{collection}"
 
     async def ensure_collection(self, project_id: str, collection: str) -> None:
-        """Create collection if it doesn't exist."""
+        """Create collection if it doesn't exist (idempotent, race-safe)."""
         name = self._collection_name(project_id, collection)
         try:
-            existing = await self._client.get_collections()
-            existing_names = {c.name for c in existing.collections}
-            if name not in existing_names:
-                await self._client.create_collection(
-                    collection_name=name,
-                    vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
-                )
-                logger.info("Created Qdrant collection: %s", name)
+            await self._client.create_collection(
+                collection_name=name,
+                vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+            )
+            logger.info("Created Qdrant collection: %s", name)
         except Exception as exc:
+            # 409 Conflict means the collection already exists (pre-existing or
+            # concurrent creation by another coroutine) — this is not an error.
+            if getattr(exc, "status_code", None) == 409:
+                return
             logger.warning("ensure_collection failed for %s: %s", name, repr(exc), exc_info=True)
 
     async def upsert(
@@ -294,7 +295,15 @@ class QdrantStore:
                 ),
             )
         except Exception as exc:
+            # 404 = collection doesn't exist yet, nothing to delete
+            if getattr(exc, "status_code", None) == 404:
+                return
             logger.warning("Qdrant delete failed: %s", repr(exc), exc_info=True)
+
+    async def delete_all_project_vectors(self, project_id: str) -> None:
+        """Delete all vectors across every collection for a project."""
+        for col in COLLECTIONS:
+            await self.delete_project_collection(project_id, col)
 
     async def delete_by_source_id(self, project_id: str, source_id: str) -> None:
         """Delete all points with a specific source_id across all collections."""
@@ -308,6 +317,9 @@ class QdrantStore:
                     ),
                 )
             except Exception as exc:
+                # 404 = collection doesn't exist yet, nothing to delete — not an error
+                if getattr(exc, "status_code", None) == 404:
+                    continue
                 logger.warning("Qdrant delete_by_source_id failed for %s: %s", col_name, repr(exc), exc_info=True)
 
     async def get_collection_stats(self, project_id: str) -> list[dict]:

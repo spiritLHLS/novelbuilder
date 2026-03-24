@@ -170,6 +170,9 @@ class VectorDeleteBySourceRequest(BaseModel):
     project_id: str
     source_id: str
 
+class VectorDeleteProjectRequest(BaseModel):
+    project_id: str
+
 # ── New feature request models ────────────────────────────────────────────────
 
 class AuditChapterRequest(BaseModel):
@@ -782,6 +785,14 @@ async def vector_status(project_id: str):
 async def vector_delete_by_source(req: VectorDeleteBySourceRequest):
     store = get_qdrant()
     await store.delete_by_source_id(req.project_id, req.source_id)
+    return {"ok": True}
+
+
+@app.post("/vector/delete-project")
+async def vector_delete_project(req: VectorDeleteProjectRequest):
+    """Delete all vector data across every collection for a project (used before full rebuild)."""
+    store = get_qdrant()
+    await store.delete_all_project_vectors(req.project_id)
     return {"ok": True}
 
 
