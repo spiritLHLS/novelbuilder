@@ -161,3 +161,41 @@ func (h *Handler) ExecutePatchItem(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"ok": true})
 }
+
+// ApproveWorkflowStep approves a workflow step by transitioning its status.
+func (h *Handler) ApproveWorkflowStep(c *gin.Context) {
+	stepID := c.Param("id")
+	if _, err := uuid.Parse(stepID); err != nil {
+		c.JSON(400, gin.H{"error": "invalid step id"})
+		return
+	}
+	var req struct {
+		Comment string `json:"comment"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	if err := h.workflow.TransitStep(c.Request.Context(), stepID, "approved", 0); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "message": "步骤已通过"})
+}
+
+// RejectWorkflowStep rejects a workflow step by transitioning its status.
+func (h *Handler) RejectWorkflowStep(c *gin.Context) {
+	stepID := c.Param("id")
+	if _, err := uuid.Parse(stepID); err != nil {
+		c.JSON(400, gin.H{"error": "invalid step id"})
+		return
+	}
+	var req struct {
+		Comment string `json:"comment"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	if err := h.workflow.TransitStep(c.Request.Context(), stepID, "rejected", 0); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "message": "步骤已驳回"})
+}

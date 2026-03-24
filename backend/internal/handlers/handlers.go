@@ -193,6 +193,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 	api.POST("/projects/:id/workflow/start", h.StartWorkflow)
 	api.GET("/workflows/:id/history", h.GetWorkflowHistory)
 	api.POST("/workflows/:id/rollback", h.WorkflowRollback)
+	api.POST("/workflow-steps/:id/approve", h.ApproveWorkflowStep)
+	api.POST("/workflow-steps/:id/reject", h.RejectWorkflowStep)
 
 	api.GET("/projects/:id/references", h.ListReferences)
 	api.POST("/projects/:id/references/upload", h.UploadReference)

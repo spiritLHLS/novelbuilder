@@ -155,7 +155,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { workflowApi } from '@/api'
@@ -173,6 +173,8 @@ const showRollbackDialog = ref(false)
 const rollbackTargetStep = ref('')
 const rollbackReason = ref('')
 const rollingBack = ref(false)
+
+let pollTimer: NodeJS.Timeout | null = null
 
 function phaseType(step: string) {
   const m: Record<string, string> = {
@@ -233,7 +235,18 @@ function goReview(step: any) {
   }
 }
 
-onMounted(fetchWorkflow)
+onMounted(() => {
+  fetchWorkflow()
+  // Auto-refresh every 5 seconds to show real-time workflow progress
+  pollTimer = setInterval(fetchWorkflow, 5000)
+})
+
+onUnmounted(() => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
 
 async function fetchWorkflow() {
   try {

@@ -134,10 +134,14 @@ export const qualityApi = {
 // Workflow
 export const workflowApi = {
   start: (projectId: string) => api.post(`/projects/${projectId}/workflow/start`),
-  getHistory: (runId: string) => api.get(`/workflows/${runId}/history`),
+  getHistory: (projectId: string) => api.get(`/workflows/${projectId}/history`),
   rollback: (runId: string, data: any) => api.post(`/workflows/${runId}/rollback`, data),
   getDiff: (runId: string, fromStep: string, toStep: string) =>
     api.get(`/workflows/${runId}/diff`, { params: { fromStep, toStep } }),
+  approveStep: (stepId: string, comment?: string) => 
+    api.post(`/workflow-steps/${stepId}/approve`, { comment }),
+  rejectStep: (stepId: string, comment?: string) => 
+    api.post(`/workflow-steps/${stepId}/reject`, { comment }),
 }
 
 // Export
