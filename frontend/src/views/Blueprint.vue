@@ -214,6 +214,29 @@
         </el-table>
       </el-card>
 
+      <!-- Chapter Outlines -->
+      <el-card v-if="chapterOutlines.length > 0" shadow="hover" style="margin-top: 20px;">
+        <template #header>
+          <span>章节大纲</span>
+          <el-tag size="small" type="info" style="margin-left: 8px;">{{ chapterOutlines.length }} 章</el-tag>
+        </template>
+        <el-collapse accordion>
+          <el-collapse-item v-for="outline in chapterOutlines" :key="outline.id" :name="outline.id">
+            <template #title>
+              <span style="font-weight: 500; margin-right: 8px;">第{{ outline.order_num }}章</span>
+              <span style="color: #606266;">{{ outline.title }}</span>
+            </template>
+            <div v-if="outline.content && outline.content.events" class="chapter-events">
+              <div v-for="(event, idx) in outline.content.events" :key="idx" class="event-item">
+                <el-icon style="color: #409eff; margin-right: 4px;"><Finished /></el-icon>
+                {{ event }}
+              </div>
+            </div>
+            <el-empty v-else description="暂无事件" :image-size="60" style="padding: 20px 0;" />
+          </el-collapse-item>
+        </el-collapse>
+      </el-card>
+
       <!-- Blueprint Raw Content -->
       <el-card shadow="hover" style="margin-top: 20px;">
         <template #header><span>蓝图详情</span></template>
@@ -257,7 +280,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, type FormInstance, type UploadFile } from 'element-plus'
 import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, projectApi } from '@/api'
-import { Download, Upload, UploadFilled } from '@element-plus/icons-vue'
+import { Download, Upload, UploadFilled, Finished } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const projectId = route.params.projectId as string
@@ -272,6 +295,14 @@ const worldBibleCount = ref(0)
 const characterCount = ref(0)
 const outlineCount = ref(0)
 const foreshadowingCount = ref(0)
+
+// Outline data
+const outlines = ref<any[]>([])
+const chapterOutlines = computed(() => {
+  return outlines.value
+    .filter(o => o.level === 'chapter')
+    .sort((a, b) => a.order_num - b.order_num)
+})
 
 // Import/Export state
 const showImportDialog = ref(false)
@@ -559,7 +590,8 @@ async function fetchAll() {
       ? Object.keys(wbContent).filter(k => wbContent[k] != null && wbContent[k] !== '').length
       : (wbContent ? 1 : 0)
     characterCount.value = (charRes.data.data || []).length
-    outlineCount.value = (olRes.data.data || []).length
+    outlines.value = (olRes.data.data || [])
+    outlineCount.value = outlines.value.length
     foreshadowingCount.value = (fsRes.data.data || []).length
   } catch { /* empty */ }
 }
@@ -665,4 +697,8 @@ async function rejectVolume(id: string) {
 .bp-timeline-item { display: flex; gap: 12px; padding-left: 12px; border-left: 2px solid #409eff; }
 .bp-timeline-point { flex-shrink: 0; min-width: 80px; font-weight: 600; color: #e6a23c; font-size: 13px; }
 .bp-timeline-event { color: var(--nb-text-primary); font-size: 13px; line-height: 1.6; }
+
+.chapter-events { display: flex; flex-direction: column; gap: 12px; }
+.event-item { display: flex; align-items: flex-start; padding: 10px 12px; background: var(--nb-card-bg, #1a1a1a); border-radius: 4px; border-left: 3px solid #409eff; }
+.event-item:hover { background: var(--nb-hover-bg, #2a2a2a); }
 </style>
