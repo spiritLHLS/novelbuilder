@@ -237,7 +237,12 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
    - 禁止预告句式：【他知道XXX】【未来XXX】【更大的XXX即将到来】
    - 最后一段不超过2句话，必须是未完成的动作/对话/悬念
    - 参考网文断章：在读者最想知道下文时立即断开
-6. 遵守系统提示中的全部反AI文风规则（禁用微微/缓缓/淡淡等）`,
+6. 遵守系统提示中的全部反AI文风规则（禁用微微/缓缓/淡淡等）
+7. **角色能力严格遵循时间线**：
+   - 角色只能使用系统提示【角色状态】中已明确记载的能力/装备/身份
+   - 禁止给角色突然出现未记录的新能力、新武器、新师承、新身份
+   - 如本章大纲要求角色获得某项资源，必须写完整获得过程（至少200字场景）
+   - 一章最多1次实力提升，禁止连续突破或批量获得资源`,
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
@@ -665,7 +670,12 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
    - 禁止预告句式：【他知道XXX】【未来XXX】【更大的XXX即将到来】
    - 最后一段不超过2句话，必须是未完成的动作/对话/悬念
    - 参考网文断章：在读者最想知道下文时立即断开
-6. 遵守系统提示中的全部反AI文风规则（禁用微微/缓缓/淡淡等）`,
+6. 遵守系统提示中的全部反AI文风规则（禁用微微/缓缓/淡淡等）
+7. **角色能力严格遵循时间线**：
+   - 角色只能使用系统提示【角色状态】中已明确记载的能力/装备/身份
+   - 禁止给角色突然出现未记录的新能力、新武器、新师承、新身份
+   - 如本章大纲要求角色获得某项资源，必须写完整获得过程（至少200字场景）
+   - 一章最多1次实力提升，禁止连续突破或批量获得资源`,
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
