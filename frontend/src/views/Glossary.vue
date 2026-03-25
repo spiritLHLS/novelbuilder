@@ -48,7 +48,7 @@
       <el-pagination
         v-model:current-page="currentPage"
         :page-size="pageSize"
-        :page-sizes="[20, 50, 100, 200]"
+        :page-sizes="[10, 20, 50, 100]"
         :total="filteredTerms.length"
         layout="total, sizes, prev, pager, next"
         @size-change="(s: number) => { pageSize = s; currentPage = 1 }"
@@ -119,7 +119,7 @@ const dialogVisible = ref(false)
 const submitting = ref(false)
 const formRef = ref<FormInstance>()
 const currentPage = ref(1)
-const pageSize = ref(50)
+const pageSize = ref(10)
 
 const form = ref({ term: '', definition: '', category: 'concept' })
 const rules: FormRules = {

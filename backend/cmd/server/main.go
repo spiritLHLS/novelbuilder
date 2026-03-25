@@ -248,9 +248,19 @@ func main() {
 		var payload struct {
 			Generate    models.GenerateChapterRequest `json:"generate"`
 			AuditRevise models.AuditReviseRequest     `json:"audit_revise"`
+			ContextHint string                        `json:"context_hint"`
+			// Batch context: if part of count-based batch, auto-enqueue next after completion
+			BatchCount     int      `json:"batch_count"`
+			BatchRemaining int      `json:"batch_remaining"`
+			BatchHints     []string `json:"batch_hints"`
 		}
 		if len(task.Payload) > 0 {
 			_ = json.Unmarshal(task.Payload, &payload)
+		}
+
+		// Apply context hint if provided
+		if payload.ContextHint != "" {
+			payload.Generate.ContextHint = payload.ContextHint
 		}
 
 		// Resolve writer-agent routing config for the auto-write task.
@@ -280,6 +290,33 @@ func main() {
 				logger.Warn("auto-approve failed", zap.String("chapter_id", ch.ID), zap.Error(autoErr))
 			}
 		}
+
+		// Chain generation: if part of batch and has remaining count, enqueue next
+		if payload.BatchCount > 0 && payload.BatchRemaining > 0 {
+			nextHint := ""
+			completedCount := payload.BatchCount - payload.BatchRemaining
+			if completedCount < len(payload.BatchHints) {
+				nextHint = payload.BatchHints[completedCount]
+			}
+			nextPayload, _ := json.Marshal(map[string]any{
+				"context_hint":    nextHint,
+				"batch_count":     payload.BatchCount,
+				"batch_remaining": payload.BatchRemaining - 1,
+				"batch_hints":     payload.BatchHints,
+			})
+			if _, enqErr := taskQueueService.Enqueue(ctx, models.CreateTaskRequest{
+				ProjectID: projectID,
+				TaskType:  "generate_next_chapter",
+				Payload:   nextPayload,
+				Priority:  5,
+			}); enqErr != nil {
+				logger.Warn("generate_next_chapter: failed to enqueue next in batch",
+					zap.String("project_id", projectID),
+					zap.Int("remaining", payload.BatchRemaining-1),
+					zap.Error(enqErr))
+			}
+		}
+
 		return nil
 	})
 
@@ -295,6 +332,11 @@ func main() {
 			ChapterWordsMin int    `json:"chapter_words_min"`
 			ChapterWordsMax int    `json:"chapter_words_max"`
 			ContextHint     string `json:"context_hint"`
+			// Batch context: if part of a batch, auto-enqueue next chapter after completion
+			BatchVolumeID     *string  `json:"batch_volume_id"`
+			BatchStartChapter int      `json:"batch_start_chapter"`
+			BatchEndChapter   int      `json:"batch_end_chapter"`
+			BatchHints        []string `json:"batch_hints"`
 		}
 		if len(task.Payload) > 0 {
 			_ = json.Unmarshal(task.Payload, &payload)
@@ -326,6 +368,36 @@ func main() {
 					zap.String("chapter_id", ch.ID), zap.Error(autoErr))
 			}
 		}
+
+		// Chain generation: if part of batch and not yet reached end, enqueue next chapter
+		if payload.BatchVolumeID != nil && payload.ChapterNum < payload.BatchEndChapter {
+			nextChapterNum := payload.ChapterNum + 1
+			nextHint := ""
+			hintIndex := nextChapterNum - payload.BatchStartChapter
+			if hintIndex >= 0 && hintIndex < len(payload.BatchHints) {
+				nextHint = payload.BatchHints[hintIndex]
+			}
+			nextPayload, _ := json.Marshal(map[string]any{
+				"chapter_num":         nextChapterNum,
+				"context_hint":        nextHint,
+				"batch_volume_id":     *payload.BatchVolumeID,
+				"batch_start_chapter": payload.BatchStartChapter,
+				"batch_end_chapter":   payload.BatchEndChapter,
+				"batch_hints":         payload.BatchHints,
+			})
+			if _, enqErr := taskQueueService.Enqueue(ctx, models.CreateTaskRequest{
+				ProjectID: projectID,
+				TaskType:  "chapter_generate",
+				Payload:   nextPayload,
+				Priority:  5,
+			}); enqErr != nil {
+				logger.Warn("chapter_generate: failed to enqueue next chapter in batch",
+					zap.String("project_id", projectID),
+					zap.Int("next_chapter", nextChapterNum),
+					zap.Error(enqErr))
+			}
+		}
+
 		return nil
 	})
 

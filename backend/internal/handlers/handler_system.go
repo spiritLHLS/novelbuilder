@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/models"
+	"github.com/novelbuilder/backend/internal/services"
 	"go.uber.org/zap"
 )
 
@@ -572,12 +573,47 @@ func (h *Handler) DeleteGlossaryTerm(c *gin.Context) {
 // ── Task Queue ────────────────────────────────────────────────────────────────
 
 func (h *Handler) ListTasks(c *gin.Context) {
-	tasks, err := h.taskQueue.List(c.Request.Context(), c.Param("id"))
+	projectID := c.Param("id")
+
+	// Parse query params
+	page := 1
+	if p := c.Query("page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+
+	pageSize := 10
+	if ps := c.Query("page_size"); ps != "" {
+		if parsed, err := strconv.Atoi(ps); err == nil && parsed > 0 && parsed <= 100 {
+			pageSize = parsed
+		}
+	}
+
+	params := services.TaskListParams{
+		ProjectID: projectID,
+		Status:    c.Query("status"),
+		TaskType:  c.Query("type"),
+		Page:      page,
+		PageSize:  pageSize,
+	}
+
+	tasks, total, err := h.taskQueue.List(c.Request.Context(), params)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"data": tasks})
+
+	totalPages := (total + pageSize - 1) / pageSize
+	c.JSON(200, gin.H{
+		"data": tasks,
+		"pagination": gin.H{
+			"page":        page,
+			"page_size":   pageSize,
+			"total":       total,
+			"total_pages": totalPages,
+		},
+	})
 }
 
 func (h *Handler) EnqueueTask(c *gin.Context) {

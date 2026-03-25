@@ -11,7 +11,7 @@
 
     <!-- Filter bar -->
     <div class="toolbar">
-      <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 160px" @change="loadTasks">
+      <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 160px" @change="() => { page = 1; loadTasks() }">
         <el-option label="全部" value="" />
         <el-option label="待执行" value="pending" />
         <el-option label="执行中" value="running" />
@@ -19,7 +19,7 @@
         <el-option label="失败" value="failed" />
         <el-option label="已取消" value="cancelled" />
       </el-select>
-      <el-select v-model="filterType" placeholder="全部类型" clearable style="width: 200px" @change="loadTasks">
+      <el-select v-model="filterType" placeholder="全部类型" clearable style="width: 200px" @change="() => { page = 1; loadTasks() }">
         <el-option label="全部" value="" />
         <el-option label="章节生成" value="chapter_generate" />
         <el-option label="章节重写" value="chapter_regenerate" />
@@ -81,6 +81,19 @@
     <div v-if="!loading && tasks.length === 0" class="empty-state">
       <el-empty description="暂无任务记录" />
     </div>
+
+    <!-- Pagination -->
+    <div v-if="total > pageSize" class="pagination-bar">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :page-sizes="[10, 20, 50, 100]"
+        :total="total"
+        layout="total, sizes, prev, pager, next, jumper"
+        @size-change="loadTasks"
+        @current-change="loadTasks"
+      />
+    </div>
   </div>
 </template>
 
@@ -114,6 +127,9 @@ const loading = ref(false)
 const filterStatus = ref('')
 const filterType = ref('')
 const autoRefresh = ref(false)
+const page = ref(1)
+const pageSize = ref(10)
+const total = ref(0)
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 const statusLabel = (s: string) => {
@@ -146,12 +162,15 @@ function formatTime(iso: string) {
 async function loadTasks() {
   loading.value = true
   try {
-    const res = await taskApi.list(projectId.value)
+    const res = await taskApi.list(projectId.value, {
+      page: page.value,
+      page_size: pageSize.value,
+      status: filterStatus.value || undefined,
+      type: filterType.value || undefined,
+    })
     const list = Array.isArray(res.data?.data) ? res.data.data : []
     tasks.value = list
-      .filter((task: Task) => !filterStatus.value || task.status === filterStatus.value)
-      .filter((task: Task) => !filterType.value || task.task_type === filterType.value)
-      .sort((a: Task, b: Task) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    total.value = res.data?.pagination?.total ?? 0
   } catch {
     ElMessage.error('加载任务列表失败')
   } finally {
@@ -248,6 +267,12 @@ onUnmounted(() => {
 .empty-state {
   margin-top: 40px;
   text-align: center;
+}
+
+.pagination-bar {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
 }
 
 code {

@@ -459,7 +459,8 @@ export const glossaryApi = {
 
 // Task Queue
 export const taskApi = {
-  list: (projectId: string) => api.get(`/projects/${projectId}/tasks`),
+  list: (projectId: string, params?: { page?: number; page_size?: number; status?: string; type?: string }) => 
+    api.get(`/projects/${projectId}/tasks`, { params }),
   get: (id: string) => api.get(`/tasks/${id}`),
   enqueue: (data: any) => api.post('/tasks', data),
   cancel: (id: string) => api.post(`/tasks/${id}/cancel`),

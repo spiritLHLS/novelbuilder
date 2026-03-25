@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -319,14 +320,61 @@ func (s *TaskQueueService) Get(ctx context.Context, id string) (*models.TaskQueu
 	return &t, nil
 }
 
-func (s *TaskQueueService) List(ctx context.Context, projectID string) ([]models.TaskQueueItem, error) {
-	rows, err := s.db.Query(ctx,
+// ListParams contains pagination and filter params for List operation.
+type TaskListParams struct {
+	ProjectID string
+	Status    string // filter by status (optional)
+	TaskType  string // filter by task_type (optional)
+	Page      int    // 1-based page number
+	PageSize  int    // items per page
+}
+
+func (s *TaskQueueService) List(ctx context.Context, params TaskListParams) ([]models.TaskQueueItem, int, error) {
+	if params.Page < 1 {
+		params.Page = 1
+	}
+	if params.PageSize < 1 || params.PageSize > 100 {
+		params.PageSize = 10
+	}
+	offset := (params.Page - 1) * params.PageSize
+
+	// Build WHERE clause
+	whereClauses := []string{"project_id = $1"}
+	args := []interface{}{params.ProjectID}
+	argIdx := 2
+
+	if params.Status != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("status = $%d", argIdx))
+		args = append(args, params.Status)
+		argIdx++
+	}
+	if params.TaskType != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("task_type = $%d", argIdx))
+		args = append(args, params.TaskType)
+		argIdx++
+	}
+
+	whereClause := strings.Join(whereClauses, " AND ")
+
+	// Get total count
+	var total int
+	err := s.db.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM task_queue WHERE %s", whereClause), args...).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count tasks: %w", err)
+	}
+
+	// Get paginated results
+	args = append(args, params.PageSize, offset)
+	query := fmt.Sprintf(
 		`SELECT id, project_id, task_type, payload, status, priority, attempts, max_attempts,
 		        error_message, scheduled_at, started_at, completed_at, created_at, updated_at
-		 FROM task_queue WHERE project_id = $1
-		 ORDER BY created_at DESC LIMIT 200`, projectID)
+		 FROM task_queue WHERE %s
+		 ORDER BY created_at DESC LIMIT $%d OFFSET $%d`,
+		whereClause, argIdx, argIdx+1)
+
+	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list tasks: %w", err)
+		return nil, 0, fmt.Errorf("list tasks: %w", err)
 	}
 	defer rows.Close()
 
@@ -336,9 +384,9 @@ func (s *TaskQueueService) List(ctx context.Context, projectID string) ([]models
 		if err := rows.Scan(&t.ID, &t.ProjectID, &t.TaskType, &t.Payload, &t.Status, &t.Priority,
 			&t.Attempts, &t.MaxAttempts, &t.ErrorMessage, &t.ScheduledAt,
 			&t.StartedAt, &t.CompletedAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		tasks = append(tasks, t)
 	}
-	return tasks, rows.Err()
+	return tasks, total, rows.Err()
 }

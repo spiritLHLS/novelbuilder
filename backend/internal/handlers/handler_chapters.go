@@ -310,30 +310,28 @@ func (h *Handler) BatchGenerateChapters(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "volume has no valid chapter range; set chapter_start and chapter_end first"})
 			return
 		}
-		idx := 0
-		for chNum := vol.ChapterStart; chNum <= vol.ChapterEnd; chNum++ {
-			hint := ""
-			if idx < len(req.OutlineHints) {
-				hint = req.OutlineHints[idx]
-			}
-			payloadBytes, _ := json.Marshal(map[string]any{
-				"chapter_num":  chNum,
-				"context_hint": hint,
-			})
-			// Use priority to guarantee in-order execution when tasks are serialised
-			// per project+type: highest priority (lowest offset) for the first chapter
-			// in the volume so workers always pick them up in chapter order.
-			chapterPriority := 1000 - (chNum - vol.ChapterStart)
-			tasks = append(tasks, models.CreateTaskRequest{
-				ProjectID: projectID,
-				TaskType:  "chapter_generate",
-				Payload:   payloadBytes,
-				Priority:  chapterPriority,
-			})
-			idx++
+		// Chain generation: only enqueue the first chapter with batch context.
+		// After it completes, the task handler will auto-enqueue the next chapter.
+		firstHint := ""
+		if len(req.OutlineHints) > 0 {
+			firstHint = req.OutlineHints[0]
 		}
+		payloadBytes, _ := json.Marshal(map[string]any{
+			"chapter_num":         vol.ChapterStart,
+			"context_hint":        firstHint,
+			"batch_volume_id":     *req.VolumeID,
+			"batch_start_chapter": vol.ChapterStart,
+			"batch_end_chapter":   vol.ChapterEnd,
+			"batch_hints":         req.OutlineHints,
+		})
+		tasks = append(tasks, models.CreateTaskRequest{
+			ProjectID: projectID,
+			TaskType:  "chapter_generate",
+			Payload:   payloadBytes,
+			Priority:  5,
+		})
 	} else {
-		// ── Count-based: enqueue N sequential generate_next_chapter tasks ──
+		// ── Count-based: enqueue first chapter with chain context ──
 		count := req.Count
 		if count <= 0 {
 			c.JSON(400, gin.H{"error": "count must be at least 1"})
@@ -343,24 +341,23 @@ func (h *Handler) BatchGenerateChapters(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "count must not exceed 50"})
 			return
 		}
-		for i := 0; i < count; i++ {
-			hint := ""
-			if i < len(req.OutlineHints) {
-				hint = req.OutlineHints[i]
-			}
-			var payloadBytes []byte
-			if hint != "" {
-				payloadBytes, _ = json.Marshal(map[string]any{"context_hint": hint})
-			} else {
-				payloadBytes = json.RawMessage(`{}`)
-			}
-			tasks = append(tasks, models.CreateTaskRequest{
-				ProjectID: projectID,
-				TaskType:  "generate_next_chapter",
-				Payload:   payloadBytes,
-				Priority:  5,
-			})
+		// Chain generation: only enqueue first task, auto-enqueues next after completion
+		firstHint := ""
+		if len(req.OutlineHints) > 0 {
+			firstHint = req.OutlineHints[0]
 		}
+		payloadBytes, _ := json.Marshal(map[string]any{
+			"context_hint":    firstHint,
+			"batch_count":     count,
+			"batch_remaining": count - 1,
+			"batch_hints":     req.OutlineHints,
+		})
+		tasks = append(tasks, models.CreateTaskRequest{
+			ProjectID: projectID,
+			TaskType:  "generate_next_chapter",
+			Payload:   payloadBytes,
+			Priority:  5,
+		})
 	}
 
 	ids, err := h.taskQueue.EnqueueBatch(c.Request.Context(), tasks)
