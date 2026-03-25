@@ -104,7 +104,8 @@ CREATE TABLE outlines (
     content         JSONB NOT NULL DEFAULT '{}',
     tension_target  FLOAT DEFAULT 0.5,
     created_at      TIMESTAMP DEFAULT NOW(),
-    updated_at      TIMESTAMP DEFAULT NOW()
+    updated_at      TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT uq_outlines_project_level_order UNIQUE (project_id, level, order_num)
 );
 
 -- ============================================================

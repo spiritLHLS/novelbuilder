@@ -152,8 +152,9 @@ func (h *Handler) ImportBlueprint(c *gin.Context) {
 
 func (h *Handler) GenerateChapterOutlines(c *gin.Context) {
 	var req struct {
-		VolumeNum int `json:"volume_num" binding:"required,min=1"`
-		BatchSize int `json:"batch_size"` // Optional, defaults to 10 chapters per batch
+		VolumeNum    int `json:"volume_num" binding:"required,min=1"`
+		BatchSize    int `json:"batch_size"`    // Optional, defaults to 10 chapters per batch
+		StartChapter int `json:"start_chapter"` // Optional: 0=continue from last, >0=regenerate from specific chapter
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})

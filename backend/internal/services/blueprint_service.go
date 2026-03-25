@@ -912,8 +912,9 @@ func (s *BlueprintService) Reject(ctx context.Context, id, comment string) error
 
 // GenerateChapterOutlines generates chapter outlines for a specific volume or batch of chapters.
 // This allows for incremental generation to avoid overwhelming the AI with too many chapters at once.
-func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectID string, volumeNum int, batchSize int) error {
-	logger := s.logger.With(zap.String("project_id", projectID), zap.Int("volume_num", volumeNum))
+// startChapter: 0 means auto-continue from where it left off, >0 means start from specific chapter (supports regeneration)
+func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectID string, volumeNum int, batchSize int, startChapter int) error {
+	logger := s.logger.With(zap.String("project_id", projectID), zap.Int("volume_num", volumeNum), zap.Int("start_chapter", startChapter))
 
 	// Get project info
 	var project models.Project
@@ -939,18 +940,14 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 		return fmt.Errorf("get volume: %w", err)
 	}
 
-	// Calculate chapter range for this batch
 	totalChapters := volume.ChapterEnd - volume.ChapterStart + 1
-	if batchSize <= 0 || batchSize > totalChapters {
-		batchSize = totalChapters
-	}
 
-	// Get existing chapter outlines for this volume to ensure continuity
-	var existingOutlines []struct {
+	// Get existing chapter outlines for this volume (single query, no N+1)
+	existingOutlinesMap := make(map[int]struct {
 		ChapterNum int
 		Title      string
 		Content    json.RawMessage
-	}
+	})
 	rows, err := s.db.Query(ctx,
 		`SELECT order_num, title, content FROM outlines 
 		 WHERE project_id = $1 AND level = 'chapter' 
@@ -966,36 +963,47 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 				Content    json.RawMessage
 			}
 			if err := rows.Scan(&outline.ChapterNum, &outline.Title, &outline.Content); err == nil {
-				existingOutlines = append(existingOutlines, outline)
+				existingOutlinesMap[outline.ChapterNum] = outline
 			}
 		}
 	}
 
-	// Determine the next chapter to generate
-	nextChapterNum := volume.ChapterStart
-	if len(existingOutlines) > 0 {
-		// Find the highest existing chapter number and start from the next one
-		for _, outline := range existingOutlines {
-			if outline.ChapterNum >= nextChapterNum {
-				nextChapterNum = outline.ChapterNum + 1
+	// Determine the generation range
+	var nextChapterNum, endChapterNum int
+	if startChapter > 0 {
+		// Explicit start: regenerate from specified chapter
+		nextChapterNum = startChapter
+		if nextChapterNum < volume.ChapterStart {
+			nextChapterNum = volume.ChapterStart
+		}
+	} else {
+		// Auto-continue: find the first missing chapter or start from beginning
+		nextChapterNum = volume.ChapterStart
+		for ch := volume.ChapterStart; ch <= volume.ChapterEnd; ch++ {
+			if _, exists := existingOutlinesMap[ch]; !exists {
+				nextChapterNum = ch
+				break
 			}
 		}
 	}
 
-	// Check if we've already generated all chapters in this volume
-	if nextChapterNum > volume.ChapterEnd {
-		logger.Info("all chapters already generated for this volume")
-		return nil // All chapters already generated
+	// Check if all chapters are already generated (only when auto-continue)
+	if startChapter == 0 && len(existingOutlinesMap) >= totalChapters {
+		logger.Info("all chapters already generated, use start_chapter to regenerate")
+		return fmt.Errorf("all chapters already generated, set start_chapter to regenerate specific chapters")
 	}
 
-	// Adjust batch size to not exceed volume end
-	endChapterNum := nextChapterNum + batchSize - 1
+	// Calculate end chapter for this batch
+	if batchSize <= 0 {
+		batchSize = 10
+	}
+	endChapterNum = nextChapterNum + batchSize - 1
 	if endChapterNum > volume.ChapterEnd {
 		endChapterNum = volume.ChapterEnd
 	}
 	actualBatchSize := endChapterNum - nextChapterNum + 1
 
-	// Get existing assets for context
+	// Get existing assets for context (single queries, no N+1)
 	characters, _ := s.characters.List(ctx, projectID)
 	worldBible, _ := s.worldBibles.Get(ctx, projectID)
 	glossaryBlock := s.glossary.BuildPromptBlock(ctx, projectID)
@@ -1022,23 +1030,27 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 		ctxBuilder.WriteString("\n")
 	}
 
-	// Add existing chapter outlines for continuity
+	// Add existing chapter outlines before the generation range for continuity
 	existingOutlinesText := ""
-	if len(existingOutlines) > 0 {
+	if len(existingOutlinesMap) > 0 {
 		var outlineBuilder strings.Builder
 		outlineBuilder.WriteString("\n---\n## 【本卷已生成章节大纲】\n")
 		outlineBuilder.WriteString("以下是本卷前面已经生成的章节大纲，请确保后续章节与之承接连贯：\n\n")
-		for _, outline := range existingOutlines {
-			var contentData map[string]interface{}
-			if err := json.Unmarshal(outline.Content, &contentData); err == nil {
-				if events, ok := contentData["events"].([]interface{}); ok {
-					outlineBuilder.WriteString(fmt.Sprintf("**第%d章：%s**\n", outline.ChapterNum, outline.Title))
-					for _, event := range events {
-						if eventStr, ok := event.(string); ok {
-							outlineBuilder.WriteString(fmt.Sprintf("  - %s\n", eventStr))
+
+		// Only show outlines before the current generation start
+		for ch := volume.ChapterStart; ch < nextChapterNum; ch++ {
+			if outline, exists := existingOutlinesMap[ch]; exists {
+				var contentData map[string]interface{}
+				if err := json.Unmarshal(outline.Content, &contentData); err == nil {
+					if events, ok := contentData["events"].([]interface{}); ok {
+						outlineBuilder.WriteString(fmt.Sprintf("**第%d章：%s**\n", outline.ChapterNum, outline.Title))
+						for _, event := range events {
+							if eventStr, ok := event.(string); ok {
+								outlineBuilder.WriteString(fmt.Sprintf("  - %s\n", eventStr))
+							}
 						}
+						outlineBuilder.WriteString("\n")
 					}
-					outlineBuilder.WriteString("\n")
 				}
 			}
 		}
@@ -1108,7 +1120,8 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 		zap.Int("next_chapter", nextChapterNum),
 		zap.Int("end_chapter", endChapterNum),
 		zap.Int("batch_size", actualBatchSize),
-		zap.Int("existing_count", len(existingOutlines)))
+		zap.Int("existing_in_volume", len(existingOutlinesMap)),
+		zap.Bool("is_regeneration", startChapter > 0))
 	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
 		Task:     "chapter_outline_generation",
 		Messages: []gateway.ChatMessage{{Role: "user", Content: prompt}},
@@ -1184,13 +1197,19 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 		return fmt.Errorf("commit: %w", err)
 	}
 
-	// Calculate progress
-	totalGenerated := len(existingOutlines) + len(parsed.ChapterOutlines)
-	remainingChapters := totalChapters - totalGenerated
+	// Calculate progress (count total generated in volume after this batch)
+	totalGeneratedNow := len(existingOutlinesMap) + len(parsed.ChapterOutlines)
+	// Dedup: if we regenerated existing chapters, don't double-count
+	for _, chOutline := range parsed.ChapterOutlines {
+		if _, existed := existingOutlinesMap[chOutline.ChapterNum]; existed {
+			totalGeneratedNow-- // was already counted in existingOutlinesMap
+		}
+	}
+	remainingChapters := totalChapters - totalGeneratedNow
 	logger.Info("chapter outlines generated successfully",
 		zap.Int("generated_this_batch", len(parsed.ChapterOutlines)),
-		zap.Int("total_generated", totalGenerated),
-		zap.Int("remaining", remainingChapters),
+		zap.Int("total_generated_in_volume", totalGeneratedNow),
+		zap.Int("remaining_in_volume", remainingChapters),
 		zap.Int("chapter_range_start", nextChapterNum),
 		zap.Int("chapter_range_end", endChapterNum))
 	return nil

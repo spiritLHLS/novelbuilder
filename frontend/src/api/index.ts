@@ -59,8 +59,8 @@ export const blueprintApi = {
   reject: (_projectId: string, id: string, comment?: string) => api.post(`/blueprints/${id}/reject`, { review_comment: comment }),
   export: (projectId: string) => api.get(`/projects/${projectId}/blueprint/export`),
   import: (projectId: string, data: any) => api.post(`/projects/${projectId}/blueprint/import`, data),
-  generateChapterOutlines: (projectId: string, volumeNum: number, batchSize: number = 10) =>
-    api.post(`/projects/${projectId}/blueprint/generate-chapter-outlines`, { volume_num: volumeNum, batch_size: batchSize }),
+  generateChapterOutlines: (projectId: string, volumeNum: number, batchSize: number = 10, startChapter: number = 0) =>
+    api.post(`/projects/${projectId}/blueprint/generate-chapter-outlines`, { volume_num: volumeNum, batch_size: batchSize, start_chapter: startChapter }),
 }
 
 // World Bible

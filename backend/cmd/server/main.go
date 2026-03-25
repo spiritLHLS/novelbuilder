@@ -456,8 +456,9 @@ func main() {
 		}
 
 		var payload struct {
-			VolumeNum int `json:"volume_num"`
-			BatchSize int `json:"batch_size"`
+			VolumeNum    int `json:"volume_num"`
+			BatchSize    int `json:"batch_size"`
+			StartChapter int `json:"start_chapter"` // 0=continue from last, >0=regenerate from specific chapter
 		}
 		if len(task.Payload) > 0 {
 			_ = json.Unmarshal(task.Payload, &payload)
@@ -469,7 +470,7 @@ func main() {
 			payload.BatchSize = 10
 		}
 
-		return blueprintService.GenerateChapterOutlines(ctx, *task.ProjectID, payload.VolumeNum, payload.BatchSize)
+		return blueprintService.GenerateChapterOutlines(ctx, *task.ProjectID, payload.VolumeNum, payload.BatchSize, payload.StartChapter)
 	})
 
 	// Setup Gin router

@@ -214,6 +214,11 @@
                 @click="generateChapterOutlines(row.volume_num)">
                 生成章节大纲
               </el-button>
+              <el-button size="small" type="warning" 
+                :loading="generatingOutlines.has(row.volume_num)"
+                @click="regenerateChapterOutlines(row.volume_num)">
+                重新生成
+              </el-button>
               <el-button size="small" type="info" 
                 @click="viewVolumeOutlines(row.volume_num)">
                 查看大纲
@@ -822,6 +827,80 @@ async function generateChapterOutlines(volumeNum: number) {
     }, 2000)
   } catch (err: any) {
     const msg = err?.response?.data?.error || '生成章节大纲失败'
+    ElMessage.error(msg)
+  } finally {
+    generatingOutlines.value.delete(volumeNum)
+  }
+}
+
+async function regenerateChapterOutlines(volumeNum: number) {
+  const volume = volumes.value.find(v => v.volume_num === volumeNum)
+  if (!volume) {
+    ElMessage.error('找不到卷信息')
+    return
+  }
+  
+  const totalChapters = volume.chapter_end - volume.chapter_start + 1
+  
+  try {
+    // Ask user which chapter to regenerate from
+    const { value: startChapterInput } = await (await import('element-plus')).ElMessageBox.prompt(
+      `第${volumeNum}卷共${totalChapters}章（第${volume.chapter_start}-${volume.chapter_end}章）。\n请输入要重新生成的起始章节号：`,
+      '重新生成章节大纲',
+      {
+        inputValue: volume.chapter_start.toString(),
+        inputPattern: /^[1-9]\d*$/,
+        inputErrorMessage: '请输入有效的章节号'
+      }
+    )
+    
+    const startChapter = parseInt(startChapterInput, 10)
+    if (startChapter < volume.chapter_start || startChapter > volume.chapter_end) {
+      ElMessage.error(`章节号必须在${volume.chapter_start}到${volume.chapter_end}之间`)
+      return
+    }
+    
+    // Ask for batch size
+    const remainingFromStart = volume.chapter_end - startChapter + 1
+    let batchSize = remainingFromStart
+    
+    if (remainingFromStart > 15) {
+      const { value: batchSizeInput } = await (await import('element-plus')).ElMessageBox.prompt(
+        `从第${startChapter}章开始，剩余${remainingFromStart}章。\n每批生成章节数（推荐5-15章，避免超时）：`,
+        '设置批次大小',
+        {
+          inputValue: Math.min(10, remainingFromStart).toString(),
+          inputPattern: /^[1-9]\d*$/,
+          inputErrorMessage: '请输入有效的正整数'
+        }
+      )
+      batchSize = parseInt(batchSizeInput, 10)
+      if (batchSize > remainingFromStart) {
+        batchSize = remainingFromStart
+      }
+    }
+    
+    generatingOutlines.value.add(volumeNum)
+    const response = await blueprintApi.generateChapterOutlines(projectId, volumeNum, batchSize, startChapter)
+    
+    if (response.data?.task_id) {
+      ElMessage.success({
+        message: `第${volumeNum}卷章节大纲重新生成任务已创建（从第${startChapter}章开始，批次${batchSize}章），请在"任务队列"中查看进度`,
+        duration: 6000
+      })
+    } else {
+      ElMessage.success('章节大纲重新生成任务已创建')
+    }
+    
+    setTimeout(() => {
+      fetchAll()
+    }, 2000)
+  } catch (err: any) {
+    if (err === 'cancel') {
+      // User cancelled prompt
+      return
+    }
+    const msg = err?.response?.data?.error || '重新生成章节大纲失败'
     ElMessage.error(msg)
   } finally {
     generatingOutlines.value.delete(volumeNum)

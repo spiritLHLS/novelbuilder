@@ -34,9 +34,10 @@ CREATE TABLE book_blueprints (
     status          VARCHAR(20) DEFAULT 'draft',
     version         INT DEFAULT 1,
     review_comment  TEXT,
+    error_message   TEXT,
     created_at      TIMESTAMP DEFAULT NOW(),
     updated_at      TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT ck_blueprint_status CHECK (status IN ('draft', 'pending_review', 'approved', 'rejected'))
+    CONSTRAINT ck_blueprint_status CHECK (status IN ('generating', 'draft', 'failed', 'pending_review', 'approved', 'rejected'))
 );
 
 -- ============================================================
