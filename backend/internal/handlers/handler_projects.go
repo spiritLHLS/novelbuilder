@@ -162,16 +162,48 @@ func (h *Handler) GenerateChapterOutlines(c *gin.Context) {
 	if req.BatchSize <= 0 {
 		req.BatchSize = 10 // Default: generate 10 chapters at a time (smaller batches to avoid timeout)
 	}
-	if err := h.blueprints.GenerateChapterOutlines(c.Request.Context(), c.Param("id"), req.VolumeNum, req.BatchSize); err != nil {
-		h.logger.Error("failed to generate chapter outlines",
+
+	// Create async task
+	payload, _ := json.Marshal(req)
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+		ProjectID:   c.Param("id"),
+		TaskType:    "generate_chapter_outlines",
+		Payload:     payload,
+		Priority:    5,
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		h.logger.Error("failed to enqueue chapter outline generation",
 			zap.String("project_id", c.Param("id")),
 			zap.Int("volume_num", req.VolumeNum),
-			zap.Int("batch_size", req.BatchSize),
 			zap.Error(err))
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"status": "generated", "message": "章节大纲已生成，如有剩余章节请再次点击继续生成"})
+
+	h.logger.Info("chapter outline generation task created",
+		zap.String("project_id", c.Param("id")),
+		zap.String("task_id", task.ID),
+		zap.Int("volume_num", req.VolumeNum),
+		zap.Int("batch_size", req.BatchSize))
+	c.JSON(202, gin.H{"status": "queued", "task_id": task.ID, "message": "章节大纲生成任务已创建，请在任务队列查看进度"})
+}
+
+func (h *Handler) ListChapterOutlines(c *gin.Context) {
+	var volumeNum *int
+	if v := c.Query("volume_num"); v != "" {
+		var vn int
+		if _, err := fmt.Sscanf(v, "%d", &vn); err == nil {
+			volumeNum = &vn
+		}
+	}
+
+	outlines, err := h.outlines.ListChapterOutlines(c.Request.Context(), c.Param("id"), volumeNum)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": outlines})
 }
 
 // ── World Bible ───────────────────────────────────────────────────────────────

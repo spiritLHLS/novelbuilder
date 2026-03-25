@@ -290,6 +290,56 @@ func (s *OutlineService) List(ctx context.Context, projectID string) ([]models.O
 	return outlines, nil
 }
 
+// ListChapterOutlines returns chapter-level outlines, optionally filtered by volume number.
+func (s *OutlineService) ListChapterOutlines(ctx context.Context, projectID string, volumeNum *int) ([]models.Outline, error) {
+	var rows pgx.Rows
+	var err error
+
+	if volumeNum != nil {
+		// Get volume range first
+		var chapterStart, chapterEnd int
+		err := s.db.QueryRow(ctx,
+			`SELECT chapter_start, chapter_end FROM volumes WHERE project_id = $1 AND volume_num = $2`,
+			projectID, *volumeNum).Scan(&chapterStart, &chapterEnd)
+		if err != nil {
+			return nil, fmt.Errorf("get volume range: %w", err)
+		}
+
+		rows, err = s.db.Query(ctx,
+			`SELECT id, project_id, level, parent_id, order_num, title, content, tension_target, created_at, updated_at
+			 FROM outlines 
+			 WHERE project_id = $1 AND level = 'chapter' AND order_num >= $2 AND order_num <= $3
+			 ORDER BY order_num`,
+			projectID, chapterStart, chapterEnd)
+	} else {
+		rows, err = s.db.Query(ctx,
+			`SELECT id, project_id, level, parent_id, order_num, title, content, tension_target, created_at, updated_at
+			 FROM outlines 
+			 WHERE project_id = $1 AND level = 'chapter'
+			 ORDER BY order_num`,
+			projectID)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var outlines []models.Outline
+	for rows.Next() {
+		var o models.Outline
+		if err := rows.Scan(&o.ID, &o.ProjectID, &o.Level, &o.ParentID, &o.OrderNum,
+			&o.Title, &o.Content, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt); err != nil {
+			return nil, err
+		}
+		outlines = append(outlines, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list chapter outlines rows: %w", err)
+	}
+	return outlines, nil
+}
+
 func (s *OutlineService) Create(ctx context.Context, projectID, level string, parentID *string, orderNum int, title string, content json.RawMessage, tension float64) (*models.Outline, error) {
 	var o models.Outline
 	err := s.db.QueryRow(ctx,

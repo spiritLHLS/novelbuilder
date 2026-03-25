@@ -203,7 +203,7 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="280">
+          <el-table-column label="操作" width="380">
             <template #default="{ row }">
               <el-button v-if="row.status === 'pending_review'" size="small" type="success"
                 @click="approveVolume(row.id)">批准</el-button>
@@ -214,10 +214,39 @@
                 @click="generateChapterOutlines(row.volume_num)">
                 生成章节大纲
               </el-button>
+              <el-button size="small" type="info" 
+                @click="viewVolumeOutlines(row.volume_num)">
+                查看大纲
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
       </el-card>
+
+      <!-- Chapter Outlines View Dialog -->
+      <el-dialog v-model="showOutlinesDialog" :title="`第${viewingVolumeNum}卷章节大纲`" width="70%">
+        <div v-if="volumeOutlines.length > 0">
+          <el-tag type="info" size="small" style="margin-bottom: 16px;">
+            共 {{ volumeOutlines.length }} 章
+          </el-tag>
+          <el-collapse accordion>
+            <el-collapse-item v-for="outline in volumeOutlines" :key="outline.id" :name="outline.id">
+              <template #title>
+                <span style="font-weight: 500; margin-right: 8px;">第{{ outline.order_num }}章</span>
+                <span style="color: #606266;">{{ outline.title }}</span>
+              </template>
+              <div v-if="outline.content && outline.content.events" class="chapter-events">
+                <div v-for="(event, idx) in outline.content.events" :key="idx" class="event-item">
+                  <el-icon style="color: #409eff; margin-right: 4px;"><Finished /></el-icon>
+                  {{ event }}
+                </div>
+              </div>
+              <el-empty v-else description="暂无事件" :image-size="60" style="padding: 20px 0;" />
+            </el-collapse-item>
+          </el-collapse>
+        </div>
+        <el-empty v-else description="该卷暂无章节大纲，请先生成" :image-size="80" />
+      </el-dialog>
 
       <!-- Chapter Outlines -->
       <el-card v-if="chapterOutlines.length > 0" shadow="hover" style="margin-top: 20px;">
@@ -315,6 +344,18 @@ const showImportDialog = ref(false)
 const importing = ref(false)
 const importFileList = ref<UploadFile[]>([])
 const importFileContent = ref<any>(null)
+
+// Chapter outlines view dialog
+const showOutlinesDialog = ref(false)
+const viewingVolumeNum = ref<number | null>(null)
+const volumeOutlines = computed(() => {
+  if (!viewingVolumeNum.value) return []
+  const volume = volumes.value.find(v => v.volume_num === viewingVolumeNum.value)
+  if (!volume) return []
+  return chapterOutlines.value.filter(
+    o => o.order_num >= volume.chapter_start && o.order_num <= volume.chapter_end
+  )
+})
 
 // Generation dialog state
 const dialogVisible = ref(false)
@@ -712,6 +753,11 @@ async function rejectVolume(id: string) {
   } catch { ElMessage.error('操作失败') }
 }
 
+function viewVolumeOutlines(volumeNum: number) {
+  viewingVolumeNum.value = volumeNum
+  showOutlinesDialog.value = true
+}
+
 async function generateChapterOutlines(volumeNum: number) {
   const volume = volumes.value.find(v => v.volume_num === volumeNum)
   if (!volume) {
@@ -758,24 +804,22 @@ async function generateChapterOutlines(volumeNum: number) {
   
   try {
     generatingOutlines.value.add(volumeNum)
-    await blueprintApi.generateChapterOutlines(projectId, volumeNum, batchSize)
+    const response = await blueprintApi.generateChapterOutlines(projectId, volumeNum, batchSize)
     
-    await fetchAll()
-    
-    // Check if there are more chapters to generate
-    const newExistingCount = chapterOutlines.value.filter(
-      o => o.order_num >= volume.chapter_start && o.order_num <= volume.chapter_end
-    ).length
-    const newRemaining = totalChapters - newExistingCount
-    
-    if (newRemaining > 0) {
+    // Task created (202), redirect to task queue or show message
+    if (response.data?.task_id) {
       ElMessage.success({
-        message: `第${volumeNum}卷已生成${batchSize}章，还剩${newRemaining}章。请再次点击继续生成。`,
-        duration: 5000
+        message: `第${volumeNum}卷章节大纲生成任务已创建（批次${batchSize}章），请在"任务队列"中查看进度`,
+        duration: 6000
       })
     } else {
-      ElMessage.success(`第${volumeNum}卷所有章节大纲生成完成（共${totalChapters}章）`)
+      ElMessage.success('章节大纲生成任务已创建')
     }
+    
+    // Refresh after a short delay to show any already generated outlines
+    setTimeout(() => {
+      fetchAll()
+    }, 2000)
   } catch (err: any) {
     const msg = err?.response?.data?.error || '生成章节大纲失败'
     ElMessage.error(msg)

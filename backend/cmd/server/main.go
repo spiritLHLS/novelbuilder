@@ -448,6 +448,30 @@ func main() {
 		return importService.Process(ctx, payload.ImportID, llmCfg)
 	})
 
+	// generate_chapter_outlines: enqueued by GenerateChapterOutlines handler.
+	// Generates chapter outlines for a specific volume in batches.
+	taskQueueService.RegisterHandler("generate_chapter_outlines", func(ctx context.Context, task models.TaskQueueItem) error {
+		if task.ProjectID == nil || *task.ProjectID == "" {
+			return fmt.Errorf("generate_chapter_outlines requires project_id")
+		}
+
+		var payload struct {
+			VolumeNum int `json:"volume_num"`
+			BatchSize int `json:"batch_size"`
+		}
+		if len(task.Payload) > 0 {
+			_ = json.Unmarshal(task.Payload, &payload)
+		}
+		if payload.VolumeNum <= 0 {
+			return fmt.Errorf("generate_chapter_outlines: invalid volume_num")
+		}
+		if payload.BatchSize <= 0 {
+			payload.BatchSize = 10
+		}
+
+		return blueprintService.GenerateChapterOutlines(ctx, *task.ProjectID, payload.VolumeNum, payload.BatchSize)
+	})
+
 	// Setup Gin router
 	r := gin.Default()
 
