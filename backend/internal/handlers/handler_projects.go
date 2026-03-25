@@ -127,6 +127,28 @@ func (h *Handler) RejectBlueprint(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "rejected"})
 }
 
+func (h *Handler) ExportBlueprint(c *gin.Context) {
+	export, err := h.blueprints.Export(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": export})
+}
+
+func (h *Handler) ImportBlueprint(c *gin.Context) {
+	var data services.BlueprintExport
+	if err := c.ShouldBindJSON(&data); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.blueprints.Import(c.Request.Context(), c.Param("id"), &data); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "imported"})
+}
+
 // ── World Bible ───────────────────────────────────────────────────────────────
 
 func (h *Handler) GetWorldBible(c *gin.Context) {

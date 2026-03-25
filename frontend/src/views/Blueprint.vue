@@ -3,8 +3,40 @@
     <div class="page-header">
       <h1>蓝图管理</h1>
       <div style="display: flex; gap: 8px;">
+        <el-button v-if="currentBlueprint" type="success" plain @click="exportBlueprint">
+          <el-icon><Download /></el-icon>导出蓝图
+        </el-button>
+        <el-button type="primary" plain @click="showImportDialog = true">
+          <el-icon><Upload /></el-icon>导入蓝图
+        </el-button>
       </div>
     </div>
+
+    <!-- Import Blueprint Dialog -->
+    <el-dialog v-model="showImportDialog" title="导入蓝图" width="600px">
+      <el-alert type="info" :closable="false" style="margin-bottom: 16px;">
+        导入蓝图将覆盖当前项目的所有蓝图相关数据（世界观、角色、伏笔、卷册、章节大纲）。已生成的章节正文不受影响。
+      </el-alert>
+      <el-upload
+        drag
+        :auto-upload="false"
+        :limit="1"
+        accept=".json"
+        :on-change="handleImportFileChange"
+        :file-list="importFileList"
+      >
+        <el-icon class="el-icon--upload"><upload-filled /></el-icon>
+        <div class="el-upload__text">
+          将蓝图JSON文件拖到此处，或<em>点击上传</em>
+        </div>
+      </el-upload>
+      <template #footer>
+        <el-button @click="showImportDialog = false">取消</el-button>
+        <el-button type="primary" :loading="importing" @click="confirmImport">
+          确认导入
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- Regenerate Config Dialog (only used for re-generation) -->
     <el-dialog v-model="dialogVisible" title="重新生成蓝图" width="520px" :close-on-click-modal="false">
@@ -223,8 +255,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage, type FormInstance } from 'element-plus'
+import { ElMessage, type FormInstance, type UploadFile } from 'element-plus'
 import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, projectApi } from '@/api'
+import { Download, Upload, UploadFilled } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const projectId = route.params.projectId as string
@@ -239,6 +272,12 @@ const worldBibleCount = ref(0)
 const characterCount = ref(0)
 const outlineCount = ref(0)
 const foreshadowingCount = ref(0)
+
+// Import/Export state
+const showImportDialog = ref(false)
+const importing = ref(false)
+const importFileList = ref<UploadFile[]>([])
+const importFileContent = ref<any>(null)
 
 // Generation dialog state
 const dialogVisible = ref(false)
@@ -435,6 +474,66 @@ onMounted(async () => {
     currentBlueprint.value = null
   }
 })
+
+// ── Import/Export ─────────────────────────────────────────────────────────────
+
+async function exportBlueprint() {
+  try {
+    const res = await blueprintApi.export(projectId)
+    const data = res?.data?.data
+    if (!data) {
+      ElMessage.error('导出失败：无数据')
+      return
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `blueprint-${projectId}-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('蓝图已导出')
+  } catch {
+    ElMessage.error('导出失败')
+  }
+}
+
+function handleImportFileChange(file: UploadFile) {
+  if (!file.raw) return
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    try {
+      const content = JSON.parse(e.target?.result as string)
+      importFileContent.value = content
+      importFileList.value = [file]
+    } catch {
+      ElMessage.error('JSON文件格式错误')
+      importFileList.value = []
+    }
+  }
+  reader.readAsText(file.raw)
+}
+
+async function confirmImport() {
+  if (!importFileContent.value) {
+    ElMessage.warning('请先选择文件')
+    return
+  }
+  importing.value = true
+  try {
+    await blueprintApi.import(projectId, importFileContent.value)
+    ElMessage.success('蓝图已导入')
+    showImportDialog.value = false
+    importFileList.value = []
+    importFileContent.value = null
+    // Reload data
+    await fetchAll()
+  } catch {
+    ElMessage.error('导入失败')
+  } finally {
+    importing.value = false
+  }
+}
 
 onBeforeUnmount(stopPolling)
 

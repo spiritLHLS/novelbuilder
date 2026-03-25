@@ -57,6 +57,8 @@ export const blueprintApi = {
   submitReview: (_projectId: string, id: string) => api.post(`/blueprints/${id}/submit-review`),
   approve: (_projectId: string, id: string, comment?: string) => api.post(`/blueprints/${id}/approve`, { review_comment: comment }),
   reject: (_projectId: string, id: string, comment?: string) => api.post(`/blueprints/${id}/reject`, { review_comment: comment }),
+  export: (projectId: string) => api.get(`/projects/${projectId}/blueprint/export`),
+  import: (projectId: string, data: any) => api.post(`/projects/${projectId}/blueprint/import`, data),
 }
 
 // World Bible
@@ -170,8 +172,6 @@ export const referenceApi = {
   startFetchImport: (projectId: string, data: {
     site: string; book_id: string; title: string; author: string; genre: string; chapter_ids: string[]
   }) => api.post(`/projects/${projectId}/references/fetch-import`, data),
-  updateMigrationConfig: (id: string, config: any) =>
-    api.put(`/references/${id}/migration-config`, config),
   analyze: (id: string) => api.post(`/references/${id}/analyze`),
   delete: (id: string) => api.delete(`/references/${id}`),
   // Chapter management

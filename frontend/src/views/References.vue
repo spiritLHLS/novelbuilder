@@ -71,13 +71,12 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="340" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openChaptersDialog(row)">章节管理</el-button>
           <el-button size="small" type="primary" plain @click="openDeepAnalysisDialog(row)">深度分析</el-button>
           <el-button size="small" type="success" @click="exportSingle(row)"
             :loading="exporting === row.id">导出</el-button>
-          <el-button size="small" type="warning" @click="showMigration(row)">迁移</el-button>
           <el-button size="small" type="danger" @click="deleteReference(row.id)"
             :loading="deleting === row.id">删除</el-button>
         </template>
@@ -472,30 +471,6 @@
         ><el-icon><Download /></el-icon>导入到项目</el-button>
       </template>
     </el-dialog>
-
-    <!-- ── Migration Config Dialog ────────────────────────────────────────── -->
-    <el-dialog v-model="showMigrationDialog" title="氛围迁移配置" width="600px">
-      <el-form :model="migrationForm" label-width="120px">
-        <el-form-item label="迁移强度">
-          <el-slider v-model="migrationForm.intensity" :min="0" :max="100" :step="5" show-stops />
-        </el-form-item>
-        <el-form-item label="允许迁移层">
-          <el-checkbox-group v-model="migrationForm.layers">
-            <el-checkbox label="style">风格层</el-checkbox>
-            <el-checkbox label="narrative">叙事层</el-checkbox>
-            <el-checkbox label="atmosphere">氛围层</el-checkbox>
-          </el-checkbox-group>
-        </el-form-item>
-        <el-form-item label="禁止迁移项">
-          <el-input v-model="migrationForm.forbidden" type="textarea" :rows="3"
-            placeholder="列出不希望迁移的特定元素，每行一个" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showMigrationDialog = false">取消</el-button>
-        <el-button type="primary" @click="saveMigration">保存</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -520,16 +495,9 @@ const references = ref<any[]>([])
 const deleting = ref<string | null>(null)
 const exporting = ref<string | null>(null)
 const exportingBatch = ref(false)
-const showMigrationDialog = ref(false)
 const selectedRefId = ref('')
 const selectedIds = ref<string[]>([])
 const localFileInput = ref<HTMLInputElement | null>(null)
-
-const migrationForm = ref({
-  intensity: 50,
-  layers: ['style', 'atmosphere'],
-  forbidden: '',
-})
 
 // ─── deep analysis ────────────────────────────────────────────────────────────
 const showDeepAnalysisDialog = ref(false)
@@ -1030,26 +998,6 @@ async function fetchRefs() {
     references.value = (res.data as any).data || []
   } finally {
     loading.value = false
-  }
-}
-
-
-
-function showMigration(ref: any) {
-  selectedRefId.value = ref.id
-  if (ref.migration_config) {
-    migrationForm.value = { ...ref.migration_config }
-  }
-  showMigrationDialog.value = true
-}
-
-async function saveMigration() {
-  try {
-    await referenceApi.updateMigrationConfig(selectedRefId.value, migrationForm.value)
-    ElMessage.success('迁移配置已保存')
-    showMigrationDialog.value = false
-  } catch {
-    ElMessage.error('保存失败')
   }
 }
 

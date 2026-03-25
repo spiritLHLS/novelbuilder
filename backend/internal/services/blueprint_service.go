@@ -354,6 +354,11 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
     {"title":"第二卷卷名","chapter_start":下一章节号,"chapter_end":章节数},
     ...（按此格式列出全部 %d 卷，每卷的chapter_start/chapter_end由你根据剧情弧度自由决定，章节连续不重叠）
   ],
+  "chapter_outlines": [
+    {"chapter_num":1,"title":"第一章标题","events":["事件1描述（50字内）","事件2描述（50字内）"]},
+    {"chapter_num":2,"title":"第二章标题","events":["事件1描述"]},
+    ...（为每个章节生成大纲，每章1~3个核心事件，事件描述简洁清晰，不超过50字）
+  ],
   "relation_graph": "角色A-角色B:关系描述;角色C-角色D:关系描述（分号分隔每对关系）",
   "global_timeline": "序章:关键事件;第一卷末:关键事件;第二卷末:关键事件;...（分号分隔）",
   "foreshadowings": [{"content":"伏笔内容","embed_method":"explicit|implicit|symbolic","priority":8}],
@@ -365,19 +370,21 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 %s
 - volumes 数组必须恰好 %d 个元素，所有卷的章节首尾相连（第一卷chapter_start=1，最后一卷chapter_end=推算总章节数附近），章节连续不重叠
 - 各卷章节数由你根据剧情自由规划（可多可少），不要求相同
+- **chapter_outlines 必须为所有章节生成大纲**，章节号从1开始连续，与volumes中的章节数量严格对应
+- 每个章节大纲的events数组包含1～3个核心事件，每个事件描述简洁（50字以内），只描述实际发生的情节，不做总结或展望
+- 章节事件应体现剧情推进：人物互动、冲突发展、信息揭露、场景转换等，避免空泛描述
+- 章节标题应体现本章核心内容或悬念点，符合网文命名风格（如："初遇"、"暗流涌动"、"破局"）
 - characters 中已存在角色无需重复，只列**新增**角色
 - foreshadowings 中已存在伏笔无需重复，只列**新增**伏笔
 - 所有内容须与已有世界观、角色、术语表保持一致
-- 确保所有伏笔在大纲时间线中安排铺垫与揭露
-- 【重要】每章大纲只安排 1～3 件核心事件或关系推进，不可在单章塞入过多事件。网文节奏讲究"一章一事"或"一章两事"，信息密度过高会导致后续生成时超字数且AI味浓重
-- 章节大纲不要写"本章总结""本章展望"类说明，只描述要发生的事件和场景
+- 确保所有伏笔在大纲、时间线和章节事件中安排铺垫与揭露
 - 【角色成长约束】角色的能力、武器、装备、身份、地位等属性必须符合时间线渐进获得原则：
   * 角色初始profile只写**现状基础属性**（性格、外貌、当前身份、当前实力水平）
-  * 所有需要"获得"的东西（神器、秘籍、师父传承、新身份、突破境界）必须在timeline/大纲中明确标注**获得时间点和获得方式**
-  * 禁止给角色"来历不明"的能力/装备（如：角色profile写"拥有上古神剑"但timeline中无获得过程）
+  * 所有需要"获得"的东西（神器、秘籍、师父传承、新身份、突破境界）必须在timeline/章节大纲中明确标注**获得时间点和获得方式**
+  * 禁止给角色"来历不明"的能力/装备（如：角色profile写"拥有上古神剑"但timeline/章节大纲中无获得过程）
   * 禁止一次性给予角色大量资源（如：一章内获得3件法宝+2个技能+1个新身份）
-  * 成长必须有代价和过程：获得新能力需要明确的触发事件（奇遇、战斗突破、师父传授、任务奖励等）
-  * 主角/重要角色的每次实力提升、装备获得都应在global_timeline中体现
+  * 成长必须有代价和过程：获得新能力需要明确的触发事件（奇遇、战斗突破、师父传授、任务奖励等），体现在章节事件中
+  * 主角/重要角色的每次实力提升、装备获得都应在global_timeline和对应章节大纲中同时体现
 `,
 		genre,
 		taskInstruction,
@@ -430,6 +437,11 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 			ChapterStart int    `json:"chapter_start"`
 			ChapterEnd   int    `json:"chapter_end"`
 		} `json:"volumes"`
+		ChapterOutlines []struct {
+			ChapterNum int      `json:"chapter_num"`
+			Title      string   `json:"title"`
+			Events     []string `json:"events"`
+		} `json:"chapter_outlines"`
 	}
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		logger.Warn("failed to parse blueprint JSON, storing raw response",
@@ -598,6 +610,44 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 		if err := br.Close(); err != nil {
 			return fmt.Errorf("volume batch close: %w", err)
 		}
+	}
+
+	// Chapter outlines: delete existing chapter-level outlines and insert new ones.
+	if len(parsed.ChapterOutlines) > 0 {
+		// First delete all existing chapter-level outlines for this project.
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM outlines WHERE project_id = $1 AND level = 'chapter'`,
+			projectID); err != nil {
+			return fmt.Errorf("delete existing chapter outlines: %w", err)
+		}
+
+		// Insert new chapter outlines.
+		outlineBatch := &pgx.Batch{}
+		for _, chOutline := range parsed.ChapterOutlines {
+			title := chOutline.Title
+			if title == "" {
+				title = fmt.Sprintf("第%d章", chOutline.ChapterNum)
+			}
+			// Store events as JSON in the content field.
+			contentJSON, _ := json.Marshal(map[string]interface{}{
+				"events": chOutline.Events,
+			})
+			outlineBatch.Queue(
+				`INSERT INTO outlines (id, project_id, level, order_num, title, content, created_at, updated_at)
+				 VALUES ($1, $2, 'chapter', $3, $4, $5, NOW(), NOW())`,
+				uuid.New().String(), projectID, chOutline.ChapterNum, title, contentJSON)
+		}
+		br := tx.SendBatch(ctx, outlineBatch)
+		for i := range parsed.ChapterOutlines {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				return fmt.Errorf("insert chapter outline %d: %w", i, err)
+			}
+		}
+		if err := br.Close(); err != nil {
+			return fmt.Errorf("chapter outline batch close: %w", err)
+		}
+		logger.Info("blueprint generation: chapter outlines stored", zap.Int("count", len(parsed.ChapterOutlines)))
 	}
 
 	// Update project status atomically.
@@ -862,4 +912,246 @@ func (s *BlueprintService) Reject(ctx context.Context, id, comment string) error
 		`UPDATE book_blueprints SET status = 'rejected', review_comment = $1, updated_at = NOW() WHERE id = $2`,
 		comment, id)
 	return err
+}
+
+// BlueprintExport represents the complete blueprint package for export/import.
+type BlueprintExport struct {
+	Blueprint       models.BookBlueprint   `json:"blueprint"`
+	Volumes         []models.Volume        `json:"volumes"`
+	ChapterOutlines []models.Outline       `json:"chapter_outlines"`
+	Characters      []models.Character     `json:"characters"`
+	Foreshadowings  []models.Foreshadowing `json:"foreshadowings"`
+	WorldBible      *models.WorldBible     `json:"world_bible,omitempty"`
+	ExportedAt      time.Time              `json:"exported_at"`
+	Version         string                 `json:"version"` // Format version for compatibility
+}
+
+func (s *BlueprintService) Export(ctx context.Context, projectID string) (*BlueprintExport, error) {
+	export := &BlueprintExport{
+		ExportedAt: time.Now(),
+		Version:    "1.0",
+	}
+
+	// Get blueprint
+	bp, err := s.Get(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("get blueprint: %w", err)
+	}
+	if bp == nil {
+		return nil, fmt.Errorf("no blueprint found for project")
+	}
+	export.Blueprint = *bp
+
+	// Get volumes
+	rows, err := s.db.Query(ctx,
+		`SELECT id, project_id, volume_num, title, blueprint_id, status, chapter_start, chapter_end, review_comment, created_at, updated_at
+		 FROM volumes WHERE project_id = $1 ORDER BY volume_num`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("query volumes: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v models.Volume
+		if err := rows.Scan(&v.ID, &v.ProjectID, &v.VolumeNum, &v.Title, &v.BlueprintID, &v.Status,
+			&v.ChapterStart, &v.ChapterEnd, &v.ReviewComment, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan volume: %w", err)
+		}
+		export.Volumes = append(export.Volumes, v)
+	}
+
+	// Get chapter outlines
+	outlines, err := s.outlines.List(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list outlines: %w", err)
+	}
+	for _, o := range outlines {
+		if o.Level == "chapter" {
+			export.ChapterOutlines = append(export.ChapterOutlines, o)
+		}
+	}
+
+	// Get characters
+	chars, err := s.characters.List(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list characters: %w", err)
+	}
+	export.Characters = chars
+
+	// Get foreshadowings
+	fss, err := s.foreshadowings.List(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list foreshadowings: %w", err)
+	}
+	export.Foreshadowings = fss
+
+	// Get world bible
+	wb, err := s.worldBibles.Get(ctx, projectID)
+	if err == nil && wb != nil {
+		export.WorldBible = wb
+	}
+
+	return export, nil
+}
+
+func (s *BlueprintService) Import(ctx context.Context, projectID string, data *BlueprintExport) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Import world bible
+	if data.WorldBible != nil && len(data.WorldBible.Content) > 4 {
+		wbID := uuid.New().String()
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO world_bibles (id, project_id, content, version, created_at, updated_at)
+			 VALUES ($1, $2, $3, 1, NOW(), NOW())
+			 ON CONFLICT (project_id) DO UPDATE
+			     SET content    = EXCLUDED.content,
+			         version    = world_bibles.version + 1,
+			         updated_at = NOW()`,
+			wbID, projectID, data.WorldBible.Content); err != nil {
+			return fmt.Errorf("import world bible: %w", err)
+		}
+	}
+
+	// Import characters
+	if len(data.Characters) > 0 {
+		chBatch := &pgx.Batch{}
+		for _, ch := range data.Characters {
+			chBatch.Queue(
+				`INSERT INTO characters (id, project_id, name, role_type, profile, current_state, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+				 ON CONFLICT (project_id, name) DO UPDATE SET
+				     role_type = EXCLUDED.role_type,
+				     profile = EXCLUDED.profile,
+				     current_state = EXCLUDED.current_state,
+				     updated_at = NOW()`,
+				uuid.New().String(), projectID, ch.Name, ch.RoleType, ch.Profile, ch.CurrentState)
+		}
+		br := tx.SendBatch(ctx, chBatch)
+		for range data.Characters {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				return fmt.Errorf("import character: %w", err)
+			}
+		}
+		if err := br.Close(); err != nil {
+			return fmt.Errorf("character batch close: %w", err)
+		}
+	}
+
+	// Import foreshadowings
+	if len(data.Foreshadowings) > 0 {
+		// Clear existing foreshadowings to avoid duplicates
+		if _, err := tx.Exec(ctx, `DELETE FROM foreshadowings WHERE project_id = $1`, projectID); err != nil {
+			return fmt.Errorf("clear foreshadowings: %w", err)
+		}
+		fsBatch := &pgx.Batch{}
+		for _, fs := range data.Foreshadowings {
+			fsBatch.Queue(
+				`INSERT INTO foreshadowings (id, project_id, content, embed_chapter_id, resolve_chapter_id, embed_method, resolve_method, priority, status, tags, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())`,
+				uuid.New().String(), projectID, fs.Content, fs.EmbedChapterID, fs.ResolveChapterID,
+				fs.EmbedMethod, fs.ResolveMethod, fs.Priority, fs.Status, fs.Tags)
+		}
+		br := tx.SendBatch(ctx, fsBatch)
+		for range data.Foreshadowings {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				return fmt.Errorf("import foreshadowing: %w", err)
+			}
+		}
+		if err := br.Close(); err != nil {
+			return fmt.Errorf("foreshadowing batch close: %w", err)
+		}
+	}
+
+	// Import blueprint
+	bpID := uuid.New().String()
+	wbRef := data.Blueprint.WorldBibleRef
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO book_blueprints (id, project_id, world_bible_ref, master_outline, relation_graph, global_timeline, status, version, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'draft', 1, NOW(), NOW())
+		 ON CONFLICT (project_id) DO UPDATE SET
+		     master_outline = EXCLUDED.master_outline,
+		     relation_graph = EXCLUDED.relation_graph,
+		     global_timeline = EXCLUDED.global_timeline,
+		     status = 'draft',
+		     version = book_blueprints.version + 1,
+		     updated_at = NOW()
+		 RETURNING id`,
+		bpID, projectID, wbRef, data.Blueprint.MasterOutline, data.Blueprint.RelationGraph, data.Blueprint.GlobalTimeline); err != nil {
+		return fmt.Errorf("import blueprint: %w", err)
+	}
+
+	// Import volumes
+	if len(data.Volumes) > 0 {
+		// Clear existing volumes
+		if _, err := tx.Exec(ctx, `UPDATE chapters SET volume_id = NULL WHERE project_id = $1`, projectID); err != nil {
+			return fmt.Errorf("clear chapter volume refs: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM volumes WHERE project_id = $1`, projectID); err != nil {
+			return fmt.Errorf("clear volumes: %w", err)
+		}
+		volBatch := &pgx.Batch{}
+		for _, vol := range data.Volumes {
+			volBatch.Queue(
+				`INSERT INTO volumes (id, project_id, volume_num, title, blueprint_id, chapter_start, chapter_end, status, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', NOW(), NOW())`,
+				uuid.New().String(), projectID, vol.VolumeNum, vol.Title, bpID, vol.ChapterStart, vol.ChapterEnd)
+		}
+		br := tx.SendBatch(ctx, volBatch)
+		for range data.Volumes {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				return fmt.Errorf("import volume: %w", err)
+			}
+		}
+		if err := br.Close(); err != nil {
+			return fmt.Errorf("volume batch close: %w", err)
+		}
+	}
+
+	// Import chapter outlines
+	if len(data.ChapterOutlines) > 0 {
+		// Clear existing chapter outlines
+		if _, err := tx.Exec(ctx, `DELETE FROM outlines WHERE project_id = $1 AND level = 'chapter'`, projectID); err != nil {
+			return fmt.Errorf("clear chapter outlines: %w", err)
+		}
+		outlineBatch := &pgx.Batch{}
+		for _, outline := range data.ChapterOutlines {
+			outlineBatch.Queue(
+				`INSERT INTO outlines (id, project_id, level, order_num, title, content, tension_target, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
+				uuid.New().String(), projectID, outline.Level, outline.OrderNum, outline.Title, outline.Content, outline.TensionTarget)
+		}
+		br := tx.SendBatch(ctx, outlineBatch)
+		for range data.ChapterOutlines {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				return fmt.Errorf("import chapter outline: %w", err)
+			}
+		}
+		if err := br.Close(); err != nil {
+			return fmt.Errorf("chapter outline batch close: %w", err)
+		}
+	}
+
+	// Update project status
+	if _, err := tx.Exec(ctx, `UPDATE projects SET status = 'blueprint_generated', updated_at = NOW() WHERE id = $1`, projectID); err != nil {
+		return fmt.Errorf("update project status: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit import: %w", err)
+	}
+
+	s.logger.Info("blueprint imported successfully",
+		zap.String("project_id", projectID),
+		zap.Int("volumes", len(data.Volumes)),
+		zap.Int("chapter_outlines", len(data.ChapterOutlines)),
+		zap.Int("characters", len(data.Characters)),
+		zap.Int("foreshadowings", len(data.Foreshadowings)))
+	return nil
 }

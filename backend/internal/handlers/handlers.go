@@ -146,6 +146,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 
 	api.POST("/projects/:id/blueprint/generate", h.GenerateBlueprint)
 	api.GET("/projects/:id/blueprint", h.GetBlueprint)
+	api.GET("/projects/:id/blueprint/export", h.ExportBlueprint)
+	api.POST("/projects/:id/blueprint/import", h.ImportBlueprint)
 	api.POST("/blueprints/:id/submit-review", h.SubmitBlueprintReview)
 	api.POST("/blueprints/:id/approve", h.ApproveBlueprint)
 	api.POST("/blueprints/:id/reject", h.RejectBlueprint)
