@@ -433,7 +433,18 @@ function hasData(val: any): boolean {
   if (val == null || val === undefined) return false
   if (typeof val === 'string') return val.trim() !== ''
   if (Array.isArray(val)) return val.length > 0
-  if (typeof val === 'object') return Object.keys(val).length > 0
+  if (typeof val === 'object') {
+    // 如果有raw_content，尝试解析
+    if (val.raw_content) {
+      try {
+        const parsed = JSON.parse(val.raw_content)
+        return parsed != null && Object.keys(parsed).length > 0
+      } catch {
+        return String(val.raw_content).trim() !== ''
+      }
+    }
+    return Object.keys(val).length > 0
+  }
   return Boolean(val)
 }
 
@@ -443,7 +454,17 @@ function parseMasterOutline(val: any): { vol: string; desc: string }[] {
   if (typeof val === 'string') {
     text = val
   } else if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
-    text = String(val.raw_content)
+    // raw_content可能是完整的blueprint JSON，尝试解析
+    try {
+      const parsed = JSON.parse(val.raw_content)
+      if (parsed && typeof parsed.master_outline === 'string') {
+        text = parsed.master_outline
+      } else {
+        text = String(val.raw_content)
+      }
+    } catch {
+      text = String(val.raw_content)
+    }
   } else {
     return [{ vol: '', desc: JSON.stringify(val, null, 2) }]
   }
@@ -460,7 +481,17 @@ function parseRelationGraph(val: any): { pair: string; desc: string }[] {
   if (typeof val === 'string') {
     text = val
   } else if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
-    text = String(val.raw_content)
+    // raw_content可能是完整的blueprint JSON，尝试解析
+    try {
+      const parsed = JSON.parse(val.raw_content)
+      if (parsed && typeof parsed.relation_graph === 'string') {
+        text = parsed.relation_graph
+      } else {
+        text = String(val.raw_content)
+      }
+    } catch {
+      text = String(val.raw_content)
+    }
   } else {
     return [{ pair: '', desc: JSON.stringify(val, null, 2) }]
   }
@@ -477,7 +508,17 @@ function parseGlobalTimeline(val: any): { point: string; event: string }[] {
   if (typeof val === 'string') {
     text = val
   } else if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
-    text = String(val.raw_content)
+    // raw_content可能是完整的blueprint JSON，尝试解析
+    try {
+      const parsed = JSON.parse(val.raw_content)
+      if (parsed && typeof parsed.global_timeline === 'string') {
+        text = parsed.global_timeline
+      } else {
+        text = String(val.raw_content)
+      }
+    } catch {
+      text = String(val.raw_content)
+    }
   } else {
     return [{ point: '', event: JSON.stringify(val, null, 2) }]
   }
