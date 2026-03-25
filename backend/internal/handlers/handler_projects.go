@@ -149,6 +149,25 @@ func (h *Handler) ImportBlueprint(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "imported"})
 }
 
+func (h *Handler) GenerateChapterOutlines(c *gin.Context) {
+	var req struct {
+		VolumeNum int `json:"volume_num" binding:"required,min=1"`
+		BatchSize int `json:"batch_size"` // Optional, defaults to all chapters in volume
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if req.BatchSize <= 0 {
+		req.BatchSize = 9999 // Large number to include all chapters
+	}
+	if err := h.blueprints.GenerateChapterOutlines(c.Request.Context(), c.Param("id"), req.VolumeNum, req.BatchSize); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "generated"})
+}
+
 // ── World Bible ───────────────────────────────────────────────────────────────
 
 func (h *Handler) GetWorldBible(c *gin.Context) {

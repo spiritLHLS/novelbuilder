@@ -354,11 +354,6 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
     {"title":"第二卷卷名","chapter_start":下一章节号,"chapter_end":章节数},
     ...（按此格式列出全部 %d 卷，每卷的chapter_start/chapter_end由你根据剧情弧度自由决定，章节连续不重叠）
   ],
-  "chapter_outlines": [
-    {"chapter_num":1,"title":"第一章标题","events":["事件1描述（50字内）","事件2描述（50字内）"]},
-    {"chapter_num":2,"title":"第二章标题","events":["事件1描述"]},
-    ...（为每个章节生成大纲，每章1~3个核心事件，事件描述简洁清晰，不超过50字）
-  ],
   "relation_graph": "角色A-角色B:关系描述;角色C-角色D:关系描述（分号分隔每对关系）",
   "global_timeline": "序章:关键事件;第一卷末:关键事件;第二卷末:关键事件;...（分号分隔）",
   "foreshadowings": [{"content":"伏笔内容","embed_method":"explicit|implicit|symbolic","priority":8}],
@@ -366,18 +361,19 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
   "world_bible": {%s}
 }
 
+**注意事项：**
+- 本次生成**仅包含整体框架**，不需要生成详细的章节大纲（chapter_outlines）
+- 章节大纲将在后续分批生成，避免JSON过大导致截断
+- 重点关注：整体剧情结构、卷册划分、核心角色关系、关键时间线节点
+
 **重要约束：**
 %s
 - volumes 数组必须恰好 %d 个元素，所有卷的章节首尾相连（第一卷chapter_start=1，最后一卷chapter_end=推算总章节数附近），章节连续不重叠
 - 各卷章节数由你根据剧情自由规划（可多可少），不要求相同
-- **chapter_outlines 必须为所有章节生成大纲**，章节号从1开始连续，与volumes中的章节数量严格对应
-- 每个章节大纲的events数组包含1～3个核心事件，每个事件描述简洁（50字以内），只描述实际发生的情节，不做总结或展望
-- 章节事件应体现剧情推进：人物互动、冲突发展、信息揭露、场景转换等，避免空泛描述
-- 章节标题应体现本章核心内容或悬念点，符合网文命名风格（如："初遇"、"暗流涌动"、"破局"）
 - characters 中已存在角色无需重复，只列**新增**角色
 - foreshadowings 中已存在伏笔无需重复，只列**新增**伏笔
 - 所有内容须与已有世界观、角色、术语表保持一致
-- 确保所有伏笔在大纲、时间线和章节事件中安排铺垫与揭露
+- 确保所有伏笔在大纲、时间线中安排铺垫与揭露
 - 【角色成长约束】角色的能力、武器、装备、身份、地位等属性必须符合时间线渐进获得原则：
   * 角色初始profile只写**现状基础属性**（性格、外貌、当前身份、当前实力水平）
   * 所有需要"获得"的东西（神器、秘籍、师父传承、新身份、突破境界）必须在timeline/章节大纲中明确标注**获得时间点和获得方式**
@@ -912,6 +908,223 @@ func (s *BlueprintService) Reject(ctx context.Context, id, comment string) error
 		`UPDATE book_blueprints SET status = 'rejected', review_comment = $1, updated_at = NOW() WHERE id = $2`,
 		comment, id)
 	return err
+}
+
+// GenerateChapterOutlines generates chapter outlines for a specific volume or batch of chapters.
+// This allows for incremental generation to avoid overwhelming the AI with too many chapters at once.
+func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectID string, volumeNum int, batchSize int) error {
+	logger := s.logger.With(zap.String("project_id", projectID), zap.Int("volume_num", volumeNum))
+
+	// Get project info
+	var project models.Project
+	if err := s.db.QueryRow(ctx, `SELECT id, title, genre, description, style_description FROM projects WHERE id = $1`, projectID).
+		Scan(&project.ID, &project.Title, &project.Genre, &project.Description, &project.StyleDescription); err != nil {
+		return fmt.Errorf("get project: %w", err)
+	}
+
+	// Get blueprint
+	bp, err := s.Get(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("get blueprint: %w", err)
+	}
+	if bp == nil {
+		return fmt.Errorf("no blueprint found")
+	}
+
+	// Get volume info
+	var volume models.Volume
+	if err := s.db.QueryRow(ctx,
+		`SELECT id, volume_num, title, chapter_start, chapter_end FROM volumes WHERE project_id = $1 AND volume_num = $2`,
+		projectID, volumeNum).Scan(&volume.ID, &volume.VolumeNum, &volume.Title, &volume.ChapterStart, &volume.ChapterEnd); err != nil {
+		return fmt.Errorf("get volume: %w", err)
+	}
+
+	// Calculate chapter range for this batch
+	totalChapters := volume.ChapterEnd - volume.ChapterStart + 1
+	if batchSize <= 0 || batchSize > totalChapters {
+		batchSize = totalChapters
+	}
+
+	// Get existing assets for context
+	characters, _ := s.characters.List(ctx, projectID)
+	worldBible, _ := s.worldBibles.Get(ctx, projectID)
+	glossaryBlock := s.glossary.BuildPromptBlock(ctx, projectID)
+
+	// Build context
+	var ctxBuilder strings.Builder
+	if worldBible != nil && len(worldBible.Content) > 4 {
+		ctxBuilder.WriteString("## 【世界观设定】\n")
+		ctxBuilder.WriteString(string(worldBible.Content))
+		ctxBuilder.WriteString("\n\n")
+	}
+	if len(characters) > 0 {
+		ctxBuilder.WriteString("## 【角色列表】\n")
+		for i, ch := range characters {
+			if i >= 20 {
+				break
+			}
+			ctxBuilder.WriteString(fmt.Sprintf("- **%s**（%s）：%s\n", ch.Name, ch.RoleType, string(ch.Profile)))
+		}
+		ctxBuilder.WriteString("\n")
+	}
+	if glossaryBlock != "" {
+		ctxBuilder.WriteString(glossaryBlock)
+		ctxBuilder.WriteString("\n")
+	}
+
+	// Extract master outline text
+	masterOutlineText := extractTextFromJSON(bp.MasterOutline)
+	globalTimelineText := extractTextFromJSON(bp.GlobalTimeline)
+
+	// Build prompt
+	prompt := fmt.Sprintf(`你是一位资深小说策划编辑，擅长%s类型的长篇小说规划。
+
+当前任务：为《%s》的【%s】生成详细的章节大纲。
+
+%s
+---
+## 整书框架
+**总体大纲：** %s
+
+**全局时间线：** %s
+
+**当前卷信息：**
+- 卷名：%s
+- 章节范围：第%d章～第%d章（共%d章）
+- 本次生成：第%d章～第%d章（%d章）
+
+---
+## 输出格式
+
+请**严格以 JSON 格式**返回章节大纲数组，JSON 之外不得有任何文字：
+
+{
+  "chapter_outlines": [
+    {"chapter_num": %d, "title": "第一章标题", "events": ["事件1描述（50字内）", "事件2描述（50字内）"]},
+    {"chapter_num": %d, "title": "第二章标题", "events": ["事件1描述"]},
+    ...（生成%d个章节的大纲）
+  ]
+}
+
+**约束要求：**
+- 每章1～3个核心事件，事件描述简洁（50字以内）
+- 只描述实际发生的情节，不做总结或展望
+- 章节事件应体现剧情推进：人物互动、冲突发展、信息揭露、场景转换
+- 章节标题符合网文命名风格（如："初遇"、"暗流涌动"、"破局"）
+- 确保章节之间承接连贯，与整书大纲和时间线保持一致
+- 角色能力获得需符合时间线，不可一次性获得多项能力
+`,
+		project.Genre,
+		project.Title,
+		volume.Title,
+		ctxBuilder.String(),
+		masterOutlineText,
+		globalTimelineText,
+		volume.Title,
+		volume.ChapterStart, volume.ChapterEnd, totalChapters,
+		volume.ChapterStart, volume.ChapterStart+batchSize-1, batchSize,
+		volume.ChapterStart,
+		volume.ChapterStart+1,
+		batchSize,
+	)
+
+	// Call AI
+	logger.Info("generating chapter outlines", zap.Int("batch_size", batchSize))
+	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
+		Task:     "chapter_outline_generation",
+		Messages: []gateway.ChatMessage{{Role: "user", Content: prompt}},
+	})
+	if err != nil {
+		return fmt.Errorf("AI generation failed: %w", err)
+	}
+
+	content := extractBlueprintJSON(resp.Content)
+	var parsed struct {
+		ChapterOutlines []struct {
+			ChapterNum int      `json:"chapter_num"`
+			Title      string   `json:"title"`
+			Events     []string `json:"events"`
+		} `json:"chapter_outlines"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return fmt.Errorf("parse chapter outlines: %w", err)
+	}
+
+	if len(parsed.ChapterOutlines) == 0 {
+		return fmt.Errorf("no chapter outlines generated")
+	}
+
+	// Insert into database
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	batch := &pgx.Batch{}
+	for _, chOutline := range parsed.ChapterOutlines {
+		title := chOutline.Title
+		if title == "" {
+			title = fmt.Sprintf("第%d章", chOutline.ChapterNum)
+		}
+		contentJSON, _ := json.Marshal(map[string]interface{}{"events": chOutline.Events})
+
+		// Upsert to allow regeneration
+		batch.Queue(
+			`INSERT INTO outlines (id, project_id, level, order_num, title, content, created_at, updated_at)
+			 VALUES ($1, $2, 'chapter', $3, $4, $5, NOW(), NOW())
+			 ON CONFLICT (project_id, level, order_num) DO UPDATE SET
+			     title = EXCLUDED.title,
+			     content = EXCLUDED.content,
+			     updated_at = NOW()`,
+			uuid.New().String(), projectID, chOutline.ChapterNum, title, contentJSON)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	for i := range parsed.ChapterOutlines {
+		if _, err := br.Exec(); err != nil {
+			br.Close()
+			return fmt.Errorf("insert chapter outline %d: %w", i, err)
+		}
+	}
+	if err := br.Close(); err != nil {
+		return fmt.Errorf("batch close: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	logger.Info("chapter outlines generated successfully", zap.Int("count", len(parsed.ChapterOutlines)))
+	return nil
+}
+
+// extractTextFromJSON extracts text from a JSON field that might be a string or {raw_content: "..."}.
+func extractTextFromJSON(data json.RawMessage) string {
+	if len(data) == 0 {
+		return ""
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		return str
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(data, &obj); err == nil {
+		if rawContent, ok := obj["raw_content"].(string); ok {
+			// Try to parse raw_content as JSON
+			var parsed map[string]interface{}
+			if err := json.Unmarshal([]byte(rawContent), &parsed); err == nil {
+				// Extract the specific field if exists
+				for _, val := range parsed {
+					if s, ok := val.(string); ok && s != "" {
+						return s
+					}
+				}
+			}
+			return rawContent
+		}
+	}
+	return string(data)
 }
 
 // BlueprintExport represents the complete blueprint package for export/import.

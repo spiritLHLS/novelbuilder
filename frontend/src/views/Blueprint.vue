@@ -203,12 +203,17 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="200">
+          <el-table-column label="操作" width="280">
             <template #default="{ row }">
               <el-button v-if="row.status === 'pending_review'" size="small" type="success"
                 @click="approveVolume(row.id)">批准</el-button>
               <el-button v-if="row.status === 'pending_review'" size="small" type="danger"
                 @click="rejectVolume(row.id)">驳回</el-button>
+              <el-button size="small" type="primary" 
+                :loading="generatingOutlines.has(row.volume_num)"
+                @click="generateChapterOutlines(row.volume_num)">
+                生成章节大纲
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -290,6 +295,7 @@ const generating = ref(false)
 const generatingStep = ref(0)
 const generationError = ref('')
 const volumes = ref<any[]>([])
+const generatingOutlines = ref<Set<number>>(new Set())
 
 const worldBibleCount = ref(0)
 const characterCount = ref(0)
@@ -704,6 +710,20 @@ async function rejectVolume(id: string) {
     ElMessage.success('卷已驳回')
     await fetchAll()
   } catch { ElMessage.error('操作失败') }
+}
+
+async function generateChapterOutlines(volumeNum: number) {
+  try {
+    generatingOutlines.value.add(volumeNum)
+    await blueprintApi.generateChapterOutlines(projectId, volumeNum)
+    ElMessage.success(`第${volumeNum}卷章节大纲已生成`)
+    await fetchAll()
+  } catch (err: any) {
+    const msg = err?.response?.data?.error || '生成章节大纲失败'
+    ElMessage.error(msg)
+  } finally {
+    generatingOutlines.value.delete(volumeNum)
+  }
 }
 </script>
 
