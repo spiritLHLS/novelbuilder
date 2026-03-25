@@ -230,10 +230,14 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 硬性要求：
 1. 内容字数控制在 %d～%d 字之间
 2. 本章最多写 1～3 件事件进展，每件事用场景、对话、细节充分展开，不要蜻蜓点水
-3. 从上一章结尾处自然承接，禁止复述前文
+3. 从上一章结尾处自然承接，禁止复述前文，延续前一章的语言风格和叙述节奏
 4. 严格锁定指定POV视角，不写该角色感知不到的信息
-5. 章节在场景动作、对话或悬念处自然断开，禁止写总结段、展望段、升华段
-6. 遵守系统提示中的全部反AI文风规则`,
+5. **强制断章要求**：章节必须在场景动作、对话或悬念的高点处戛然而止
+   - 禁止任何收尾：不写总结段、展望段、升华段、情绪收束段
+   - 禁止预告句式：【他知道XXX】【未来XXX】【更大的XXX即将到来】
+   - 最后一段不超过2句话，必须是未完成的动作/对话/悬念
+   - 参考网文断章：在读者最想知道下文时立即断开
+6. 遵守系统提示中的全部反AI文风规则（禁用微微/缓缓/淡淡等）`,
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
@@ -654,10 +658,14 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 硬性要求：
 1. 内容字数控制在 %d～%d 字之间
 2. 本章最多写 1～3 件事件进展，每件事用场景、对话、细节充分展开，不要蜻蜓点水
-3. 从上一章结尾处自然承接，禁止复述前文
+3. 从上一章结尾处自然承接，禁止复述前文，延续前一章的语言风格和叙述节奏
 4. 严格锁定指定POV视角，不写该角色感知不到的信息
-5. 章节在场景动作、对话或悬念处自然断开，禁止写总结段、展望段、升华段
-6. 遵守系统提示中的全部反AI文风规则`,
+5. **强制断章要求**：章节必须在场景动作、对话或悬念的高点处戛然而止
+   - 禁止任何收尾：不写总结段、展望段、升华段、情绪收束段
+   - 禁止预告句式：【他知道XXX】【未来XXX】【更大的XXX即将到来】
+   - 最后一段不超过2句话，必须是未完成的动作/对话/悬念
+   - 参考网文断章：在读者最想知道下文时立即断开
+6. 遵守系统提示中的全部反AI文风规则（禁用微微/缓缓/淡淡等）`,
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,

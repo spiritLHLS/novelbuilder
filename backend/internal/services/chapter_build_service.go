@@ -353,12 +353,24 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 
 	// ===== Anti-AI Writing Craft Rules =====
 	sb.WriteString("=== 写作手法硬规则（反AI痕迹）===\n")
-	sb.WriteString("【章节结尾】\n")
-	sb.WriteString("- 禁止在章节结尾写总结段、展望段、心理独白升华段。\n")
-	sb.WriteString("- 禁止出现类似【他知道，这只是开始】【未来的路还很长】【更大的风暴即将来临】等带预告性质的句子。\n")
-	sb.WriteString("- 章节在一个场景动作、一句对话、一个悬念的自然节点处即可断开，不需要给读者【交代感】。\n")
-	sb.WriteString("- 允许在场景中途甚至对话中途断章。网文断章天然跨越数十章的起承转合，单章不需要完整闭合。\n")
-	sb.WriteString("- 结尾样式参考：一句冷对话 / 一个突发事件 / 一个角色做出决定的瞬间 / 某人转身离开 / 场景戛然而止。\n")
+	sb.WriteString("【章节结尾 - 强制断章，拒绝收尾】\n")
+	sb.WriteString("核心原则：网文章节是连载碎片，单章无需完整叙事弧线。必须在情节高点或悬念处强行断开。\n")
+	sb.WriteString("\n严格禁止：\n")
+	sb.WriteString("- 任何形式的总结段、展望段、心理独白升华段、情绪收束段\n")
+	sb.WriteString("- 预告性句式：【他/她知道XXX】【未来XXX】【更大的XXX即将到来】【这只是开始】【命运的齿轮开始转动】【新的篇章即将展开】\n")
+	sb.WriteString("- 场景完整收尾：【夜深了，XX回到房间】【一切归于平静】【故事还在继续】\n")
+	sb.WriteString("- 给读者交代感的任何尝试（人是活的，章节要在悬念中断）\n")
+	sb.WriteString("\n正确断章范式（参考经典网文）：\n")
+	sb.WriteString("1. 对话断章：【他冷冷道：你敢！】- 在威胁/质问处戛然而止\n")
+	sb.WriteString("2. 动作断章：【他的手，已经按在了剑柄上。】- 在动作触发前一刻断开\n")
+	sb.WriteString("3. 信息断章：【门外传来的脚步声，不是一个人。】- 在关键信息揭露后立即断\n")
+	sb.WriteString("4. 冲突断章：【两人对视，空气仿佛凝固。】- 在冲突即将爆发时断\n")
+	sb.WriteString("5. 悬念断章：【他忽然意识到，那封信里少了一个字。】- 在谜题出现后立即断\n")
+	sb.WriteString("\n技术要求：\n")
+	sb.WriteString("- 最后一句必须是：未完成动作 / 未回答问题 / 未解决冲突 / 突发转折\n")
+	sb.WriteString("- 允许在对话中途断章（甚至在一句话说到一半）\n")
+	sb.WriteString("- 允许在场景描写到50%时突然断开\n")
+	sb.WriteString("- 最后一段不得超过2句话，且必须制造紧张感或悬念\n")
 	sb.WriteString("\n【叙事视角与时间线】\n")
 	sb.WriteString("- 锁定POV：如果指定了主视角角色，整章只能写该角色能感知到的信息（所见、所闻、所想）。不得插入该角色不可能知道的信息、其他角色的内心独白、或全知叙事者的评论。\n")
 	sb.WriteString("- 视角切换需要明确的场景分隔（空行或 *** 分隔符），不可在同一段内跳切视角。\n")
@@ -511,26 +523,37 @@ func (s *ChapterService) humanizeContent(ctx context.Context, text string, inten
 
 func (s *ChapterService) generateSummary(ctx context.Context, content string) string {
 	// Truncate for summary generation to avoid token overflow
+	// Use more content for better context capture (3000 -> 4000)
 	truncated := content
-	if utf8.RuneCountInString(truncated) > 3000 {
+	if utf8.RuneCountInString(truncated) > 4000 {
 		runes := []rune(truncated)
-		truncated = string(runes[:3000])
+		truncated = string(runes[:4000])
 	}
 
+	// Enhanced summary prompt for better cross-chapter continuity
+	systemPrompt := `你是长篇小说编辑。生成章节摘要时必须记录：
+1. 核心剧情：本章推进的1-3件事（具体动作、对话要点）
+2. 角色状态：情绪变化、关系变化、位置移动
+3. 悬念/伏笔：未解决的问题、埋下的线索
+4. 结尾方式：最后一幕的场景和断章点（对话/动作/悬念）
+5. 语言风格：句式特征（长短句比例、是否有方言/俚语、叙述节奏快慢）
+
+摘要控制在300-400字。重点是为下一章提供承接依据，而非给读者看的提要。`
+
 	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
-		Task: "summarization",
+		Task:      "summarization",
+		MaxTokens: 800, // Increased from 500 for more detailed summary
 		Messages: []gateway.ChatMessage{
-			{Role: "system", Content: "你是一位文学编辑。请用200字以内概括以下章节的主要情节、角色变化和关键转折点。"},
+			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: truncated},
 		},
-		MaxTokens: 500,
 	})
 	if err != nil {
 		s.logger.Warn("summary generation failed", zap.Error(err))
-		// Fallback: take the first 200 characters
+		// Fallback: take the first 300 characters (increased from 200)
 		runes := []rune(content)
-		if len(runes) > 200 {
-			return string(runes[:200]) + "..."
+		if len(runes) > 300 {
+			return string(runes[:300]) + "..."
 		}
 		return content
 	}
