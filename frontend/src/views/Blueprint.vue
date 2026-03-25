@@ -713,11 +713,69 @@ async function rejectVolume(id: string) {
 }
 
 async function generateChapterOutlines(volumeNum: number) {
+  const volume = volumes.value.find(v => v.volume_num === volumeNum)
+  if (!volume) {
+    ElMessage.error('找不到卷信息')
+    return
+  }
+  
+  const totalChapters = volume.chapter_end - volume.chapter_start + 1
+  
+  // Count existing chapter outlines for this volume
+  const existingCount = chapterOutlines.value.filter(
+    o => o.order_num >= volume.chapter_start && o.order_num <= volume.chapter_end
+  ).length
+  
+  const remaining = totalChapters - existingCount
+  
+  if (remaining === 0) {
+    ElMessage.info(`第${volumeNum}卷所有章节大纲已生成完成（共${totalChapters}章）`)
+    return
+  }
+  
+  // For large volumes (>15 chapters remaining), ask user for batch size
+  let batchSize = remaining
+  if (remaining > 15) {
+    try {
+      const { value } = await (await import('element-plus')).ElMessageBox.prompt(
+        `该卷共${totalChapters}章，已生成${existingCount}章，剩余${remaining}章。\n每批生成章节数（推荐5-15章，避免超时）：`,
+        '设置批次大小',
+        {
+          inputValue: Math.min(10, remaining).toString(),
+          inputPattern: /^[1-9]\d*$/,
+          inputErrorMessage: '请输入有效的正整数'
+        }
+      )
+      batchSize = parseInt(value, 10)
+      if (batchSize > remaining) {
+        batchSize = remaining
+      }
+    } catch {
+      // User cancelled
+      return
+    }
+  }
+  
   try {
     generatingOutlines.value.add(volumeNum)
-    await blueprintApi.generateChapterOutlines(projectId, volumeNum)
-    ElMessage.success(`第${volumeNum}卷章节大纲已生成`)
+    await blueprintApi.generateChapterOutlines(projectId, volumeNum, batchSize)
+    
     await fetchAll()
+    
+    // Check if there are more chapters to generate
+    const newExistingCount = chapterOutlines.value.filter(
+      o => o.order_num >= volume.chapter_start && o.order_num <= volume.chapter_end
+    ).length
+    const newRemaining = totalChapters - newExistingCount
+    
+    if (newRemaining > 0) {
+      ElMessage.success({
+        message: `第${volumeNum}卷已生成${batchSize}章，还剩${newRemaining}章。请再次点击继续生成。`,
+        duration: 5000
+      })
+    } else {
+      ElMessage.success(`第${volumeNum}卷所有章节大纲生成完成（共${totalChapters}章）`)
+    }
   } catch (err: any) {
     const msg = err?.response?.data?.error || '生成章节大纲失败'
     ElMessage.error(msg)

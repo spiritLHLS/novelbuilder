@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/services"
+	"go.uber.org/zap"
 )
 
 // ── Project CRUD ──────────────────────────────────────────────────────────────
@@ -152,20 +153,25 @@ func (h *Handler) ImportBlueprint(c *gin.Context) {
 func (h *Handler) GenerateChapterOutlines(c *gin.Context) {
 	var req struct {
 		VolumeNum int `json:"volume_num" binding:"required,min=1"`
-		BatchSize int `json:"batch_size"` // Optional, defaults to all chapters in volume
+		BatchSize int `json:"batch_size"` // Optional, defaults to 10 chapters per batch
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 	if req.BatchSize <= 0 {
-		req.BatchSize = 9999 // Large number to include all chapters
+		req.BatchSize = 10 // Default: generate 10 chapters at a time (smaller batches to avoid timeout)
 	}
 	if err := h.blueprints.GenerateChapterOutlines(c.Request.Context(), c.Param("id"), req.VolumeNum, req.BatchSize); err != nil {
+		h.logger.Error("failed to generate chapter outlines",
+			zap.String("project_id", c.Param("id")),
+			zap.Int("volume_num", req.VolumeNum),
+			zap.Int("batch_size", req.BatchSize),
+			zap.Error(err))
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"status": "generated"})
+	c.JSON(200, gin.H{"status": "generated", "message": "章节大纲已生成，如有剩余章节请再次点击继续生成"})
 }
 
 // ── World Bible ───────────────────────────────────────────────────────────────
