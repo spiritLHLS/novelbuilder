@@ -229,13 +229,21 @@
       </el-card>
 
       <!-- Chapter Outlines View Dialog -->
-      <el-dialog v-model="showOutlinesDialog" :title="`第${viewingVolumeNum}卷章节大纲`" width="70%">
+      <el-dialog v-model="showOutlinesDialog" :title="`第${viewingVolumeNum}卷章节大纲`" width="70%" @open="volumeOutlinePage = 1">
         <div v-if="volumeOutlines.length > 0">
-          <el-tag type="info" size="small" style="margin-bottom: 16px;">
-            共 {{ volumeOutlines.length }} 章
-          </el-tag>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <el-tag type="info" size="small">共 {{ volumeOutlines.length }} 章</el-tag>
+            <el-pagination
+              v-model:current-page="volumeOutlinePage"
+              :page-size="outlinePageSize"
+              :total="volumeOutlines.length"
+              layout="prev,pager,next"
+              small
+              background
+            />
+          </div>
           <el-collapse accordion>
-            <el-collapse-item v-for="outline in volumeOutlines" :key="outline.id" :name="outline.id">
+            <el-collapse-item v-for="outline in pagedVolumeOutlines" :key="outline.id" :name="outline.id">
               <template #title>
                 <span style="font-weight: 500; margin-right: 8px;">第{{ outline.order_num }}章</span>
                 <span style="color: #606266;">{{ outline.title }}</span>
@@ -249,6 +257,15 @@
               <el-empty v-else description="暂无事件" :image-size="60" style="padding: 20px 0;" />
             </el-collapse-item>
           </el-collapse>
+          <el-pagination
+            v-if="volumeOutlines.length > outlinePageSize"
+            v-model:current-page="volumeOutlinePage"
+            :page-size="outlinePageSize"
+            :total="volumeOutlines.length"
+            layout="prev,pager,next,jumper"
+            style="margin-top:16px; justify-content:center; display:flex;"
+            background
+          />
         </div>
         <el-empty v-else description="该卷暂无章节大纲，请先生成" :image-size="80" />
       </el-dialog>
@@ -256,11 +273,20 @@
       <!-- Chapter Outlines -->
       <el-card v-if="chapterOutlines.length > 0" shadow="hover" style="margin-top: 20px;">
         <template #header>
-          <span>章节大纲</span>
-          <el-tag size="small" type="info" style="margin-left: 8px;">{{ chapterOutlines.length }} 章</el-tag>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div><span>章节大纲</span><el-tag size="small" type="info" style="margin-left: 8px;">{{ chapterOutlines.length }} 章</el-tag></div>
+            <el-pagination
+              v-model:current-page="outlinePage"
+              :page-size="outlinePageSize"
+              :total="chapterOutlines.length"
+              layout="prev,pager,next"
+              small
+              background
+            />
+          </div>
         </template>
         <el-collapse accordion>
-          <el-collapse-item v-for="outline in chapterOutlines" :key="outline.id" :name="outline.id">
+          <el-collapse-item v-for="outline in pagedChapterOutlines" :key="outline.id" :name="outline.id">
             <template #title>
               <span style="font-weight: 500; margin-right: 8px;">第{{ outline.order_num }}章</span>
               <span style="color: #606266;">{{ outline.title }}</span>
@@ -274,6 +300,15 @@
             <el-empty v-else description="暂无事件" :image-size="60" style="padding: 20px 0;" />
           </el-collapse-item>
         </el-collapse>
+        <el-pagination
+          v-if="chapterOutlines.length > outlinePageSize"
+          v-model:current-page="outlinePage"
+          :page-size="outlinePageSize"
+          :total="chapterOutlines.length"
+          layout="prev,pager,next,jumper"
+          style="margin-top:16px; justify-content:center; display:flex;"
+          background
+        />
       </el-card>
 
       <!-- Blueprint Raw Content -->
@@ -342,6 +377,21 @@ const chapterOutlines = computed(() => {
   return outlines.value
     .filter(o => o.level === 'chapter')
     .sort((a, b) => a.order_num - b.order_num)
+})
+
+// Pagination for chapter outlines
+const outlinePageSize = 10
+const outlinePage = ref(1)
+const pagedChapterOutlines = computed(() => {
+  const start = (outlinePage.value - 1) * outlinePageSize
+  return chapterOutlines.value.slice(start, start + outlinePageSize)
+})
+
+// Pagination for the volume dialog
+const volumeOutlinePage = ref(1)
+const pagedVolumeOutlines = computed(() => {
+  const start = (volumeOutlinePage.value - 1) * outlinePageSize
+  return volumeOutlines.value.slice(start, start + outlinePageSize)
 })
 
 // Import/Export state
@@ -685,6 +735,8 @@ async function fetchAll() {
     characterCount.value = (charRes.data.data || []).length
     outlines.value = (olRes.data.data || [])
     outlineCount.value = outlines.value.length
+    // Reset pagination when outlines change
+    outlinePage.value = 1
     foreshadowingCount.value = (fsRes.data.data || []).length
   } catch { /* empty */ }
 }

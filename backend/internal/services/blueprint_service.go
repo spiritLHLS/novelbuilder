@@ -1348,7 +1348,173 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 		zap.Int("remaining_in_volume", remainingChapters),
 		zap.Int("chapter_range_start", nextChapterNum),
 		zap.Int("chapter_range_end", endChapterNum))
+
+	// Auto-assign foreshadowing planned chapters for any foreshadowings missing them.
+	// Runs synchronously but errors are non-fatal — the outline task already succeeded.
+	s.autoAssignForeshadowingTimings(ctx, projectID, logger)
+
 	return nil
+}
+
+// autoAssignForeshadowingTimings calls the LLM to assign planned_embed_chapter and
+// planned_resolve_chapter to any foreshadowings that still have 0 for those fields.
+// It does two short non-transactional reads and one short batch write — no N+1, no long txn.
+func (s *BlueprintService) autoAssignForeshadowingTimings(ctx context.Context, projectID string, logger *zap.Logger) {
+	// 1. Fetch only unassigned foreshadowings in a single query.
+	type unassignedFS struct {
+		ID          string
+		Content     string
+		Priority    int
+		EmbedMethod string
+	}
+	var unassigned []unassignedFS
+	fsRows, err := s.db.Query(ctx,
+		`SELECT id, content, priority, COALESCE(embed_method, '')
+		 FROM foreshadowings
+		 WHERE project_id = $1
+		   AND COALESCE(planned_embed_chapter, 0) = 0
+		   AND status IN ('planned', 'planted')
+		 ORDER BY priority DESC`,
+		projectID)
+	if err != nil {
+		return
+	}
+	for fsRows.Next() {
+		var f unassignedFS
+		if fsRows.Scan(&f.ID, &f.Content, &f.Priority, &f.EmbedMethod) == nil {
+			unassigned = append(unassigned, f)
+		}
+	}
+	fsRows.Close()
+
+	if len(unassigned) == 0 {
+		return
+	}
+
+	// 2. Fetch all generated chapter outlines for this project in a single query.
+	type chSummary struct {
+		Num        int
+		Title      string
+		FirstEvent string
+	}
+	var chapters []chSummary
+	outlineRows, err := s.db.Query(ctx,
+		`SELECT order_num, title, content FROM outlines
+		 WHERE project_id = $1 AND level = 'chapter'
+		 ORDER BY order_num`,
+		projectID)
+	if err != nil {
+		return
+	}
+	for outlineRows.Next() {
+		var oNum int
+		var oTitle string
+		var oContent json.RawMessage
+		if outlineRows.Scan(&oNum, &oTitle, &oContent) != nil {
+			continue
+		}
+		firstEvent := ""
+		var data map[string]interface{}
+		if json.Unmarshal(oContent, &data) == nil {
+			if evts, ok := data["events"].([]interface{}); ok && len(evts) > 0 {
+				if es, ok := evts[0].(string); ok {
+					firstEvent = es
+				}
+			}
+		}
+		chapters = append(chapters, chSummary{Num: oNum, Title: oTitle, FirstEvent: firstEvent})
+	}
+	outlineRows.Close()
+
+	if len(chapters) == 0 {
+		return
+	}
+
+	// 3. Build LLM prompt.
+	lastChapterNum := chapters[len(chapters)-1].Num
+	var sb strings.Builder
+	sb.WriteString("你是小说策划助手。根据以下章节大纲列表，为每条尚未分配时间点的伏笔指定【植入章节号】和【回收章节号】。\n\n")
+	sb.WriteString("## 章节大纲摘要\n")
+	for _, ch := range chapters {
+		sb.WriteString(fmt.Sprintf("第%d章《%s》: %s\n", ch.Num, ch.Title, ch.FirstEvent))
+	}
+	sb.WriteString(fmt.Sprintf("\n（已生成至第%d章）\n\n", lastChapterNum))
+	sb.WriteString("## 待分配伏笔列表（序号从0开始）\n")
+	for i, fs := range unassigned {
+		sb.WriteString(fmt.Sprintf("%d. [P%d] %s（埋设方式：%s）\n", i, fs.Priority, fs.Content, fs.EmbedMethod))
+	}
+	sb.WriteString(`
+请输出JSON，为每条伏笔分配植入和回收章节号：
+{
+  "assignments": [
+    {"idx": 0, "embed": 植入章节号, "resolve": 回收章节号},
+    ...
+  ]
+}
+
+约束：
+- embed必须严格小于resolve，且两者至少相差5章
+- 高优先级（P>=7）伏笔的resolve优先安排在高潮/转折章节
+- 植入/回收章节必须在已生成的章节范围内
+- 只输出JSON，无其他文字`)
+
+	// 4. Call LLM (fire and forget on error).
+	resp, aiErr := s.ai.Chat(ctx, gateway.ChatRequest{
+		Task:      "foreshadowing_assignment",
+		MaxTokens: 1200,
+		Messages:  []gateway.ChatMessage{{Role: "user", Content: sb.String()}},
+	})
+	if aiErr != nil {
+		logger.Warn("auto-assign foreshadowing timings: LLM call failed", zap.Error(aiErr))
+		return
+	}
+
+	rawJSON := extractBlueprintJSON(resp.Content)
+	var result struct {
+		Assignments []struct {
+			Idx     int `json:"idx"`
+			Embed   int `json:"embed"`
+			Resolve int `json:"resolve"`
+		} `json:"assignments"`
+	}
+	if jsonErr := json.Unmarshal([]byte(rawJSON), &result); jsonErr != nil {
+		previewLen := 200
+		if len(rawJSON) < previewLen {
+			previewLen = len(rawJSON)
+		}
+		logger.Warn("auto-assign foreshadowing timings: parse failed",
+			zap.Error(jsonErr), zap.String("raw", rawJSON[:previewLen]))
+		return
+	}
+
+	// 5. Batch update — short, no explicit transaction needed for individual row updates.
+	updateBatch := &pgx.Batch{}
+	for _, a := range result.Assignments {
+		if a.Idx < 0 || a.Idx >= len(unassigned) {
+			continue
+		}
+		if a.Embed <= 0 || a.Resolve <= a.Embed+4 {
+			continue // skip invalid assignments
+		}
+		updateBatch.Queue(
+			`UPDATE foreshadowings
+			 SET planned_embed_chapter = $1, planned_resolve_chapter = $2, updated_at = NOW()
+			 WHERE id = $3 AND COALESCE(planned_embed_chapter, 0) = 0`,
+			a.Embed, a.Resolve, unassigned[a.Idx].ID)
+	}
+
+	if updateBatch.Len() == 0 {
+		return
+	}
+
+	ubr := s.db.SendBatch(ctx, updateBatch)
+	for i := 0; i < updateBatch.Len(); i++ {
+		if _, bErr := ubr.Exec(); bErr != nil {
+			logger.Warn("auto-assign foreshadowing timings: update failed", zap.Error(bErr))
+		}
+	}
+	ubr.Close()
+	logger.Info("auto-assigned foreshadowing timings", zap.Int("updated", updateBatch.Len()))
 }
 
 // extractTextFromJSON extracts text from a JSON field that might be a string or {raw_content: "..."}.
