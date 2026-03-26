@@ -213,6 +213,10 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		wordsMin, wordsMax = wordsMax, wordsMin
 	}
 
+	// Pass resolved word-count limits into req so buildSystemPrompt can embed them as anchor constraints
+	req.ChapterWordsMin = wordsMin
+	req.ChapterWordsMax = wordsMax
+
 	// Build system prompt using HEAD/MIDDLE/TAIL (Lost-in-Middle) layout
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
 
@@ -228,8 +232,8 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 - 张力水平：%.1f
 
 硬性要求：
-1. 内容字数控制在 %d～%d 字之间
-2. 本章最多写 1～3 件事件进展，每件事用场景、对话、细节充分展开，不要蜻蜓点水
+1. ⚠️ 字数硬上限：正文不得超过 %d 字。当写作接近 %d 字时立即执行断章收尾；字数不足 %d 字时通过对话和动作细节充实。超出上限是严重错误。
+2. 本章最多推进 1～3 件事件，事件展开优先用**对话和动作**推进（不要大段景物描写）
 3. 从上一章结尾处自然承接，禁止复述前文，延续前一章的语言风格和叙述节奏
 4. 严格锁定指定POV视角，不写该角色感知不到的信息
 5. **强制断章要求**：章节必须在场景动作、对话或悬念的高点处戛然而止
@@ -246,7 +250,7 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
-		wordsMin, wordsMax)
+		wordsMax, wordsMax, wordsMin)
 
 	if req.ContextHint != "" {
 		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
@@ -649,6 +653,10 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 		wordsMin, wordsMax = wordsMax, wordsMin
 	}
 
+	// Pass resolved word-count limits into req so buildSystemPrompt can embed them as anchor constraints
+	req.ChapterWordsMin = wordsMin
+	req.ChapterWordsMax = wordsMax
+
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
 	userPrompt := fmt.Sprintf(`请生成第 %d 章的完整内容。
 
@@ -661,8 +669,8 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 - 张力水平：%.1f
 
 硬性要求：
-1. 内容字数控制在 %d～%d 字之间
-2. 本章最多写 1～3 件事件进展，每件事用场景、对话、细节充分展开，不要蜻蜓点水
+1. ⚠️ 字数硬上限：正文不得超过 %d 字。当写作接近 %d 字时立即执行断章收尾；字数不足 %d 字时通过对话和动作细节充实。超出上限是严重错误。
+2. 本章最多推进 1～3 件事件，事件展开优先用**对话和动作**推进（不要大段景物描写）
 3. 从上一章结尾处自然承接，禁止复述前文，延续前一章的语言风格和叙述节奏
 4. 严格锁定指定POV视角，不写该角色感知不到的信息
 5. **强制断章要求**：章节必须在场景动作、对话或悬念的高点处戛然而止
@@ -679,7 +687,7 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
-		wordsMin, wordsMax)
+		wordsMax, wordsMax, wordsMin)
 	if req.ContextHint != "" {
 		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
 	}
@@ -762,10 +770,16 @@ func (s *ChapterService) ensureChapterWordCount(
 			return adjusted, totalInputTokens, totalOutputTokens, nil
 		}
 
-		action := "压缩"
-		if current < wordsMin {
-			action = "扩写"
+		// If over the max, do NOT compress — the prompt must be strong enough to prevent over-generation.
+		// Truncating post-hoc breaks narrative flow and is explicitly unwanted.
+		if current > wordsMax {
+			s.logger.Warn("chapter over word limit, returning as-is (no post-hoc compression)",
+				zap.Int("length", current),
+				zap.Int("max", wordsMax))
+			return adjusted, totalInputTokens, totalOutputTokens, nil
 		}
+
+		action := "扩写" // only expand if under min
 
 		resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 			Task: "chapter_length_adjustment",

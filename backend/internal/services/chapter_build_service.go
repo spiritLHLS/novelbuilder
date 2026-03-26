@@ -197,6 +197,11 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string, chapterNum int, req models.GenerateChapterRequest) string {
 	var sb strings.Builder
 
+	// ===== ANCHOR: Word count hard limit (highest priority, placed first for maximum LLM attention) =====
+	if req.ChapterWordsMin > 0 && req.ChapterWordsMax > 0 {
+		sb.WriteString(fmt.Sprintf("⚠️【字数硬约束 — 最高优先级】本章正文须控制在 %d～%d 字以内。当写作接近 %d 字时，无论剧情进展如何，必须立即执行断章收尾（用对话、动作或悬念断开），绝不允许超出 %d 字上限。超出字数上限是严重错误。⚠️\n\n", req.ChapterWordsMin, req.ChapterWordsMax, req.ChapterWordsMax, req.ChapterWordsMax))
+	}
+
 	// ===== HEAD: World Bible + Constitution + Character States =====
 	sb.WriteString("=== 世界观设定 ===\n")
 	var worldContent json.RawMessage
@@ -463,10 +468,12 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	sb.WriteString("- 本章只推进大纲明确要求的事件，禁止提前展开后续章节的设定、底牌、关系反转或高潮信息。\n")
 	sb.WriteString("- 未出现在【本章可用伏笔】里的后续设定，一律不能提前明示、解释、兑现。\n")
 	sb.WriteString("- 若需要铺垫后续内容，只能做轻量暗示（一笔带过的细节、角色一闪而逝的念头），不能让角色在本章就把后续阶段的问题直接解决。\n")
-	sb.WriteString("- 【信息密度控制】本章最多推进 1～3 件剧情事件或关系进展，不得更多。每件事件需要充足的场景描写、角色反应、感官细节来填充，而非流水账式快速略过。如果大纲本章要求超过3件事，请只完成其中最重要的2～3件，其余顺延到下一章。\n")
+	sb.WriteString("- 【信息密度控制】本章最多推进 1～3 件剧情事件；事件展开以**对话交锋和人物动作反应**为主要手段，而非大段场景描写——每次景物/环境描写控制在3～4句以内；大纲要求超过3件事时只完成最关键的2～3件，其余顺延。\n")
 	sb.WriteString("- 【卷内剧情边界】本章属于当前卷的范围，只处理本卷应有的剧情线。禁止在本章引入或解决属于后续卷的核心冲突、关键真相或角色重大转变。\n")
 	if chapterNum == 1 {
-		sb.WriteString("- 第一章优先完成开场氛围、主角处境、核心矛盾引子，避免把中后期设定一次性打满。\n")
+		sb.WriteString("- 【第一章：主角姓名揭露】主角名字必须在第一章内通过他人称呼、自我介绍或心理活动等方式出现，读者读完第一章必须知道主角叫什么；全章不得仅用\"他\"/\"她\"/\"少年\"/\"年轻人\"等代称而不揭露名字。\n")
+		sb.WriteString("- 【第一章：开篇节奏】开篇须直接进入动作、对话或具体冲突，前300字内发生至少一件具体事件；禁止以大段环境描写、倒叙身世或世界观铺垫作为开场。\n")
+		sb.WriteString("- 第一章重点在主角当前处境和核心矛盾引子，避免把中后期设定一次性打满。\n")
 	}
 	sb.WriteString("\n")
 
@@ -511,8 +518,9 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	sb.WriteString("  · 让角色通过行动和对话展示性格，而非旁白说明性格（Show Don't Tell）\n")
 	sb.WriteString("\n【节奏与密度】\n")
 	sb.WriteString("- 本章叙事时间跨度不宜超过一天（除非大纲明确要求跨多日），场景越集中，细节越饱满，AI味越低。\n")
-	sb.WriteString("- 每个场景至少包含一组有效对话（2-4轮以上的交锋/信息交换），禁止全篇纯心理独白或纯景物描写。\n")
-	sb.WriteString("- 战斗/紧张场景使用碎片化短句加速节奏；日常/铺垫场景可使用长句和环境描写减速。\n")
+	sb.WriteString("- 【网文叙事重心】每个场景的核心是**对话交锋**（至少2-4轮人物互动），景物/环境描写仅作辅助，单次不超过3～4句，全章环境描写总量不超过正文15%；禁止全篇纯心理独白或连续多段景物描写。\n")
+	sb.WriteString("- 【描写克制原则】优先通过人物行为、对话、内心独白（短句）推动剧情，背景描写、景物铺陈仅在必要时点缀；网文读者阅读速度快，大段描写会导致跳读。每段描写超过4句须立即接入对话或动作。\n")
+	sb.WriteString("- 战斗/紧张场景使用碎片化短句加速节奏；日常/铺垫场景可适当使用长句，但环境描写上限不变。\n")
 	sb.WriteString("- 角色不能在一章之内完成态度大反转，情绪变化需要事件驱动且有过渡。\n")
 	sb.WriteString("\n【角色成长与能力获得规则】\n")
 	sb.WriteString("- 严格遵守时间线：角色只能使用【角色状态】中已明确拥有的能力、武器、装备、身份\n")
@@ -607,7 +615,7 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		}
 	}
 
-	sb.WriteString("\n你是一位笔法老练的网络小说作者，文字干净利落，擅长用场景和对话推动剧情。请严格遵守世界观设定和宪法规则，保持角色性格一致性。字数范围属于硬约束，必须落在要求区间内。严格遵守上述所有反AI写作规则。")
+	sb.WriteString("\n你是一位专注网文创作的作者，文字干净利落，以对话和动作驱动剧情节奏，克制使用景物描写。请严格遵守世界观设定和宪法规则，保持角色性格一致性。【字数硬上限再次提醒：严格不超过上方规定字数上限，宁可断章偏早，绝不超出上限】。严格遵守上述所有反AI写作规则。")
 
 	return sb.String()
 }
