@@ -805,18 +805,45 @@ func buildGenreConstraints(genre string, gt *models.GenreTemplate) string {
 			"- 魔法体系须有明确规则与代价，不能是\"万能魔法\"",
 			"- master_outline 须体现英雄旅程阶段：「启程→考验→深渊→涅槃→归返」",
 			"- 角色 profile 应包含种族、职业、技能特色",
+			"- 【题材禁入元素】严禁出现以下不属于西幻的元素：科技/机械/电子设备/枪械/火箭/电脑/手机/网络/基因工程/纳米技术/人工智能/太空旅行/修炼境界/丹药/灵石/宗门体系/仙人/渡劫飞升/现代都市场景。一切力量来源必须是魔法、神力、血脉或自然元素，禁止出现科技驱动的力量体系。",
 		}
 	case "玄幻":
 		points = []string{
 			"- 修炼境界须清晰标注，成长不可一步登天",
 			"- 战斗描写须结合力量体系，避免泛化",
 			"- master_outline 须体现修炼突破的阶段感",
+			"- 【题材禁入元素】严禁出现以下不属于玄幻的元素：枪械/火箭/电脑/手机/网络/基因工程/纳米技术/人工智能/太空旅行/西式骑士团/精灵矮人等西幻种族/现代都市场景/现代科技产品。一切力量来源必须是修炼、功法、天材地宝、血脉觉醒等修仙体系元素。",
 		}
 	case "末世":
 		points = []string{
 			"- 资源匮乏和紧张感须贯穿全文规划",
 			"- 异能/进化逻辑须与世界设定自洽",
 			"- master_outline 须体现生存→建立据点→反攻的递进结构",
+			"- 【题材禁入元素】严禁出现以下不属于末世的元素：修炼境界/丹药/灵石/宗门体系/仙人/魔法/精灵矮人等奇幻种族/太空旅行/星际贸易。一切力量来源必须基于末世变异/异能觉醒/科技残留/生物进化等末世体系元素。",
+		}
+	case "科幻":
+		points = []string{
+			"- 科技设定须自洽，技术限制和副作用需与优势并存",
+			"- 世界观须有宏观政治体系和微观生活细节",
+			"- 【题材禁入元素】严禁出现以下不属于科幻的元素：修炼境界/丹药/灵石/宗门体系/仙人/魔法咒语/魔杖/精灵矮人等奇幻种族/武侠内功/剑气。一切力量来源必须基于科学技术/基因改造/机械增强/AI等科技体系元素。",
+		}
+	case "都市":
+		points = []string{
+			"- 社会规则、法律、商业逻辑须合理",
+			"- 角色能力成长需符合现实逻辑",
+			"- 【题材禁入元素】严禁出现以下不属于都市的元素：修炼飞升/魔法/精灵矮人/星际旅行/末世灾变（除非设定有超自然元素）。能力设定须以现实为基础。",
+		}
+	case "言情":
+		points = []string{
+			"- 感情发展须有事件驱动，不可无理由心动",
+			"- 角色需有独立人格和成长弧线",
+			"- 【题材禁入元素】禁止出现与感情主线无关的大量战斗/修炼/科技展示等喧宾夺主的内容。",
+		}
+	case "悬疑":
+		points = []string{
+			"- 核心谜题须在首卷前3章内抛出",
+			"- 线索须公平分布，禁止突然出现从未提及的关键信息",
+			"- 【题材禁入元素】严禁出现超自然力量/魔法/修炼等破坏推理逻辑的元素（除非设定为超自然悬疑）。",
 		}
 	}
 
@@ -826,6 +853,30 @@ func buildGenreConstraints(genre string, gt *models.GenreTemplate) string {
 	}
 
 	return strings.Join(points, "\n")
+}
+
+// buildGenreExclusionBlock returns the genre-specific forbidden element text for injection
+// into chapter generation system prompts. This ensures the chapter author AI also enforces
+// genre boundaries, not just the outline planner.
+func buildGenreExclusionBlock(genre string) string {
+	switch genre {
+	case "西幻":
+		return "【题材禁入元素 — 违反即为严重错误】本作品为西幻题材。严禁出现：科技产品（电脑/手机/枪械/机械装置）、修仙元素（丹药/灵石/宗门/渡劫飞升）、现代都市场景。一切力量来源必须基于魔法/神力/血脉/自然元素。"
+	case "玄幻":
+		return "【题材禁入元素 — 违反即为严重错误】本作品为玄幻题材。严禁出现：现代科技产品（电脑/手机/枪械）、西幻种族（精灵/矮人/兽人）、现代都市场景。一切力量来源必须基于修炼/功法/天材地宝/血脉觉醒。"
+	case "末世":
+		return "【题材禁入元素 — 违反即为严重错误】本作品为末世题材。严禁出现：修仙元素（丹药/灵石/宗门/飞升）、纯奇幻种族（精灵/矮人）、完好如初的现代社会秩序。一切设定需基于末世背景。"
+	case "科幻":
+		return "【题材禁入元素 — 违反即为严重错误】本作品为科幻题材。严禁出现：修仙元素（丹药/灵石/功法/渡劫）、纯魔法体系（咒语/魔杖/魔法阵）、中古奇幻种族。一切力量来源必须基于科技。"
+	case "都市":
+		return "【题材禁入元素 — 违反即为严重错误】本作品为都市题材。严禁出现：修炼飞升/魔法/奇幻种族/星际旅行/末世灾变等超出现实框架的元素（除非世界观设定明确允许）。"
+	case "言情":
+		return "【题材禁入元素】本作品为言情题材。战斗/修炼/科技等元素若有则必须为感情主线服务，不可喧宾夺主。"
+	case "悬疑":
+		return "【题材禁入元素】本作品为悬疑题材。严禁出现破坏推理逻辑的超自然力量（除非世界观设定为超自然悬疑）。"
+	default:
+		return ""
+	}
 }
 
 // summariseJSON extracts a short summary string from a JSONB field for prompt context.
@@ -1251,7 +1302,7 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 }
 
 **约束要求：**
-- 每章2～4个核心事件，事件描述简洁（50字以内）
+- ⚠️ 每章最多1～3个核心事件（绝对上限3个，不可超过），事件描述简洁（50字以内）
 - 只描述实际发生的情节，不做总结或展望
 - 章节事件应体现剧情推进：人物互动、冲突发展、信息揭露、场景转换
 - 章节标题符合网文命名风格（如："初遇"、"暗流涌动"、"破局"）
@@ -1260,6 +1311,7 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 - **每章情节必须独特且多样化**：避免使用相同的冲突模式、场景设置或事件类型
 - 确保与整书大纲和时间线保持一致
 - 角色能力获得需符合时间线，不可一次性获得多项能力
+- 【角色/道具来源约束】每章出现的角色必须来自角色列表或在本卷此前章节中已登场；新角色首次出场必须在events中注明身份来源（如"酒馆老板王五——镇上老住户"）。道具/法宝/武器首次出场必须注明来源（战利品/购买/赠予/祖传等），禁止凭空出现"一把剑""一件法宝"等无来源物品。
 - 【伏笔约束】如果伏笔时间线中指定了本批次需要植入或回收的伏笔，必须在对应章节的events中体现（植入：安排暗示性/铺垫性事件；回收：安排揭示/呼应事件）
 - 【节奏约束】
   * 卷首1-2章以铺垫、引入新线索为主，节奏稍缓
@@ -1339,12 +1391,13 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 		return fmt.Errorf("no chapter outlines generated")
 	}
 
-	// ── Post-generation validation: filter chapters outside volume/batch range ──
+	// ── Post-generation validation: filter chapters outside volume/batch range & cap events ──
 	validOutlines := make([]struct {
 		ChapterNum int      `json:"chapter_num"`
 		Title      string   `json:"title"`
 		Events     []string `json:"events"`
 	}, 0, len(parsed.ChapterOutlines))
+	const maxEventsPerChapter = 3
 	for _, chOutline := range parsed.ChapterOutlines {
 		if chOutline.ChapterNum < volume.ChapterStart || chOutline.ChapterNum > volume.ChapterEnd {
 			logger.Warn("filtered out-of-volume chapter outline (AI generated chapter outside volume range)",
@@ -1360,6 +1413,14 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 				zap.Int("batch_start", nextChapterNum),
 				zap.Int("batch_end", endChapterNum))
 			continue
+		}
+		// Hard cap: max 3 events per chapter. Trim excess events to prevent word count overflow.
+		if len(chOutline.Events) > maxEventsPerChapter {
+			logger.Warn("trimmed excess events from chapter outline",
+				zap.Int("chapter_num", chOutline.ChapterNum),
+				zap.Int("original_events", len(chOutline.Events)),
+				zap.Int("max_events", maxEventsPerChapter))
+			chOutline.Events = chOutline.Events[:maxEventsPerChapter]
 		}
 		validOutlines = append(validOutlines, chOutline)
 	}

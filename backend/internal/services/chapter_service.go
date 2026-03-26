@@ -207,10 +207,14 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		}
 	}
 	if wordsMax <= 0 {
-		wordsMax = wordsMin * 2
+		wordsMax = 3500 // hard default cap
 	}
 	if wordsMin > wordsMax {
 		wordsMin, wordsMax = wordsMax, wordsMin
+	}
+	// Enforce absolute ceiling: never allow max to exceed 3500 unless explicitly configured
+	if wordsMax > 3500 && req.ChapterWordsMax <= 0 {
+		wordsMax = 3500
 	}
 
 	// Pass resolved word-count limits into req so buildSystemPrompt can embed them as anchor constraints
@@ -221,6 +225,32 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
 
 	// Build user prompt for chapter generation
+	// First, extract the outline events for this chapter to embed in user prompt
+	// First, extract the outline events for this chapter to embed in user prompt
+	var outlineEventsForPrompt string
+	var outlineJSON json.RawMessage
+	if s.db.QueryRow(ctx,
+		`SELECT content FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num = $2`,
+		projectID, chapterNum).Scan(&outlineJSON) == nil {
+		var outlineData map[string]interface{}
+		if json.Unmarshal(outlineJSON, &outlineData) == nil {
+			if events, ok := outlineData["events"].([]interface{}); ok && len(events) > 0 {
+				var eventLines []string
+				// Hard cap at 3 events
+				maxEvents := 3
+				if len(events) < maxEvents {
+					maxEvents = len(events)
+				}
+				for i := 0; i < maxEvents; i++ {
+					if es, ok := events[i].(string); ok {
+						eventLines = append(eventLines, fmt.Sprintf("  %d. %s", i+1, es))
+					}
+				}
+				outlineEventsForPrompt = strings.Join(eventLines, "\n")
+			}
+		}
+	}
+
 	userPrompt := fmt.Sprintf(`请生成第 %d 章的完整内容。
 
 生成参数：
@@ -231,9 +261,13 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 - 结尾钩子强度：%d
 - 张力水平：%.1f
 
+⚠️ 【本章必须完成的大纲事件 — 不可遗漏、不可自行添加】
+%s
+以上事件是本章的全部剧情内容，正文必须逐一展开上述每个事件对应的场景，禁止自行发明大纲以外的新事件、新冲突、新角色登场。
+
 硬性要求：
 1. ⚠️ 字数硬上限：正文不得超过 %d 字。当写作接近 %d 字时立即执行断章收尾；字数不足 %d 字时通过对话和动作细节充实。超出上限是严重错误。
-2. 本章最多推进 1～3 件事件，事件展开优先用**对话和动作**推进（不要大段景物描写）
+2. 本章只展开上方大纲列出的事件（最多3件），事件展开优先用**对话和动作**推进（不要大段景物描写）
 3. 从上一章结尾处自然承接，禁止复述前文，延续前一章的语言风格和叙述节奏
 4. 严格锁定指定POV视角，不写该角色感知不到的信息
 5. **强制断章要求**：章节必须在场景动作、对话或悬念的高点处戛然而止
@@ -246,10 +280,15 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
    - 角色只能使用系统提示【角色状态】中已明确记载的能力/装备/身份
    - 禁止给角色突然出现未记录的新能力、新武器、新师承、新身份
    - 如本章大纲要求角色获得某项资源，必须写完整获得过程（至少200字场景）
-   - 一章最多1次实力提升，禁止连续突破或批量获得资源`,
+   - 一章最多1次实力提升，禁止连续突破或批量获得资源
+8. **角色和道具出场约束**：
+   - 正文中出现的有名有姓的角色必须来自系统提示中的【角色状态】列表或本章大纲事件
+   - 任何武器/法宝/道具首次出场必须有明确来源（大纲事件获得/战利品/NPC赠予/购买/祖传）
+   - 禁止凭空出现没有来源的角色或道具`,
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
+		outlineEventsForPrompt,
 		wordsMax, wordsMax, wordsMin)
 
 	if req.ContextHint != "" {
@@ -647,10 +686,14 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 		}
 	}
 	if wordsMax <= 0 {
-		wordsMax = wordsMin * 2
+		wordsMax = 3500 // hard default cap
 	}
 	if wordsMin > wordsMax {
 		wordsMin, wordsMax = wordsMax, wordsMin
+	}
+	// Enforce absolute ceiling: never allow max to exceed 3500 unless explicitly configured
+	if wordsMax > 3500 && req.ChapterWordsMax <= 0 {
+		wordsMax = 3500
 	}
 
 	// Pass resolved word-count limits into req so buildSystemPrompt can embed them as anchor constraints
@@ -658,6 +701,31 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 	req.ChapterWordsMax = wordsMax
 
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
+
+	// Extract outline events for reinforcement in user prompt
+	var regenOutlineEventsForPrompt string
+	var regenOutlineJSON json.RawMessage
+	if s.db.QueryRow(ctx,
+		`SELECT content FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num = $2`,
+		projectID, chapterNum).Scan(&regenOutlineJSON) == nil {
+		var outlineData map[string]interface{}
+		if json.Unmarshal(regenOutlineJSON, &outlineData) == nil {
+			if events, ok := outlineData["events"].([]interface{}); ok && len(events) > 0 {
+				var eventLines []string
+				maxEvents := 3
+				if len(events) < maxEvents {
+					maxEvents = len(events)
+				}
+				for i := 0; i < maxEvents; i++ {
+					if es, ok := events[i].(string); ok {
+						eventLines = append(eventLines, fmt.Sprintf("  %d. %s", i+1, es))
+					}
+				}
+				regenOutlineEventsForPrompt = strings.Join(eventLines, "\n")
+			}
+		}
+	}
+
 	userPrompt := fmt.Sprintf(`请生成第 %d 章的完整内容。
 
 生成参数：
@@ -668,9 +736,13 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 - 结尾钩子强度：%d
 - 张力水平：%.1f
 
+⚠️ 【本章必须完成的大纲事件 — 不可遗漏、不可自行添加】
+%s
+以上事件是本章的全部剧情内容，正文必须逐一展开上述每个事件对应的场景，禁止自行发明大纲以外的新事件、新冲突、新角色登场。
+
 硬性要求：
 1. ⚠️ 字数硬上限：正文不得超过 %d 字。当写作接近 %d 字时立即执行断章收尾；字数不足 %d 字时通过对话和动作细节充实。超出上限是严重错误。
-2. 本章最多推进 1～3 件事件，事件展开优先用**对话和动作**推进（不要大段景物描写）
+2. 本章只展开上方大纲列出的事件（最多3件），事件展开优先用**对话和动作**推进（不要大段景物描写）
 3. 从上一章结尾处自然承接，禁止复述前文，延续前一章的语言风格和叙述节奏
 4. 严格锁定指定POV视角，不写该角色感知不到的信息
 5. **强制断章要求**：章节必须在场景动作、对话或悬念的高点处戛然而止
@@ -683,10 +755,15 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
    - 角色只能使用系统提示【角色状态】中已明确记载的能力/装备/身份
    - 禁止给角色突然出现未记录的新能力、新武器、新师承、新身份
    - 如本章大纲要求角色获得某项资源，必须写完整获得过程（至少200字场景）
-   - 一章最多1次实力提升，禁止连续突破或批量获得资源`,
+   - 一章最多1次实力提升，禁止连续突破或批量获得资源
+8. **角色和道具出场约束**：
+   - 正文中出现的有名有姓的角色必须来自系统提示中的【角色状态】列表或本章大纲事件
+   - 任何武器/法宝/道具首次出场必须有明确来源（大纲事件获得/战利品/NPC赠予/购买/祖传）
+   - 禁止凭空出现没有来源的角色或道具`,
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
+		regenOutlineEventsForPrompt,
 		wordsMax, wordsMax, wordsMin)
 	if req.ContextHint != "" {
 		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)

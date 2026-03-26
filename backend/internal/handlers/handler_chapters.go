@@ -276,9 +276,11 @@ func (h *Handler) QualityCheck(c *gin.Context) {
 
 // BatchGenerateRequest is the body for POST /projects/:id/chapters/batch-generate.
 type BatchGenerateRequest struct {
-	Count        int      `json:"count"`         // number of chapters; used when VolumeID is not set
-	VolumeID     *string  `json:"volume_id"`     // generate all chapters in this volume (chapter_start … chapter_end)
-	OutlineHints []string `json:"outline_hints"` // optional per-chapter hints (in order)
+	Count           int      `json:"count"`             // number of chapters; used when VolumeID is not set
+	VolumeID        *string  `json:"volume_id"`         // generate all chapters in this volume (chapter_start … chapter_end)
+	OutlineHints    []string `json:"outline_hints"`     // optional per-chapter hints (in order)
+	ChapterWordsMin int      `json:"chapter_words_min"` // per-chapter word floor (0 = use default)
+	ChapterWordsMax int      `json:"chapter_words_max"` // per-chapter word ceiling (0 = use default 3500)
 }
 
 func (h *Handler) BatchGenerateChapters(c *gin.Context) {
@@ -318,6 +320,8 @@ func (h *Handler) BatchGenerateChapters(c *gin.Context) {
 		}
 		payloadBytes, _ := json.Marshal(map[string]any{
 			"chapter_num":         vol.ChapterStart,
+			"chapter_words_min":   req.ChapterWordsMin,
+			"chapter_words_max":   req.ChapterWordsMax,
 			"context_hint":        firstHint,
 			"batch_volume_id":     *req.VolumeID,
 			"batch_start_chapter": vol.ChapterStart,
@@ -347,6 +351,10 @@ func (h *Handler) BatchGenerateChapters(c *gin.Context) {
 			firstHint = req.OutlineHints[0]
 		}
 		payloadBytes, _ := json.Marshal(map[string]any{
+			"generate": map[string]any{
+				"chapter_words_min": req.ChapterWordsMin,
+				"chapter_words_max": req.ChapterWordsMax,
+			},
 			"context_hint":    firstHint,
 			"batch_count":     count,
 			"batch_remaining": count - 1,

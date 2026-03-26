@@ -228,14 +228,14 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	}
 
 	// ===== Genre-specific rules (injected after constitution) =====
-	var genreRules, langConstraints, rhythmRules string
+	var genreRules, langConstraints, rhythmRules, projectGenre string
 	s.db.QueryRow(ctx,
-		`SELECT gt.rules_content, gt.language_constraints, gt.rhythm_rules
+		`SELECT gt.rules_content, gt.language_constraints, gt.rhythm_rules, p.genre
 		 FROM genre_templates gt
 		 JOIN projects p ON p.genre = gt.genre
 		 WHERE p.id = $1
 		 LIMIT 1`, projectID).
-		Scan(&genreRules, &langConstraints, &rhythmRules)
+		Scan(&genreRules, &langConstraints, &rhythmRules, &projectGenre)
 	if genreRules != "" || langConstraints != "" || rhythmRules != "" {
 		sb.WriteString("=== 题材专属规则 ===\n")
 		if genreRules != "" {
@@ -253,6 +253,14 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
+	}
+	// Genre exclusion: explicitly ban elements that don't belong to this genre
+	if projectGenre == "" {
+		s.db.QueryRow(ctx, `SELECT genre FROM projects WHERE id = $1`, projectID).Scan(&projectGenre)
+	}
+	if exclusionBlock := buildGenreExclusionBlock(projectGenre); exclusionBlock != "" {
+		sb.WriteString(exclusionBlock)
+		sb.WriteString("\n\n")
 	}
 
 	// Character states
@@ -465,11 +473,19 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		}
 	}
 	sb.WriteString("\n=== 章节推进约束（硬规则）===\n")
-	sb.WriteString("- 本章只推进大纲明确要求的事件，禁止提前展开后续章节的设定、底牌、关系反转或高潮信息。\n")
+	sb.WriteString("- 本章只推进【当前章节大纲】中明确列出的事件，禁止自行添加大纲中没有的新事件、新冲突、新转折。\n")
+	sb.WriteString("- 大纲中列出的每个事件都必须在正文中有对应的场景展开，不可遗漏大纲事件。\n")
+	sb.WriteString("- 禁止提前展开后续章节的设定、底牌、关系反转或高潮信息。\n")
 	sb.WriteString("- 未出现在【本章可用伏笔】里的后续设定，一律不能提前明示、解释、兑现。\n")
 	sb.WriteString("- 若需要铺垫后续内容，只能做轻量暗示（一笔带过的细节、角色一闪而逝的念头），不能让角色在本章就把后续阶段的问题直接解决。\n")
-	sb.WriteString("- 【信息密度控制】本章最多推进 1～3 件剧情事件；事件展开以**对话交锋和人物动作反应**为主要手段，而非大段场景描写——每次景物/环境描写控制在3～4句以内；大纲要求超过3件事时只完成最关键的2～3件，其余顺延。\n")
+	sb.WriteString("- 【信息密度控制】本章最多推进大纲中的 1～3 件剧情事件（绝对上限3件）；事件展开以**对话交锋和人物动作反应**为主要手段，而非大段场景描写——每次景物/环境描写控制在3～4句以内；大纲要求超过3件事时只完成最关键的2～3件，其余顺延。\n")
 	sb.WriteString("- 【卷内剧情边界】本章属于当前卷的范围，只处理本卷应有的剧情线。禁止在本章引入或解决属于后续卷的核心冲突、关键真相或角色重大转变。\n")
+	sb.WriteString("- 【角色/道具出场约束】\n")
+	sb.WriteString("  · 正文中出现的每个角色必须来自上方【角色状态】列表或在大纲事件中有明确提及\n")
+	sb.WriteString("  · 禁止凭空出现【角色状态】和大纲中都未提及的新角色（路人/群众描写除外）\n")
+	sb.WriteString("  · 武器/法宝/道具首次出场必须有来源说明（战利品/购买/NPC赠予/祖传/大纲事件获得）\n")
+	sb.WriteString("  · 禁止正文突然出现「他拿出一把XX」「她取出一件XX」等无来源的道具描写\n")
+	sb.WriteString("  · 如果大纲事件要求获得新道具，必须写出完整的获得过程（至少100字场景）\n")
 	if chapterNum == 1 {
 		sb.WriteString("- 【第一章：主角姓名揭露】主角名字必须在第一章内通过他人称呼、自我介绍或心理活动等方式出现，读者读完第一章必须知道主角叫什么；全章不得仅用\"他\"/\"她\"/\"少年\"/\"年轻人\"等代称而不揭露名字。\n")
 		sb.WriteString("- 【第一章：开篇节奏】开篇须直接进入动作、对话或具体冲突，前300字内发生至少一件具体事件；禁止以大段环境描写、倒叙身世或世界观铺垫作为开场。\n")

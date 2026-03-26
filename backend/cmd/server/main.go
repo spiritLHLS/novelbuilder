@@ -299,6 +299,10 @@ func main() {
 				nextHint = payload.BatchHints[completedCount]
 			}
 			nextPayload, _ := json.Marshal(map[string]any{
+				"generate": map[string]any{
+					"chapter_words_min": payload.Generate.ChapterWordsMin,
+					"chapter_words_max": payload.Generate.ChapterWordsMax,
+				},
 				"context_hint":    nextHint,
 				"batch_count":     payload.BatchCount,
 				"batch_remaining": payload.BatchRemaining - 1,
@@ -379,6 +383,8 @@ func main() {
 			}
 			nextPayload, _ := json.Marshal(map[string]any{
 				"chapter_num":         nextChapterNum,
+				"chapter_words_min":   payload.ChapterWordsMin,
+				"chapter_words_max":   payload.ChapterWordsMax,
 				"context_hint":        nextHint,
 				"batch_volume_id":     *payload.BatchVolumeID,
 				"batch_start_chapter": payload.BatchStartChapter,
