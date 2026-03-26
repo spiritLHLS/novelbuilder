@@ -450,6 +450,7 @@ func main() {
 
 	// generate_chapter_outlines: enqueued by GenerateChapterOutlines handler.
 	// Generates chapter outlines for a specific volume in batches.
+	// Auto-chains: after completing one batch, enqueues next batch if chapters remain.
 	taskQueueService.RegisterHandler("generate_chapter_outlines", func(ctx context.Context, task models.TaskQueueItem) error {
 		if task.ProjectID == nil || *task.ProjectID == "" {
 			return fmt.Errorf("generate_chapter_outlines requires project_id")
@@ -470,7 +471,69 @@ func main() {
 			payload.BatchSize = 10
 		}
 
-		return blueprintService.GenerateChapterOutlines(ctx, *task.ProjectID, payload.VolumeNum, payload.BatchSize, payload.StartChapter)
+		// Generate one batch
+		if err := blueprintService.GenerateChapterOutlines(ctx, *task.ProjectID, payload.VolumeNum, payload.BatchSize, payload.StartChapter); err != nil {
+			return err
+		}
+
+		// After successful generation, check if more chapters remain in this volume
+		// Query volume range and existing outlines to decide if we need to enqueue next batch
+		var volStart, volEnd int
+		if err := db.QueryRow(ctx,
+			`SELECT chapter_start, chapter_end FROM volumes WHERE project_id = $1 AND volume_num = $2`,
+			*task.ProjectID, payload.VolumeNum).Scan(&volStart, &volEnd); err != nil {
+			logger.Warn("failed to check volume range for chaining (non-fatal)",
+				zap.String("project_id", *task.ProjectID),
+				zap.Int("volume_num", payload.VolumeNum),
+				zap.Error(err))
+			return nil // Non-fatal: batch completed successfully
+		}
+
+		totalChapters := volEnd - volStart + 1
+		var existingCount int
+		if err := db.QueryRow(ctx,
+			`SELECT COUNT(*) FROM outlines 
+			 WHERE project_id = $1 AND level = 'chapter' 
+			 AND order_num >= $2 AND order_num <= $3`,
+			*task.ProjectID, volStart, volEnd).Scan(&existingCount); err != nil {
+			logger.Warn("failed to count existing outlines for chaining (non-fatal)",
+				zap.String("project_id", *task.ProjectID),
+				zap.Error(err))
+			return nil
+		}
+
+		remaining := totalChapters - existingCount
+		if remaining > 0 {
+			// More chapters remain: enqueue next batch (auto-continue from where we left off)
+			nextPayload, _ := json.Marshal(map[string]interface{}{
+				"volume_num":    payload.VolumeNum,
+				"batch_size":    payload.BatchSize,
+				"start_chapter": 0, // Auto-continue
+			})
+			_, enqErr := taskQueueService.Enqueue(ctx, models.CreateTaskRequest{
+				ProjectID: *task.ProjectID,
+				TaskType:  "generate_chapter_outlines",
+				Payload:   nextPayload,
+				Priority:  5,
+			})
+			if enqErr == nil {
+				logger.Info("auto-enqueued next chapter outline batch",
+					zap.String("project_id", *task.ProjectID),
+					zap.Int("volume_num", payload.VolumeNum),
+					zap.Int("remaining", remaining))
+			} else {
+				logger.Warn("failed to auto-enqueue next batch (non-fatal)",
+					zap.String("project_id", *task.ProjectID),
+					zap.Error(enqErr))
+			}
+		} else {
+			logger.Info("chapter outline generation complete for volume",
+				zap.String("project_id", *task.ProjectID),
+				zap.Int("volume_num", payload.VolumeNum),
+				zap.Int("total_chapters", totalChapters))
+		}
+
+		return nil
 	})
 
 	// Setup Gin router

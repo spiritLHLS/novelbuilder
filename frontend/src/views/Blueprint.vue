@@ -814,7 +814,7 @@ async function generateChapterOutlines(volumeNum: number) {
   if (remaining > 15) {
     try {
       const { value } = await (await import('element-plus')).ElMessageBox.prompt(
-        `该卷共${totalChapters}章，已生成${existingCount}章，剩余${remaining}章。\n每批生成章节数（推荐5-15章，避免超时）：`,
+        `该卷共${totalChapters}章，已生成${existingCount}章，剩余${remaining}章。\n每批生成章节数（推荐5-15章，避免超时）：\n\n💡 系统将自动循环生成，直到该卷所有章节完成`,
         '设置批次大小',
         {
           inputValue: Math.min(10, remaining).toString(),
@@ -839,8 +839,8 @@ async function generateChapterOutlines(volumeNum: number) {
     // Task created (202), redirect to task queue or show message
     if (response.data?.task_id) {
       ElMessage.success({
-        message: `第${volumeNum}卷章节大纲生成任务已创建（批次${batchSize}章），请在"任务队列"中查看进度`,
-        duration: 6000
+        message: `第${volumeNum}卷章节大纲生成任务已创建（首批${batchSize}章），系统将自动循环生成至完成。请在"任务队列"中查看进度`,
+        duration: 8000
       })
     } else {
       ElMessage.success('章节大纲生成任务已创建')
@@ -891,7 +891,7 @@ async function regenerateChapterOutlines(volumeNum: number) {
     
     if (remainingFromStart > 15) {
       const { value: batchSizeInput } = await (await import('element-plus')).ElMessageBox.prompt(
-        `从第${startChapter}章开始，剩余${remainingFromStart}章。\n每批生成章节数（推荐5-15章，避免超时）：`,
+        `从第${startChapter}章开始，剩余${remainingFromStart}章。\n每批生成章节数（推荐5-15章，避免超时）：\n\n💡 系统将自动循环生成，直到该卷所有章节完成`,
         '设置批次大小',
         {
           inputValue: Math.min(10, remainingFromStart).toString(),
@@ -910,8 +910,8 @@ async function regenerateChapterOutlines(volumeNum: number) {
     
     if (response.data?.task_id) {
       ElMessage.success({
-        message: `第${volumeNum}卷章节大纲重新生成任务已创建（从第${startChapter}章开始，批次${batchSize}章），请在"任务队列"中查看进度`,
-        duration: 6000
+        message: `第${volumeNum}卷章节大纲重新生成任务已创建（从第${startChapter}章开始，首批${batchSize}章），系统将自动循环生成至完成。请在"任务队列"中查看进度`,
+        duration: 8000
       })
     } else {
       ElMessage.success('章节大纲重新生成任务已创建')
