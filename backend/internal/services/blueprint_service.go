@@ -1041,44 +1041,67 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 		}
 	}
 
-	// Get outlines of subsequent volumes for future context (prevent using later plot points early)
+	// Build previous volumes summary for continuity and future volumes boundary markers
+	previousVolumesText := ""
 	futureVolumesText := ""
+	currentVolumeOutlineFromMaster := ""
 	if len(allVolumes) > 1 {
+		// ── Previous volumes: show completed chapter titles for story continuity ──
+		var prevBuilder strings.Builder
+		hasPrev := false
+		for _, v := range allVolumes {
+			if v.VolumeNum < volumeNum {
+				if !hasPrev {
+					prevBuilder.WriteString("\n---\n## 【前卷已完成剧情回顾】\n")
+					prevBuilder.WriteString("以下是前面各卷已完成的故事进度，请确保本卷大纲与之衔接、不重复已有情节：\n\n")
+					hasPrev = true
+				}
+				prevBuilder.WriteString(fmt.Sprintf("### %s（第%d～%d章）\n", v.Title, v.ChapterStart, v.ChapterEnd))
+				prevRows, pErr := s.db.Query(ctx,
+					`SELECT order_num, title FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num >= $2 AND order_num <= $3 ORDER BY order_num`,
+					projectID, v.ChapterStart, v.ChapterEnd)
+				if pErr == nil {
+					for prevRows.Next() {
+						var oNum int
+						var oTitle string
+						if prevRows.Scan(&oNum, &oTitle) == nil {
+							prevBuilder.WriteString(fmt.Sprintf("  第%d章：%s\n", oNum, oTitle))
+						}
+					}
+					prevRows.Close()
+				}
+				prevBuilder.WriteString("\n")
+			}
+		}
+		if hasPrev {
+			previousVolumesText = prevBuilder.String()
+		}
+
+		// ── Future volumes: ONLY volume titles as boundary fence (no chapter details!) ──
+		// Showing detailed future chapter outlines causes the AI to bleed future plot into current volume.
 		var futureBuilder strings.Builder
 		hasFuture := false
 		for _, v := range allVolumes {
 			if v.VolumeNum > volumeNum {
 				if !hasFuture {
-					futureBuilder.WriteString("\n---\n## 【后续卷目大纲概要（只读参考，不可提前使用）】\n")
-					futureBuilder.WriteString("以下是后续各卷的剧情概要，本卷大纲**绝对不可以**提前使用这些剧情。仅供了解后续走向以便正确铺垫。\n\n")
+					futureBuilder.WriteString("\n---\n## 【后续卷目标题（禁入区域）】\n")
+					futureBuilder.WriteString("以下卷目的剧情属于后续内容，本卷**严禁涉及**：\n")
 					hasFuture = true
 				}
-				futureBuilder.WriteString(fmt.Sprintf("### %s（第%d～%d章）\n", v.Title, v.ChapterStart, v.ChapterEnd))
-				// Get this volume's existing chapter outlines summary
-				futureRows, fErr := s.db.Query(ctx,
-					`SELECT order_num, title FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num >= $2 AND order_num <= $3 ORDER BY order_num`,
-					projectID, v.ChapterStart, v.ChapterEnd)
-				if fErr == nil {
-					count := 0
-					for futureRows.Next() {
-						var oNum int
-						var oTitle string
-						if futureRows.Scan(&oNum, &oTitle) == nil {
-							futureBuilder.WriteString(fmt.Sprintf("  第%d章：%s\n", oNum, oTitle))
-							count++
-						}
-					}
-					futureRows.Close()
-					if count == 0 {
-						futureBuilder.WriteString("  （尚未生成章节大纲）\n")
-					}
-				}
-				futureBuilder.WriteString("\n")
+				futureBuilder.WriteString(fmt.Sprintf("- 第%d卷：%s（第%d～%d章）\n", v.VolumeNum, v.Title, v.ChapterStart, v.ChapterEnd))
 			}
 		}
 		if hasFuture {
+			futureBuilder.WriteString("\n⚠️ 上述卷目的核心剧情、关键冲突、角色转变、能力突破等一律不得出现在本卷。仅允许极轻微的氛围暗示。\n")
 			futureVolumesText = futureBuilder.String()
 		}
+	}
+
+	// ── Extract current volume's portion from master outline ──
+	// Try to find the volume-specific text to use as the primary guiding framework
+	masterOutlineFullText := extractTextFromJSON(bp.MasterOutline)
+	if masterOutlineFullText != "" {
+		currentVolumeOutlineFromMaster = extractVolumeSection(masterOutlineFullText, volumeNum, volume.Title)
 	}
 
 	// Build foreshadowing timeline for this volume's chapter range
@@ -1181,27 +1204,39 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 		existingOutlinesText = outlineBuilder.String()
 	}
 
-	// Extract master outline text
-	masterOutlineText := extractTextFromJSON(bp.MasterOutline)
+	// Extract text from blueprint fields
 	globalTimelineText := extractTextFromJSON(bp.GlobalTimeline)
 
-	// Build prompt
+	// Build the current volume's guiding outline
+	currentVolumeGuide := ""
+	if currentVolumeOutlineFromMaster != "" {
+		currentVolumeGuide = fmt.Sprintf("\n**本卷核心定位（来自总纲）：** %s\n", currentVolumeOutlineFromMaster)
+	} else if masterOutlineFullText != "" {
+		// Fallback: show full master outline but wrapped with scope emphasis
+		currentVolumeGuide = fmt.Sprintf("\n**整书总纲（仅参考本卷相关部分）：** %s\n", masterOutlineFullText)
+	}
+
+	// Build prompt with strong volume scoping
 	prompt := fmt.Sprintf(`你是一位资深小说策划编辑，擅长%s类型的长篇小说规划。
 
 当前任务：为《%s》的【%s】生成详细的章节大纲。
 
+## ⚠️ 【本卷剧情范围锁定 — 最高优先级硬约束】
+- **本卷：%s（第%d章～第%d章，共%d章）**
+- **本次生成范围：第%d章～第%d章（%d章）**
+- **绝对红线：本卷章节大纲只允许包含属于本卷范围的剧情事件，任何后续卷目的核心冲突、关键转折、角色蜕变、能力突破等一律不得出现。**
+- **剧情进度控制：本卷的情节推进速度必须匹配本卷的章节容量（%d章），不可试图在本卷内完成整卷以外的剧情。**
+%s
 %s
 ---
-## 整书框架
-**总体大纲：** %s
-
-**全局时间线：** %s
-%s%s%s
-**当前卷信息：**
-- 卷名：%s
-- 章节范围：第%d章～第%d章（共%d章）
-- 本次生成：第%d章～第%d章（%d章）
-
+## 项目世界观与角色
+%s
+%s
+---
+## 本卷框架
+%s
+**全局时间线（截至本卷）：** %s
+%s%s
 ---
 ## 输出格式
 
@@ -1211,7 +1246,7 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
   "chapter_outlines": [
     {"chapter_num": %d, "title": "第%d章标题", "events": ["事件1描述（50字内）", "事件2描述（50字内）"]},
     {"chapter_num": %d, "title": "第%d章标题", "events": ["事件1描述"]},
-    ...（生成%d个章节的大纲）
+    ...（共%d个章节）
   ]
 }
 
@@ -1232,23 +1267,35 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
   * 卷末1-2章为本卷高潮或悬念收尾，节奏紧凑
   * 单章不可堆叠超过2个重大事件（如战斗+突破+获宝+拜师不可在同一章）
   * 日常/修炼/旅途类章节与高潮/冲突类章节应交替出现，避免连续多章都是打斗或连续多章都是日常
-- 【后续剧情保护】如果提供了后续卷目大纲，绝对不可将后续卷目的核心剧情提前在本卷使用，只可做轻微铺垫
+- 【卷边界硬约束 — 再次强调】
+  * 本次输出的所有chapter_num必须在第%d章～第%d章范围内
+  * 本卷只推进本卷应有的剧情线，不得"加速叙事"把后续卷的内容提前消费
+  * 如果对后续卷有所铺垫，只允许用一句模糊暗示，不允许出现具体事件
+  * 宁可本卷剧情推进偏慢、场景细节丰富，也不可贪多求快塞入过多事件
 `,
 		project.Genre,
 		project.Title,
 		volume.Title,
-		ctxBuilder.String(),
-		masterOutlineText,
-		globalTimelineText,
-		existingOutlinesText,
-		futureVolumesText,
-		foreshadowingText,
-		volume.Title,
-		volume.ChapterStart, volume.ChapterEnd, totalChapters,
+		// Volume scope lock section
+		volume.Title, volume.ChapterStart, volume.ChapterEnd, totalChapters,
 		nextChapterNum, endChapterNum, actualBatchSize,
+		totalChapters,
+		currentVolumeGuide,
+		futureVolumesText,
+		// World context
+		ctxBuilder.String(),
+		previousVolumesText,
+		// Volume framework
+		existingOutlinesText,
+		globalTimelineText,
+		foreshadowingText,
+		"", // placeholder for additional volume context (unused now)
+		// JSON format
 		nextChapterNum, nextChapterNum,
 		nextChapterNum+1, nextChapterNum+1,
 		actualBatchSize,
+		// Final boundary constraint
+		nextChapterNum, endChapterNum,
 	)
 
 	// Call AI
@@ -1290,6 +1337,42 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 
 	if len(parsed.ChapterOutlines) == 0 {
 		return fmt.Errorf("no chapter outlines generated")
+	}
+
+	// ── Post-generation validation: filter chapters outside volume/batch range ──
+	validOutlines := make([]struct {
+		ChapterNum int      `json:"chapter_num"`
+		Title      string   `json:"title"`
+		Events     []string `json:"events"`
+	}, 0, len(parsed.ChapterOutlines))
+	for _, chOutline := range parsed.ChapterOutlines {
+		if chOutline.ChapterNum < volume.ChapterStart || chOutline.ChapterNum > volume.ChapterEnd {
+			logger.Warn("filtered out-of-volume chapter outline (AI generated chapter outside volume range)",
+				zap.Int("chapter_num", chOutline.ChapterNum),
+				zap.String("title", chOutline.Title),
+				zap.Int("volume_start", volume.ChapterStart),
+				zap.Int("volume_end", volume.ChapterEnd))
+			continue
+		}
+		if chOutline.ChapterNum < nextChapterNum || chOutline.ChapterNum > endChapterNum {
+			logger.Warn("filtered out-of-batch chapter outline",
+				zap.Int("chapter_num", chOutline.ChapterNum),
+				zap.Int("batch_start", nextChapterNum),
+				zap.Int("batch_end", endChapterNum))
+			continue
+		}
+		validOutlines = append(validOutlines, chOutline)
+	}
+	if len(validOutlines) < len(parsed.ChapterOutlines) {
+		logger.Warn("filtered invalid chapter outlines",
+			zap.Int("original_count", len(parsed.ChapterOutlines)),
+			zap.Int("valid_count", len(validOutlines)))
+	}
+	parsed.ChapterOutlines = validOutlines
+
+	if len(parsed.ChapterOutlines) == 0 {
+		return fmt.Errorf("no valid chapter outlines after filtering (all generated chapters were outside volume range %d-%d)",
+			volume.ChapterStart, volume.ChapterEnd)
 	}
 
 	// Insert into database
@@ -1543,6 +1626,54 @@ func extractTextFromJSON(data json.RawMessage) string {
 		}
 	}
 	return string(data)
+}
+
+// extractVolumeSection attempts to extract the outline text for a specific volume
+// from the master outline string. The master outline typically uses markers like
+// "第N卷" or the volume title to separate sections.
+// Returns the volume-specific section, or empty string if extraction fails.
+func extractVolumeSection(masterOutline string, volumeNum int, volumeTitle string) string {
+	if masterOutline == "" {
+		return ""
+	}
+
+	// Try multiple patterns to locate the volume section
+	// Pattern 1: "第N卷" with Chinese colon or colon
+	markers := []string{
+		fmt.Sprintf("第%d卷", volumeNum),
+		volumeTitle,
+	}
+
+	bestStart := -1
+	for _, marker := range markers {
+		idx := strings.Index(masterOutline, marker)
+		if idx >= 0 && (bestStart < 0 || idx < bestStart) {
+			bestStart = idx
+		}
+	}
+
+	if bestStart < 0 {
+		return "" // Could not locate volume section
+	}
+
+	// Find the end: next volume marker or end of string
+	nextVolMarker := fmt.Sprintf("第%d卷", volumeNum+1)
+	endIdx := strings.Index(masterOutline[bestStart+1:], nextVolMarker)
+	if endIdx >= 0 {
+		return strings.TrimSpace(masterOutline[bestStart : bestStart+1+endIdx])
+	}
+
+	// No next volume marker found — take the rest but cap at reasonable length
+	section := masterOutline[bestStart:]
+	if len(section) > 500 {
+		// Try to find a natural break point
+		if nl := strings.Index(section[400:], "\n"); nl >= 0 {
+			section = section[:400+nl]
+		} else {
+			section = section[:500]
+		}
+	}
+	return strings.TrimSpace(section)
 }
 
 // BlueprintExport represents the complete blueprint package for export/import.

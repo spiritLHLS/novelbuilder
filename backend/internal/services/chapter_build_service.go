@@ -407,9 +407,18 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	}
 
 	// Next chapter outline preview (for transition setup)
+	// Only show if the next chapter is within the same volume to prevent cross-volume leakage
 	var nextOutlineContent json.RawMessage
 	var nextChapterTitle string
+	nextChapterInSameVolume := false
+	var curVolEnd int
 	if s.db.QueryRow(ctx,
+		`SELECT chapter_end FROM volumes WHERE project_id = $1
+		 AND chapter_start <= $2 AND chapter_end >= $2`,
+		projectID, chapterNum).Scan(&curVolEnd) == nil {
+		nextChapterInSameVolume = (chapterNum + 1) <= curVolEnd
+	}
+	if nextChapterInSameVolume && s.db.QueryRow(ctx,
 		`SELECT title, content FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num = $2`,
 		projectID, chapterNum+1).Scan(&nextChapterTitle, &nextOutlineContent) == nil {
 		sb.WriteString("\n=== 下一章概要（仅供过渡铺垫参考，不可提前展开）===\n")
@@ -423,18 +432,23 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 			}
 		}
 		sb.WriteString("注意：仅在末尾做轻微过渡暗示即可，不可在本章中实际展开下一章的内容。\n")
+	} else if !nextChapterInSameVolume {
+		sb.WriteString("\n=== 本章为本卷最后一章或接近末尾 ===\n")
+		sb.WriteString("本章是本卷末段，应收束本卷冲突线并留下适当悬念引入下一卷，但不可展开下一卷的具体剧情。\n")
 	}
 
 	// Volume position pacing guidance
 	var volChapterStart, volChapterEnd int
+	var volTitle string
 	if s.db.QueryRow(ctx,
-		`SELECT chapter_start, chapter_end FROM volumes WHERE project_id = $1
+		`SELECT title, chapter_start, chapter_end FROM volumes WHERE project_id = $1
 		 AND chapter_start <= $2 AND chapter_end >= $2`,
-		projectID, chapterNum).Scan(&volChapterStart, &volChapterEnd) == nil {
+		projectID, chapterNum).Scan(&volTitle, &volChapterStart, &volChapterEnd) == nil {
 		volTotal := volChapterEnd - volChapterStart + 1
 		posInVol := chapterNum - volChapterStart + 1
 		progress := float64(posInVol) / float64(volTotal)
 		sb.WriteString("\n=== 卷内节奏定位 ===\n")
+		sb.WriteString(fmt.Sprintf("当前卷：%s（第%d～%d章，共%d章），本章为本卷第%d章\n", volTitle, volChapterStart, volChapterEnd, volTotal, posInVol))
 		if progress <= 0.2 {
 			sb.WriteString(fmt.Sprintf("当前处于本卷开头（第%d/%d章），节奏应偏缓：重铺垫、建场景、引矛盾。避免重大冲突爆发。\n", posInVol, volTotal))
 		} else if progress <= 0.7 {
@@ -450,6 +464,7 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	sb.WriteString("- 未出现在【本章可用伏笔】里的后续设定，一律不能提前明示、解释、兑现。\n")
 	sb.WriteString("- 若需要铺垫后续内容，只能做轻量暗示（一笔带过的细节、角色一闪而逝的念头），不能让角色在本章就把后续阶段的问题直接解决。\n")
 	sb.WriteString("- 【信息密度控制】本章最多推进 1～3 件剧情事件或关系进展，不得更多。每件事件需要充足的场景描写、角色反应、感官细节来填充，而非流水账式快速略过。如果大纲本章要求超过3件事，请只完成其中最重要的2～3件，其余顺延到下一章。\n")
+	sb.WriteString("- 【卷内剧情边界】本章属于当前卷的范围，只处理本卷应有的剧情线。禁止在本章引入或解决属于后续卷的核心冲突、关键真相或角色重大转变。\n")
 	if chapterNum == 1 {
 		sb.WriteString("- 第一章优先完成开场氛围、主角处境、核心矛盾引子，避免把中后期设定一次性打满。\n")
 	}
