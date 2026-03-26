@@ -26,6 +26,10 @@
           <div v-if="f.embed_method" class="fs-meta">
             <span class="meta-label">埋设方式:</span> {{ f.embed_method }}
           </div>
+          <div class="fs-chapter-plan" v-if="f.planned_embed_chapter || f.planned_resolve_chapter">
+            <span v-if="f.planned_embed_chapter" class="chapter-badge embed">植入: 第{{ f.planned_embed_chapter }}章</span>
+            <span v-if="f.planned_resolve_chapter" class="chapter-badge resolve">回收: 第{{ f.planned_resolve_chapter }}章</span>
+          </div>
           <div v-if="f.tags?.length" class="fs-tags">
             <el-tag v-for="t in f.tags" :key="t" size="small" type="info" style="margin: 2px;">{{ t }}</el-tag>
           </div>
@@ -67,6 +71,18 @@
         <el-form-item label="优先级">
           <el-slider v-model="createForm.priority" :min="1" :max="5" :step="1" show-stops />
         </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="计划植入章节号">
+              <el-input-number v-model="createForm.planned_embed_chapter" :min="0" controls-position="right" style="width: 100%;" placeholder="0 = 未指定" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="计划回收章节号">
+              <el-input-number v-model="createForm.planned_resolve_chapter" :min="0" controls-position="right" style="width: 100%;" placeholder="0 = 未指定" />
+            </el-form-item>
+          </el-col>
+        </el-row>
         <el-form-item label="标签（逗号分隔）">
           <el-input v-model="createForm.tags_str" placeholder="人物名, 情节线, 主题词..." />
         </el-form-item>
@@ -89,6 +105,18 @@
         <el-form-item label="优先级">
           <el-slider v-model="editForm.priority" :min="1" :max="5" :step="1" show-stops />
         </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="计划植入章节号">
+              <el-input-number v-model="editForm.planned_embed_chapter" :min="0" controls-position="right" style="width: 100%;" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="计划回收章节号">
+              <el-input-number v-model="editForm.planned_resolve_chapter" :min="0" controls-position="right" style="width: 100%;" />
+            </el-form-item>
+          </el-col>
+        </el-row>
         <el-form-item label="状态">
           <el-select v-model="editForm.status" style="width: 100%;">
             <el-option label="计划中" value="planned" />
@@ -126,8 +154,8 @@ const showCreateDlg = ref(false)
 const showEditDlg = ref(false)
 const editingId = ref('')
 
-const createForm = ref({ content: '', embed_method: '', priority: 3, tags_str: '' })
-const editForm = ref({ content: '', embed_method: '', priority: 3, status: 'planned', tags_str: '' })
+const createForm = ref({ content: '', embed_method: '', priority: 3, planned_embed_chapter: 0, planned_resolve_chapter: 0, tags_str: '' })
+const editForm = ref({ content: '', embed_method: '', priority: 3, planned_embed_chapter: 0, planned_resolve_chapter: 0, status: 'planned', tags_str: '' })
 
 const statuses = [
   { key: 'planned', label: '计划中', color: '#909399' },
@@ -176,7 +204,7 @@ async function fetchFs() {
 }
 
 function openCreate() {
-  createForm.value = { content: '', embed_method: '', priority: 3, tags_str: '' }
+  createForm.value = { content: '', embed_method: '', priority: 3, planned_embed_chapter: 0, planned_resolve_chapter: 0, tags_str: '' }
   showCreateDlg.value = true
 }
 
@@ -186,6 +214,8 @@ function openEdit(f: any) {
     content: f.content || '',
     embed_method: f.embed_method || '',
     priority: f.priority || 3,
+    planned_embed_chapter: f.planned_embed_chapter || 0,
+    planned_resolve_chapter: f.planned_resolve_chapter || 0,
     status: f.status || 'planned',
     tags_str: (f.tags || []).join(', '),
   }
@@ -201,6 +231,8 @@ async function doCreate() {
       content: createForm.value.content,
       embed_method: createForm.value.embed_method,
       priority: createForm.value.priority,
+      planned_embed_chapter: createForm.value.planned_embed_chapter,
+      planned_resolve_chapter: createForm.value.planned_resolve_chapter,
       tags,
     })
     ElMessage.success('伏笔已创建')
@@ -219,6 +251,8 @@ async function doUpdate() {
       content: editForm.value.content,
       embed_method: editForm.value.embed_method,
       priority: editForm.value.priority,
+      planned_embed_chapter: editForm.value.planned_embed_chapter,
+      planned_resolve_chapter: editForm.value.planned_resolve_chapter,
       tags,
       status: editForm.value.status,
     })
@@ -263,6 +297,10 @@ async function doDelete(f: any) {
 .fs-content { color: var(--nb-text-primary, #e0e0e0); margin: 8px 0 10px; line-height: 1.6; font-size: 14px; }
 .fs-meta { font-size: 13px; color: #888; margin-bottom: 6px; }
 .meta-label { color: #666; }
+.fs-chapter-plan { display: flex; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+.chapter-badge { font-size: 12px; padding: 2px 8px; border-radius: 4px; }
+.chapter-badge.embed { background: rgba(64, 158, 255, 0.15); color: #409eff; }
+.chapter-badge.resolve { background: rgba(103, 194, 58, 0.15); color: #67c23a; }
 .fs-tags { margin-top: 6px; }
 .fs-actions { display: flex; gap: 4px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--nb-card-border, #333); flex-wrap: wrap; }
 .stat-block { padding: 12px; }

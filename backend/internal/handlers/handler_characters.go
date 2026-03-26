@@ -141,15 +141,17 @@ func (h *Handler) ListForeshadowings(c *gin.Context) {
 
 func (h *Handler) CreateForeshadowing(c *gin.Context) {
 	var body struct {
-		Content     string `json:"content" binding:"required"`
-		EmbedMethod string `json:"embed_method"`
-		Priority    int    `json:"priority"`
+		Content               string `json:"content" binding:"required"`
+		EmbedMethod           string `json:"embed_method"`
+		Priority              int    `json:"priority"`
+		PlannedEmbedChapter   int    `json:"planned_embed_chapter"`
+		PlannedResolveChapter int    `json:"planned_resolve_chapter"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	f, err := h.foreshadowings.Create(c.Request.Context(), c.Param("id"), body.Content, body.EmbedMethod, body.Priority)
+	f, err := h.foreshadowings.Create(c.Request.Context(), c.Param("id"), body.Content, body.EmbedMethod, body.Priority, body.PlannedEmbedChapter, body.PlannedResolveChapter)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -174,17 +176,19 @@ func (h *Handler) UpdateForeshadowingStatus(c *gin.Context) {
 
 func (h *Handler) UpdateForeshadowing(c *gin.Context) {
 	var body struct {
-		Content     string   `json:"content"`
-		EmbedMethod string   `json:"embed_method"`
-		Tags        []string `json:"tags"`
-		Priority    int      `json:"priority"`
+		Content               string   `json:"content"`
+		EmbedMethod           string   `json:"embed_method"`
+		Tags                  []string `json:"tags"`
+		Priority              int      `json:"priority"`
+		PlannedEmbedChapter   int      `json:"planned_embed_chapter"`
+		PlannedResolveChapter int      `json:"planned_resolve_chapter"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 	f, err := h.foreshadowings.Update(c.Request.Context(), c.Param("id"),
-		body.Content, body.EmbedMethod, body.Tags, body.Priority)
+		body.Content, body.EmbedMethod, body.Tags, body.Priority, body.PlannedEmbedChapter, body.PlannedResolveChapter)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

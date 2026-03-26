@@ -362,7 +362,7 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
   ],
   "relation_graph": "角色A-角色B:关系描述;角色C-角色D:关系描述（分号分隔每对关系）",
   "global_timeline": "序章:关键事件;第一卷末:关键事件;第二卷末:关键事件;...（分号分隔）",
-  "foreshadowings": [{"content":"伏笔内容","embed_method":"explicit|implicit|symbolic","priority":8}],
+  "foreshadowings": [{"content":"伏笔内容","embed_method":"explicit|implicit|symbolic","planned_embed_chapter":5,"planned_resolve_chapter":25,"priority":8}],
   "characters": [{"name":"角色名","role_type":"protagonist|supporting|antagonist|mentor|minor","profile":"角色描述"}],
   "world_bible": {%s}
 }
@@ -378,8 +378,18 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 - 各卷章节数由你根据剧情自由规划（可多可少），不要求相同
 - characters 中已存在角色无需重复，只列**新增**角色
 - foreshadowings 中已存在伏笔无需重复，只列**新增**伏笔
+- 【伏笔规划约束】每条伏笔必须指定 planned_embed_chapter（植入章节号）和 planned_resolve_chapter（回收章节号）：
+  * 植入章节必须早于回收章节，两者之间至少间隔5章以上
+  * 伏笔回收不可拖到最后一卷才集中处理，应分散在各卷中逐步回收
+  * 每卷至少安排2-3条伏笔植入，1-2条伏笔回收（早期卷以植入为主，中后期植入与回收并行）
+  * 重要伏笔（priority>=7）的回收需安排在高潮章节附近
 - 所有内容须与已有世界观、角色、术语表保持一致
 - 确保所有伏笔在大纲、时间线中安排铺垫与揭露
+- 【节奏控制约束】剧情推进速度需合理：
+  * 前20%%章节用于世界观建立、角色引入、核心矛盾铺垫，不可在此阶段引入过多势力和冲突
+  * 中间60%%章节为主要冒险/发展阶段，每卷有独立子目标但串联主线
+  * 最后20%%章节用于高潮、真相揭示和收尾，不可出现新的重大设定
+  * 每卷的剧情密度应渐进增加：卷首铺垫轻松→卷中矛盾加剧→卷末高潮或转折
 - 【角色成长约束】角色的能力、武器、装备、身份、地位等属性必须符合时间线渐进获得原则：
   * 角色初始profile只写**现状基础属性**（性格、外貌、当前身份、当前实力水平）
   * 所有需要"获得"的东西（神器、秘籍、师父传承、新身份、突破境界）必须在timeline/章节大纲中明确标注**获得时间点和获得方式**
@@ -430,9 +440,11 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 		RelationGraph  json.RawMessage `json:"relation_graph"`
 		GlobalTimeline json.RawMessage `json:"global_timeline"`
 		Foreshadowings []struct {
-			Content     string `json:"content"`
-			EmbedMethod string `json:"embed_method"`
-			Priority    int    `json:"priority"`
+			Content               string `json:"content"`
+			EmbedMethod           string `json:"embed_method"`
+			Priority              int    `json:"priority"`
+			PlannedEmbedChapter   int    `json:"planned_embed_chapter"`
+			PlannedResolveChapter int    `json:"planned_resolve_chapter"`
 		} `json:"foreshadowings"`
 		Volumes []struct {
 			Title        string `json:"title"`
@@ -525,9 +537,9 @@ func (s *BlueprintService) doGenerateWork(ctx context.Context, projectID, bpID, 
 				priority = 5
 			}
 			fsBatch.Queue(
-				`INSERT INTO foreshadowings (id, project_id, content, embed_method, priority, status, created_at, updated_at)
-				 VALUES ($1, $2, $3, $4, $5, 'planned', NOW(), NOW())`,
-				uuid.New().String(), projectID, fs.Content, embedMethod, priority)
+				`INSERT INTO foreshadowings (id, project_id, content, embed_method, priority, planned_embed_chapter, planned_resolve_chapter, status, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, 'planned', NOW(), NOW())`,
+				uuid.New().String(), projectID, fs.Content, embedMethod, priority, fs.PlannedEmbedChapter, fs.PlannedResolveChapter)
 		}
 		br := tx.SendBatch(ctx, fsBatch)
 		for i := range parsed.Foreshadowings {
@@ -1013,6 +1025,112 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 	characters, _ := s.characters.List(ctx, projectID)
 	worldBible, _ := s.worldBibles.Get(ctx, projectID)
 	glossaryBlock := s.glossary.BuildPromptBlock(ctx, projectID)
+	foreshadowings, _ := s.foreshadowings.List(ctx, projectID)
+
+	// Get ALL volumes for future context (single query)
+	var allVolumes []models.Volume
+	volRows, err := s.db.Query(ctx,
+		`SELECT id, volume_num, title, chapter_start, chapter_end FROM volumes WHERE project_id = $1 ORDER BY volume_num`, projectID)
+	if err == nil {
+		defer volRows.Close()
+		for volRows.Next() {
+			var v models.Volume
+			if err := volRows.Scan(&v.ID, &v.VolumeNum, &v.Title, &v.ChapterStart, &v.ChapterEnd); err == nil {
+				allVolumes = append(allVolumes, v)
+			}
+		}
+	}
+
+	// Get outlines of subsequent volumes for future context (prevent using later plot points early)
+	futureVolumesText := ""
+	if len(allVolumes) > 1 {
+		var futureBuilder strings.Builder
+		hasFuture := false
+		for _, v := range allVolumes {
+			if v.VolumeNum > volumeNum {
+				if !hasFuture {
+					futureBuilder.WriteString("\n---\n## 【后续卷目大纲概要（只读参考，不可提前使用）】\n")
+					futureBuilder.WriteString("以下是后续各卷的剧情概要，本卷大纲**绝对不可以**提前使用这些剧情。仅供了解后续走向以便正确铺垫。\n\n")
+					hasFuture = true
+				}
+				futureBuilder.WriteString(fmt.Sprintf("### %s（第%d～%d章）\n", v.Title, v.ChapterStart, v.ChapterEnd))
+				// Get this volume's existing chapter outlines summary
+				futureRows, fErr := s.db.Query(ctx,
+					`SELECT order_num, title FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num >= $2 AND order_num <= $3 ORDER BY order_num`,
+					projectID, v.ChapterStart, v.ChapterEnd)
+				if fErr == nil {
+					count := 0
+					for futureRows.Next() {
+						var oNum int
+						var oTitle string
+						if futureRows.Scan(&oNum, &oTitle) == nil {
+							futureBuilder.WriteString(fmt.Sprintf("  第%d章：%s\n", oNum, oTitle))
+							count++
+						}
+					}
+					futureRows.Close()
+					if count == 0 {
+						futureBuilder.WriteString("  （尚未生成章节大纲）\n")
+					}
+				}
+				futureBuilder.WriteString("\n")
+			}
+		}
+		if hasFuture {
+			futureVolumesText = futureBuilder.String()
+		}
+	}
+
+	// Build foreshadowing timeline for this volume's chapter range
+	foreshadowingText := ""
+	if len(foreshadowings) > 0 {
+		var fsBuilder strings.Builder
+		fsBuilder.WriteString("\n---\n## 【伏笔时间线】\n")
+
+		var toEmbed, toResolve, available []models.Foreshadowing
+		for _, fs := range foreshadowings {
+			if fs.PlannedEmbedChapter >= nextChapterNum && fs.PlannedEmbedChapter <= endChapterNum {
+				toEmbed = append(toEmbed, fs)
+			}
+			if fs.PlannedResolveChapter >= nextChapterNum && fs.PlannedResolveChapter <= endChapterNum {
+				toResolve = append(toResolve, fs)
+			}
+			if fs.Status == "planted" || fs.Status == "planned" {
+				available = append(available, fs)
+			}
+		}
+
+		if len(toEmbed) > 0 {
+			fsBuilder.WriteString("\n### 本批次需要【植入】的伏笔：\n")
+			for _, fs := range toEmbed {
+				fsBuilder.WriteString(fmt.Sprintf("- 第%d章植入：%s（方式：%s，优先级：%d）\n",
+					fs.PlannedEmbedChapter, fs.Content, fs.EmbedMethod, fs.Priority))
+			}
+		}
+		if len(toResolve) > 0 {
+			fsBuilder.WriteString("\n### 本批次需要【回收/揭示】的伏笔：\n")
+			for _, fs := range toResolve {
+				fsBuilder.WriteString(fmt.Sprintf("- 第%d章回收：%s\n",
+					fs.PlannedResolveChapter, fs.Content))
+			}
+		}
+		if len(available) > 0 {
+			fsBuilder.WriteString("\n### 全部未完结伏笔一览（供参考）：\n")
+			for _, fs := range available {
+				embedInfo := ""
+				if fs.PlannedEmbedChapter > 0 {
+					embedInfo = fmt.Sprintf("，计划第%d章植入", fs.PlannedEmbedChapter)
+				}
+				resolveInfo := ""
+				if fs.PlannedResolveChapter > 0 {
+					resolveInfo = fmt.Sprintf("，计划第%d章回收", fs.PlannedResolveChapter)
+				}
+				fsBuilder.WriteString(fmt.Sprintf("- [%s] %s（优先级%d%s%s）\n",
+					fs.Status, fs.Content, fs.Priority, embedInfo, resolveInfo))
+			}
+		}
+		foreshadowingText = fsBuilder.String()
+	}
 
 	// Build context
 	var ctxBuilder strings.Builder
@@ -1078,7 +1196,7 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 **总体大纲：** %s
 
 **全局时间线：** %s
-%s
+%s%s%s
 **当前卷信息：**
 - 卷名：%s
 - 章节范围：第%d章～第%d章（共%d章）
@@ -1098,7 +1216,7 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 }
 
 **约束要求：**
-- 每章1～3个核心事件，事件描述简洁（50字以内）
+- 每章2～4个核心事件，事件描述简洁（50字以内）
 - 只描述实际发生的情节，不做总结或展望
 - 章节事件应体现剧情推进：人物互动、冲突发展、信息揭露、场景转换
 - 章节标题符合网文命名风格（如："初遇"、"暗流涌动"、"破局"）
@@ -1107,6 +1225,14 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 - **每章情节必须独特且多样化**：避免使用相同的冲突模式、场景设置或事件类型
 - 确保与整书大纲和时间线保持一致
 - 角色能力获得需符合时间线，不可一次性获得多项能力
+- 【伏笔约束】如果伏笔时间线中指定了本批次需要植入或回收的伏笔，必须在对应章节的events中体现（植入：安排暗示性/铺垫性事件；回收：安排揭示/呼应事件）
+- 【节奏约束】
+  * 卷首1-2章以铺垫、引入新线索为主，节奏稍缓
+  * 卷中章节逐步加快节奏，冲突逐章升级
+  * 卷末1-2章为本卷高潮或悬念收尾，节奏紧凑
+  * 单章不可堆叠超过2个重大事件（如战斗+突破+获宝+拜师不可在同一章）
+  * 日常/修炼/旅途类章节与高潮/冲突类章节应交替出现，避免连续多章都是打斗或连续多章都是日常
+- 【后续剧情保护】如果提供了后续卷目大纲，绝对不可将后续卷目的核心剧情提前在本卷使用，只可做轻微铺垫
 `,
 		project.Genre,
 		project.Title,
@@ -1115,6 +1241,8 @@ func (s *BlueprintService) GenerateChapterOutlines(ctx context.Context, projectI
 		masterOutlineText,
 		globalTimelineText,
 		existingOutlinesText,
+		futureVolumesText,
+		foreshadowingText,
 		volume.Title,
 		volume.ChapterStart, volume.ChapterEnd, totalChapters,
 		nextChapterNum, endChapterNum, actualBatchSize,
@@ -1387,10 +1515,11 @@ func (s *BlueprintService) Import(ctx context.Context, projectID string, data *B
 		fsBatch := &pgx.Batch{}
 		for _, fs := range data.Foreshadowings {
 			fsBatch.Queue(
-				`INSERT INTO foreshadowings (id, project_id, content, embed_chapter_id, resolve_chapter_id, embed_method, resolve_method, priority, status, tags, created_at, updated_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())`,
+				`INSERT INTO foreshadowings (id, project_id, content, embed_chapter_id, resolve_chapter_id, embed_method, resolve_method, planned_embed_chapter, planned_resolve_chapter, priority, status, tags, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())`,
 				uuid.New().String(), projectID, fs.Content, fs.EmbedChapterID, fs.ResolveChapterID,
-				fs.EmbedMethod, fs.ResolveMethod, fs.Priority, fs.Status, fs.Tags)
+				fs.EmbedMethod, fs.ResolveMethod, fs.PlannedEmbedChapter, fs.PlannedResolveChapter,
+				fs.Priority, fs.Status, fs.Tags)
 		}
 		br := tx.SendBatch(ctx, fsBatch)
 		for range data.Foreshadowings {

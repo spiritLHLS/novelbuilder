@@ -13,6 +13,8 @@ CREATE TABLE foreshadowings (
     resolve_chapter_id UUID,
     embed_method    VARCHAR(100),
     resolve_method  VARCHAR(100),
+    planned_embed_chapter   INT DEFAULT 0,   -- AI-planned chapter number to plant this foreshadowing (0=unassigned)
+    planned_resolve_chapter INT DEFAULT 0,   -- AI-planned chapter number to resolve this foreshadowing (0=unassigned)
     priority        SMALLINT DEFAULT 3,
     status          VARCHAR(20) DEFAULT 'planned',
     tags            TEXT[],

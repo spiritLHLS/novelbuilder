@@ -65,18 +65,20 @@ type Outline struct {
 }
 
 type Foreshadowing struct {
-	ID               string    `json:"id" db:"id"`
-	ProjectID        string    `json:"project_id" db:"project_id"`
-	Content          string    `json:"content" db:"content"`
-	EmbedChapterID   *string   `json:"embed_chapter_id" db:"embed_chapter_id"`
-	ResolveChapterID *string   `json:"resolve_chapter_id" db:"resolve_chapter_id"`
-	EmbedMethod      string    `json:"embed_method" db:"embed_method"`
-	ResolveMethod    string    `json:"resolve_method" db:"resolve_method"`
-	Priority         int       `json:"priority" db:"priority"`
-	Status           string    `json:"status" db:"status"`
-	Tags             []string  `json:"tags" db:"tags"`
-	CreatedAt        time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
+	ID                    string    `json:"id" db:"id"`
+	ProjectID             string    `json:"project_id" db:"project_id"`
+	Content               string    `json:"content" db:"content"`
+	EmbedChapterID        *string   `json:"embed_chapter_id" db:"embed_chapter_id"`
+	ResolveChapterID      *string   `json:"resolve_chapter_id" db:"resolve_chapter_id"`
+	EmbedMethod           string    `json:"embed_method" db:"embed_method"`
+	ResolveMethod         string    `json:"resolve_method" db:"resolve_method"`
+	PlannedEmbedChapter   int       `json:"planned_embed_chapter" db:"planned_embed_chapter"`
+	PlannedResolveChapter int       `json:"planned_resolve_chapter" db:"planned_resolve_chapter"`
+	Priority              int       `json:"priority" db:"priority"`
+	Status                string    `json:"status" db:"status"`
+	Tags                  []string  `json:"tags" db:"tags"`
+	CreatedAt             time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at" db:"updated_at"`
 }
 
 type BookBlueprint struct {

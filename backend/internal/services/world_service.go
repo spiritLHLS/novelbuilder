@@ -385,7 +385,9 @@ func NewForeshadowingService(db *pgxpool.Pool, logger *zap.Logger) *Foreshadowin
 func (s *ForeshadowingService) List(ctx context.Context, projectID string) ([]models.Foreshadowing, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, project_id, content, embed_chapter_id, resolve_chapter_id,
-		        COALESCE(embed_method, ''), COALESCE(resolve_method, ''), priority, status, COALESCE(tags, '{}'), created_at, updated_at
+		        COALESCE(embed_method, ''), COALESCE(resolve_method, ''),
+		        COALESCE(planned_embed_chapter, 0), COALESCE(planned_resolve_chapter, 0),
+		        priority, status, COALESCE(tags, '{}'), created_at, updated_at
 		 FROM foreshadowings WHERE project_id = $1 ORDER BY priority DESC`, projectID)
 	if err != nil {
 		return nil, err
@@ -396,7 +398,8 @@ func (s *ForeshadowingService) List(ctx context.Context, projectID string) ([]mo
 	for rows.Next() {
 		var f models.Foreshadowing
 		if err := rows.Scan(&f.ID, &f.ProjectID, &f.Content, &f.EmbedChapterID, &f.ResolveChapterID,
-			&f.EmbedMethod, &f.ResolveMethod, &f.Priority, &f.Status, &f.Tags, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			&f.EmbedMethod, &f.ResolveMethod, &f.PlannedEmbedChapter, &f.PlannedResolveChapter,
+			&f.Priority, &f.Status, &f.Tags, &f.CreatedAt, &f.UpdatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, f)
@@ -407,15 +410,18 @@ func (s *ForeshadowingService) List(ctx context.Context, projectID string) ([]mo
 	return list, nil
 }
 
-func (s *ForeshadowingService) Create(ctx context.Context, projectID, content, embedMethod string, priority int) (*models.Foreshadowing, error) {
+func (s *ForeshadowingService) Create(ctx context.Context, projectID, content, embedMethod string, priority, plannedEmbedChapter, plannedResolveChapter int) (*models.Foreshadowing, error) {
 	var f models.Foreshadowing
 	err := s.db.QueryRow(ctx,
-		`INSERT INTO foreshadowings (project_id, content, embed_method, priority) VALUES ($1, $2, $3, $4)
+		`INSERT INTO foreshadowings (project_id, content, embed_method, priority, planned_embed_chapter, planned_resolve_chapter) VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, project_id, content, embed_chapter_id, resolve_chapter_id,
-		           COALESCE(embed_method, ''), COALESCE(resolve_method, ''), priority, status, COALESCE(tags, '{}'), created_at, updated_at`,
-		projectID, content, embedMethod, priority).Scan(
+		           COALESCE(embed_method, ''), COALESCE(resolve_method, ''),
+		           COALESCE(planned_embed_chapter, 0), COALESCE(planned_resolve_chapter, 0),
+		           priority, status, COALESCE(tags, '{}'), created_at, updated_at`,
+		projectID, content, embedMethod, priority, plannedEmbedChapter, plannedResolveChapter).Scan(
 		&f.ID, &f.ProjectID, &f.Content, &f.EmbedChapterID, &f.ResolveChapterID,
-		&f.EmbedMethod, &f.ResolveMethod, &f.Priority, &f.Status, &f.Tags, &f.CreatedAt, &f.UpdatedAt)
+		&f.EmbedMethod, &f.ResolveMethod, &f.PlannedEmbedChapter, &f.PlannedResolveChapter,
+		&f.Priority, &f.Status, &f.Tags, &f.CreatedAt, &f.UpdatedAt)
 	return &f, err
 }
 
@@ -424,16 +430,19 @@ func (s *ForeshadowingService) UpdateStatus(ctx context.Context, id, status stri
 	return err
 }
 
-func (s *ForeshadowingService) Update(ctx context.Context, id, content, embedMethod string, tags []string, priority int) (*models.Foreshadowing, error) {
+func (s *ForeshadowingService) Update(ctx context.Context, id, content, embedMethod string, tags []string, priority, plannedEmbedChapter, plannedResolveChapter int) (*models.Foreshadowing, error) {
 	var f models.Foreshadowing
 	err := s.db.QueryRow(ctx,
-		`UPDATE foreshadowings SET content = $1, embed_method = $2, tags = $3, priority = $4
-		 WHERE id = $5
+		`UPDATE foreshadowings SET content = $1, embed_method = $2, tags = $3, priority = $4, planned_embed_chapter = $5, planned_resolve_chapter = $6
+		 WHERE id = $7
 		 RETURNING id, project_id, content, embed_chapter_id, resolve_chapter_id,
-		           COALESCE(embed_method, ''), COALESCE(resolve_method, ''), priority, status, COALESCE(tags, '{}'), created_at, updated_at`,
-		content, embedMethod, tags, priority, id).Scan(
+		           COALESCE(embed_method, ''), COALESCE(resolve_method, ''),
+		           COALESCE(planned_embed_chapter, 0), COALESCE(planned_resolve_chapter, 0),
+		           priority, status, COALESCE(tags, '{}'), created_at, updated_at`,
+		content, embedMethod, tags, priority, plannedEmbedChapter, plannedResolveChapter, id).Scan(
 		&f.ID, &f.ProjectID, &f.Content, &f.EmbedChapterID, &f.ResolveChapterID,
-		&f.EmbedMethod, &f.ResolveMethod, &f.Priority, &f.Status, &f.Tags, &f.CreatedAt, &f.UpdatedAt)
+		&f.EmbedMethod, &f.ResolveMethod, &f.PlannedEmbedChapter, &f.PlannedResolveChapter,
+		&f.Priority, &f.Status, &f.Tags, &f.CreatedAt, &f.UpdatedAt)
 	return &f, err
 }
 

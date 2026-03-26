@@ -39,17 +39,18 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 	type fsInfo struct {
 		id      string
 		content string
+		status  string
 	}
 	var foreshadowings []fsInfo
 	fsRows, err := s.db.Query(ctx,
-		`SELECT id, content FROM foreshadowings WHERE project_id = $1 AND status IN ('planned','planted')`, projectID)
+		`SELECT id, content, status FROM foreshadowings WHERE project_id = $1 AND status IN ('planned','planted')`, projectID)
 	if err != nil {
 		s.logger.Warn("settle: failed to load foreshadowings", zap.Error(err))
 		return
 	}
 	for fsRows.Next() {
 		var fi fsInfo
-		fsRows.Scan(&fi.id, &fi.content)
+		fsRows.Scan(&fi.id, &fi.content, &fi.status)
 		foreshadowings = append(foreshadowings, fi)
 	}
 	fsRows.Close()
@@ -64,8 +65,10 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 		charNames[i] = c.name
 	}
 	fsContents := make([]string, len(foreshadowings))
+	fsStatusMap := make(map[string]string, len(foreshadowings))
 	for i, f := range foreshadowings {
-		fsContents[i] = f.content
+		fsContents[i] = fmt.Sprintf("[%s] %s", f.status, f.content)
+		fsStatusMap[f.content] = f.status
 	}
 
 	truncated := content
@@ -76,7 +79,7 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 
 	systemMsg := `你是小说状态追踪系统。分析章节内容，提取状态变化。必须以纯JSON格式回复，不要包含其他文本。`
 	userMsg := fmt.Sprintf(`角色列表：%v
-待解决伏笔：%v
+待处理伏笔（带状态标记）：%v
 
 章节内容（节选）：
 %s
@@ -86,10 +89,18 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
   "character_states": [
     {"name": "角色名（必须来自上面的列表）", "current_state": "状态描述"}
   ],
+  "planted_foreshadowings": [
+    "本章中被植入/铺垫的伏笔内容（必须来自上面状态为planned的伏笔，精确匹配原文）"
+  ],
   "resolved_foreshadowings": [
-    "已解决的伏笔内容（必须来自上面的列表，精确匹配）"
+    "本章中被揭示/回收的伏笔内容（必须来自上面状态为planted的伏笔，精确匹配原文）"
   ]
-}`, charNames, fsContents, truncated)
+}
+
+说明：
+- planted_foreshadowings：指本章首次在文中出现暗示或铺垫的伏笔（从planned变为planted）
+- resolved_foreshadowings：指本章明确揭示或解决了之前已植入的伏笔（从planted变为resolved）
+- 只有文中确实出现了相关描写才能标记，不要猜测`, charNames, fsContents, truncated)
 
 	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
 		Task:      "state_settlement",
@@ -110,6 +121,7 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 			Name         string `json:"name"`
 			CurrentState string `json:"current_state"`
 		} `json:"character_states"`
+		PlantedForeshadowings  []string `json:"planted_foreshadowings"`
 		ResolvedForeshadowings []string `json:"resolved_foreshadowings"`
 	}
 	raw := extractJSON(resp.Content)
@@ -146,8 +158,18 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 			continue
 		}
 		batch.Queue(
-			`UPDATE foreshadowings SET status = 'resolved', updated_at = NOW() WHERE id = $1`,
-			fid)
+			`UPDATE foreshadowings SET status = 'resolved', resolve_chapter_id = $2, updated_at = NOW() WHERE id = $1`,
+			fid, chapterID)
+	}
+	for _, fsContent := range settlement.PlantedForeshadowings {
+		fid, ok := fsByContent[fsContent]
+		if !ok {
+			continue
+		}
+		// Only mark as planted if currently planned (don't re-plant already planted ones)
+		batch.Queue(
+			`UPDATE foreshadowings SET status = 'planted', embed_chapter_id = $2, updated_at = NOW() WHERE id = $1 AND status = 'planned'`,
+			fid, chapterID)
 	}
 
 	if batch.Len() == 0 {
@@ -164,6 +186,7 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 	s.logger.Info("chapter state settled",
 		zap.String("chapter_id", chapterID),
 		zap.Int("char_updates", len(settlement.CharacterStates)),
+		zap.Int("fs_planted", len(settlement.PlantedForeshadowings)),
 		zap.Int("fs_resolved", len(settlement.ResolvedForeshadowings)))
 }
 
@@ -274,12 +297,14 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 
 	// Foreshadowing status
 	type promptForeshadowing struct {
-		Content           string
-		EmbedMethod       string
-		Status            string
-		Priority          int
-		EmbedChapterNum   int
-		ResolveChapterNum int
+		Content               string
+		EmbedMethod           string
+		Status                string
+		Priority              int
+		EmbedChapterNum       int
+		ResolveChapterNum     int
+		PlannedEmbedChapter   int
+		PlannedResolveChapter int
 	}
 	sb.WriteString("=== 本章可用伏笔 ===\n")
 	if fsRows, fsErr := s.db.Query(ctx,
@@ -288,7 +313,9 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		        f.status,
 		        f.priority,
 		        COALESCE(ec.chapter_num, 0) AS embed_chapter_num,
-		        COALESCE(rc.chapter_num, 0) AS resolve_chapter_num
+		        COALESCE(rc.chapter_num, 0) AS resolve_chapter_num,
+		        COALESCE(f.planned_embed_chapter, 0),
+		        COALESCE(f.planned_resolve_chapter, 0)
 		 FROM foreshadowings f
 		 LEFT JOIN chapters ec ON ec.id = f.embed_chapter_id
 		 LEFT JOIN chapters rc ON rc.id = f.resolve_chapter_id
@@ -298,25 +325,62 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		s.logger.Warn("failed to load foreshadowings for prompt", zap.Error(fsErr))
 	} else {
 		available := make([]promptForeshadowing, 0)
+		mustEmbed := make([]promptForeshadowing, 0)
+		mustResolve := make([]promptForeshadowing, 0)
 		futureCount := 0
 		for fsRows.Next() {
 			var item promptForeshadowing
-			if err := fsRows.Scan(&item.Content, &item.EmbedMethod, &item.Status, &item.Priority, &item.EmbedChapterNum, &item.ResolveChapterNum); err != nil {
+			if err := fsRows.Scan(&item.Content, &item.EmbedMethod, &item.Status, &item.Priority,
+				&item.EmbedChapterNum, &item.ResolveChapterNum,
+				&item.PlannedEmbedChapter, &item.PlannedResolveChapter); err != nil {
 				continue
 			}
+			// Check if this chapter is the planned embed chapter
+			if item.PlannedEmbedChapter == chapterNum && (item.Status == "planned" || item.Status == "") {
+				mustEmbed = append(mustEmbed, item)
+			}
+			// Check if this chapter is the planned resolve chapter
+			if item.PlannedResolveChapter == chapterNum && (item.Status == "planted" || item.Status == "active") {
+				mustResolve = append(mustResolve, item)
+			}
 			if item.EmbedChapterNum > 0 && item.EmbedChapterNum > chapterNum {
+				futureCount++
+				continue
+			}
+			if item.PlannedEmbedChapter > chapterNum && item.Status == "planned" {
 				futureCount++
 				continue
 			}
 			available = append(available, item)
 		}
 		fsRows.Close()
-		if len(available) == 0 {
+
+		// Show must-embed foreshadowings prominently
+		if len(mustEmbed) > 0 {
+			sb.WriteString("【本章必须植入的伏笔】（在场景/对话中自然埋入，不可遗漏）\n")
+			for _, item := range mustEmbed {
+				sb.WriteString(fmt.Sprintf("  ★ %s（方式：%s，优先级P%d）\n", item.Content, item.EmbedMethod, item.Priority))
+			}
+			sb.WriteString("\n")
+		}
+		// Show must-resolve foreshadowings prominently
+		if len(mustResolve) > 0 {
+			sb.WriteString("【本章必须回收/揭示的伏笔】（在剧情中安排呼应/揭露/确认）\n")
+			for _, item := range mustResolve {
+				sb.WriteString(fmt.Sprintf("  ★ %s（当前状态：%s）\n", item.Content, item.Status))
+			}
+			sb.WriteString("\n")
+		}
+
+		if len(available) == 0 && len(mustEmbed) == 0 && len(mustResolve) == 0 {
 			sb.WriteString("- 本章无必须强行植入的既有伏笔，可优先稳住开场、人物关系与当前冲突。\n")
-		} else {
+		} else if len(available) > 0 {
+			sb.WriteString("【已植入可供参考的伏笔】\n")
 			for _, item := range available {
 				resolveNote := "未指定回收章"
-				if item.ResolveChapterNum > 0 {
+				if item.PlannedResolveChapter > 0 {
+					resolveNote = fmt.Sprintf("计划第%d章回收", item.PlannedResolveChapter)
+				} else if item.ResolveChapterNum > 0 {
 					resolveNote = fmt.Sprintf("预计第%d章后回收", item.ResolveChapterNum)
 				}
 				sb.WriteString(fmt.Sprintf("- [%s] P%d %s（植入方式：%s；%s）\n",
@@ -340,6 +404,46 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	if err == nil {
 		sb.WriteString(string(outlineContent))
 		sb.WriteString(fmt.Sprintf("\n目标张力值：%.1f\n", tensionTarget))
+	}
+
+	// Next chapter outline preview (for transition setup)
+	var nextOutlineContent json.RawMessage
+	var nextChapterTitle string
+	if s.db.QueryRow(ctx,
+		`SELECT title, content FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num = $2`,
+		projectID, chapterNum+1).Scan(&nextChapterTitle, &nextOutlineContent) == nil {
+		sb.WriteString("\n=== 下一章概要（仅供过渡铺垫参考，不可提前展开）===\n")
+		sb.WriteString(fmt.Sprintf("第%d章：%s\n", chapterNum+1, nextChapterTitle))
+		var nextData map[string]interface{}
+		if json.Unmarshal(nextOutlineContent, &nextData) == nil {
+			if events, ok := nextData["events"].([]interface{}); ok && len(events) > 0 {
+				if firstEvent, ok := events[0].(string); ok {
+					sb.WriteString(fmt.Sprintf("开场事件提示：%s\n", firstEvent))
+				}
+			}
+		}
+		sb.WriteString("注意：仅在末尾做轻微过渡暗示即可，不可在本章中实际展开下一章的内容。\n")
+	}
+
+	// Volume position pacing guidance
+	var volChapterStart, volChapterEnd int
+	if s.db.QueryRow(ctx,
+		`SELECT chapter_start, chapter_end FROM volumes WHERE project_id = $1
+		 AND chapter_start <= $2 AND chapter_end >= $2`,
+		projectID, chapterNum).Scan(&volChapterStart, &volChapterEnd) == nil {
+		volTotal := volChapterEnd - volChapterStart + 1
+		posInVol := chapterNum - volChapterStart + 1
+		progress := float64(posInVol) / float64(volTotal)
+		sb.WriteString("\n=== 卷内节奏定位 ===\n")
+		if progress <= 0.2 {
+			sb.WriteString(fmt.Sprintf("当前处于本卷开头（第%d/%d章），节奏应偏缓：重铺垫、建场景、引矛盾。避免重大冲突爆发。\n", posInVol, volTotal))
+		} else if progress <= 0.7 {
+			sb.WriteString(fmt.Sprintf("当前处于本卷中段（第%d/%d章），节奏中等偏快：推进主线、制造冲突、角色发展。\n", posInVol, volTotal))
+		} else if progress <= 0.9 {
+			sb.WriteString(fmt.Sprintf("当前处于本卷高潮段（第%d/%d章），节奏紧凑：冲突激化、真相揭示、关键对决。\n", posInVol, volTotal))
+		} else {
+			sb.WriteString(fmt.Sprintf("当前处于本卷收尾（第%d/%d章），节奏：收束当前冲突但留下悬念引入下一卷。\n", posInVol, volTotal))
+		}
 	}
 	sb.WriteString("\n=== 章节推进约束（硬规则）===\n")
 	sb.WriteString("- 本章只推进大纲明确要求的事件，禁止提前展开后续章节的设定、底牌、关系反转或高潮信息。\n")
