@@ -114,6 +114,7 @@ def assemble_context_node(state: AgentState) -> dict[str, Any]:
 
     bottom_parts.append(
         "【生成要求】\n"
+        "- **严格按照【本章大纲】编排情节，不得偏离大纲内容和顺序**\n"
         "- 严格遵守世界宪法中的不变规则\n"
         "- 人物行为必须符合角色设定\n"
         "- 如有待回收伏笔，在合适处自然植入\n"
