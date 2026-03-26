@@ -26,15 +26,13 @@ logger = logging.getLogger("python-agent")
 
 
 def get_db():
-    import psycopg2, os
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "127.0.0.1"),
-        port=int(os.getenv("DB_PORT", "5432")),
-        dbname=os.getenv("DB_NAME", "novelbuilder"),
-        user=os.getenv("DB_USER", "novelbuilder"),
-        password=os.getenv("DB_PASSWORD", "novelbuilder"),
-        options="-c client_encoding=UTF8",
-    )
+    """Get a connection from the shared pool in main.py."""
+    from main import get_db as _get_db
+    return _get_db()
+
+def put_db(conn):
+    from main import put_db as _put_db
+    _put_db(conn)
 
 
 def get_qdrant():

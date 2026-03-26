@@ -318,7 +318,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, type FormInstance, type UploadFile } from 'element-plus'
-import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, projectApi } from '@/api'
+import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, projectApi, batchWriteApi } from '@/api'
 import { Download, Upload, UploadFilled, Finished } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -729,6 +729,31 @@ async function approveBlueprint() {
     await blueprintApi.approve(projectId, currentBlueprint.value.id)
     currentBlueprint.value.status = 'approved'
     ElMessage.success('蓝图已批准')
+    
+    // After approval, ask if user wants to start building the novel
+    if (volumes.value.length > 0) {
+      const { ElMessageBox } = await import('element-plus')
+      try {
+        await ElMessageBox.confirm(
+          `蓝图已批准，共${volumes.value.length}卷。是否立即开始自动生成所有章节？\n（系统将按卷依次生成章节、自动审阅并批准）`,
+          '开始构建小说',
+          { confirmButtonText: '开始构建', cancelButtonText: '稍后手动', type: 'success' }
+        )
+        // Start batch generation for the first volume
+        const firstVolume = volumes.value[0]
+        if (firstVolume) {
+          const response = await batchWriteApi.generateByVolume(projectId, firstVolume.id)
+          if (response.data?.data?.task_ids?.length) {
+            ElMessage.success({
+              message: `已启动第1卷章节生成任务，系统将自动链式生成所有章节。请在"任务队列"中查看进度`,
+              duration: 8000
+            })
+          }
+        }
+      } catch {
+        // User chose "稍后手动" or closed dialog
+      }
+    }
   } catch { ElMessage.error('操作失败') }
 }
 

@@ -394,7 +394,7 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 			} else if tag.RowsAffected() == 0 {
 				if _, dbErr2 := s.db.Exec(ctx,
 					`INSERT INTO world_bibles (project_id, content, version)
-					 VALUES ($1, $2, 1) ON CONFLICT DO NOTHING`,
+					 VALUES ($1, $2, 1) ON CONFLICT (project_id) DO NOTHING`,
 					projectID, worldJSON); dbErr2 != nil {
 					s.logger.Warn("world bible insert failed", zap.String("project_id", projectID), zap.Error(dbErr2))
 				}
@@ -521,8 +521,7 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 				}
 				b.Queue(
 					`INSERT INTO foreshadowings (project_id, content, embed_method, priority, tags, status)
-					 VALUES ($1, $2, 'reference_import', $3, $4, 'planned')
-					 ON CONFLICT DO NOTHING`,
+					 VALUES ($1, $2, 'reference_import', $3, $4, 'planned')`,
 					projectID, content, priority, tags)
 			}
 			if b.Len() > 0 {

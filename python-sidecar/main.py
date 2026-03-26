@@ -34,16 +34,29 @@ logger = logging.getLogger("python-agent")
 # Suppress benign Neo4j schema-discovery warnings (empty DB, missing labels/props)
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
-# ── DB connection (for legacy analyze endpoint) ───────────────────────────────
+# ── DB connection pool (for legacy analyze endpoint) ──────────────────────────
+_db_pool = None
+
 def get_db():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "127.0.0.1"),
-        port=int(os.getenv("DB_PORT", "5432")),
-        dbname=os.getenv("DB_NAME", "novelbuilder"),
-        user=os.getenv("DB_USER", "novelbuilder"),
-        password=os.getenv("DB_PASSWORD", "novelbuilder"),
-        options="-c client_encoding=UTF8",
-    )
+    global _db_pool
+    if _db_pool is None:
+        from psycopg2 import pool as pg_pool
+        _db_pool = pg_pool.ThreadedConnectionPool(
+            minconn=1,
+            maxconn=10,
+            host=os.getenv("DB_HOST", "127.0.0.1"),
+            port=int(os.getenv("DB_PORT", "5432")),
+            dbname=os.getenv("DB_NAME", "novelbuilder"),
+            user=os.getenv("DB_USER", "novelbuilder"),
+            password=os.getenv("DB_PASSWORD", "novelbuilder"),
+            options="-c client_encoding=UTF8",
+        )
+    return _db_pool.getconn()
+
+def put_db(conn):
+    global _db_pool
+    if _db_pool is not None:
+        _db_pool.putconn(conn)
 
 # ── Lazy-init singletons ──────────────────────────────────────────────────────
 _neo4j_client = None
@@ -67,19 +80,29 @@ def get_qdrant():
 # For production use Redis; this suffices for single-container deployment.
 _agent_sessions: dict[str, dict] = {}
 _SESSION_TTL_SECONDS = 3600  # 1 hour
+_session_lock = asyncio.Lock()
 
 
-def _cleanup_expired_sessions() -> None:
+async def _cleanup_expired_sessions() -> None:
     """Remove completed/failed sessions older than TTL to prevent memory leak."""
     import time
     now = time.time()
-    to_delete = [
-        sid for sid, s in list(_agent_sessions.items())
-        if s.get("status") in ("done", "error")
-        and now - s.get("_created_at", now) > _SESSION_TTL_SECONDS
-    ]
-    for sid in to_delete:
-        _agent_sessions.pop(sid, None)
+    async with _session_lock:
+        to_delete = [
+            sid for sid, s in list(_agent_sessions.items())
+            if s.get("status") in ("done", "error")
+            and now - s.get("_created_at", now) > _SESSION_TTL_SECONDS
+        ]
+        for sid in to_delete:
+            _agent_sessions.pop(sid, None)
+        # Also clean batch sessions
+        batch_delete = [
+            bid for bid, s in list(_batch_sessions.items())
+            if s.get("status") in ("done", "error")
+            and now - s.get("_created_at", now) > _SESSION_TTL_SECONDS
+        ]
+        for bid in batch_delete:
+            _batch_sessions.pop(bid, None)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -93,6 +116,17 @@ async def lifespan(app: FastAPI):
         logger.warning("Neo4j schema init failed (may retry): %s", repr(exc), exc_info=True)
     yield
     logger.info("Agent service shutting down...")
+    # Close Neo4j driver
+    try:
+        if _neo4j_client is not None:
+            await _neo4j_client.close()
+    except Exception:
+        pass
+    # Close DB pool
+    global _db_pool
+    if _db_pool is not None:
+        _db_pool.closeall()
+        _db_pool = None
 
 app = FastAPI(title="NovelBuilder Agent Service", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
@@ -263,9 +297,17 @@ def _repair_json(raw: str) -> dict:
     return result
 
 
+_ALLOWED_UPLOAD_DIR = os.path.abspath(os.getenv("UPLOAD_DIR", "/app/uploads"))
+
 def _read_file(file_path: str) -> str:
-    if not os.path.exists(file_path):
+    # Prevent path traversal: only allow files under the upload directory
+    abs_path = os.path.abspath(file_path)
+    if not abs_path.startswith(_ALLOWED_UPLOAD_DIR):
+        logger.warning("Path traversal blocked: %s", file_path)
         return ""
+    if not os.path.exists(abs_path):
+        return ""
+    file_path = abs_path
     ext = os.path.splitext(file_path)[1].lower()
     if ext == ".pdf":
         try:
@@ -322,7 +364,7 @@ async def agent_run(req: AgentRunRequest, background_tasks: BackgroundTasks):
     Returns immediately with session_id; client polls /agent/status/{sid}.
     """
     import time
-    _cleanup_expired_sessions()
+    await _cleanup_expired_sessions()
     session_id = str(uuid.uuid4())
     _agent_sessions[session_id] = {
         "status": "running",
@@ -435,7 +477,7 @@ async def agent_batch_run(req: BatchAgentRunRequest, background_tasks: Backgroun
     /agent/batch-stream/{batch_id} for progress.
     """
     import time
-    _cleanup_expired_sessions()
+    await _cleanup_expired_sessions()
     if not req.chapter_nums:
         raise HTTPException(status_code=400, detail="chapter_nums must not be empty")
 
@@ -714,7 +756,7 @@ async def graph_sync_project(project_id: str):
             synced["rules"] += 1
 
     finally:
-        conn.close()
+        put_db(conn)
 
     return {"ok": True, "synced": synced}
 

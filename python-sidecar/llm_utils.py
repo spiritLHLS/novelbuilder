@@ -102,7 +102,6 @@ def _rate_limit_sync(key: str, rpm_limit: int) -> None:
                 ts.append(now)
                 return
             wait_secs = ts[0] + 60.0 - now + 0.05
-        # Release lock before sleeping so other threads can check state
         time.sleep(max(wait_secs, 0.05))
 
 

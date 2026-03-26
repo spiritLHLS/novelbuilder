@@ -468,8 +468,7 @@ func (s *ImportService) ingestReverseEngineered(ctx context.Context, projectID s
 			}
 			b.Queue(
 				`INSERT INTO foreshadowings (id, project_id, content, embed_method, priority, status, created_at, updated_at)
-				 VALUES ($1, $2, $3, $4, $5, 'planted', $6, $6)
-				 ON CONFLICT DO NOTHING`,
+				 VALUES ($1, $2, $3, $4, $5, 'planted', $6, $6)`,
 				uuid.New().String(), projectID, fs.Content, method, priority, now,
 			)
 		}

@@ -86,6 +86,10 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 	err = s.db.QueryRow(ctx,
 		`INSERT INTO book_blueprints (id, project_id, master_outline, relation_graph, global_timeline, status, version, created_at, updated_at)
 		 VALUES ($1, $2, '{}', '{}', '[]', 'generating', 1, NOW(), NOW())
+		 ON CONFLICT (project_id) DO UPDATE SET
+		     status = 'generating',
+		     error_message = NULL,
+		     updated_at = NOW()
 		 RETURNING id, project_id, world_bible_ref, master_outline, relation_graph, global_timeline, status, version, review_comment, error_message, created_at, updated_at`,
 		bpID, projectID).Scan(
 		&bp.ID, &bp.ProjectID, &bp.WorldBibleRef, &bp.MasterOutline, &bp.RelationGraph,
@@ -94,6 +98,8 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 	if err != nil {
 		return nil, fmt.Errorf("create blueprint placeholder: %w", err)
 	}
+	// On conflict, RETURNING gives us the existing row's id, not the new bpID.
+	bpID = bp.ID
 
 	// Launch background generation with a generous timeout (LLM calls can be slow).
 	genCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)

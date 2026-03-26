@@ -37,7 +37,8 @@ CREATE TABLE book_blueprints (
     error_message   TEXT,
     created_at      TIMESTAMP DEFAULT NOW(),
     updated_at      TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT ck_blueprint_status CHECK (status IN ('generating', 'draft', 'failed', 'pending_review', 'approved', 'rejected'))
+    CONSTRAINT ck_blueprint_status CHECK (status IN ('generating', 'draft', 'failed', 'pending_review', 'approved', 'rejected')),
+    CONSTRAINT uq_book_blueprints_project UNIQUE (project_id)
 );
 
 -- ============================================================

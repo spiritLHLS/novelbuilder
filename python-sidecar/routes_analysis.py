@@ -43,15 +43,13 @@ class MetricsRequest(BaseModel):
 
 
 def get_db():
-    import psycopg2, os
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "127.0.0.1"),
-        port=int(os.getenv("DB_PORT", "5432")),
-        dbname=os.getenv("DB_NAME", "novelbuilder"),
-        user=os.getenv("DB_USER", "novelbuilder"),
-        password=os.getenv("DB_PASSWORD", "novelbuilder"),
-        options="-c client_encoding=UTF8",
-    )
+    """Get a connection from the shared pool in main.py."""
+    from main import get_db as _get_db
+    return _get_db()
+
+def put_db(conn):
+    from main import put_db as _put_db
+    _put_db(conn)
 
 
 def get_qdrant():
@@ -195,7 +193,7 @@ async def analyze_reference(req: AnalyzeRequest, background_tasks: BackgroundTas
             ))
         conn.commit()
     finally:
-        conn.close()
+        put_db(conn)
 
     # Best-effort: insert plot elements into quarantine_zone (separate transaction,
     # so a permission failure does NOT roll back the main analysis results above)
@@ -219,15 +217,18 @@ async def analyze_reference(req: AnalyzeRequest, background_tasks: BackgroundTas
             logger.warning("quarantine_zone insert skipped (check GRANT USAGE on quarantine_zone): %s", repr(qe))
             qconn.rollback()
         finally:
-            qconn.close()
+            put_db(qconn)
 
     # Async: push style samples into Qdrant
     async def _push_to_qdrant():
-        store = get_qdrant()
-        items = [{"collection": "style_samples", "content": s,
-                  "metadata": {"material_id": req.material_id, "project_id": req.project_id}}
-                 for s in style_samples if s]
-        await store.upsert_batch(req.project_id, "style_samples", items)
+        try:
+            store = get_qdrant()
+            items = [{"collection": "style_samples", "content": s,
+                      "metadata": {"material_id": req.material_id, "project_id": req.project_id}}
+                     for s in style_samples if s]
+            await store.upsert_batch(req.project_id, "style_samples", items)
+        except Exception as e:
+            logger.warning("Qdrant style push failed (non-fatal): %s", repr(e))
 
     background_tasks.add_task(_push_to_qdrant)
 
