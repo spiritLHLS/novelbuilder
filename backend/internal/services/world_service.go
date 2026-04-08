@@ -387,7 +387,9 @@ func (s *ForeshadowingService) List(ctx context.Context, projectID string) ([]mo
 		`SELECT id, project_id, content, embed_chapter_id, resolve_chapter_id,
 		        COALESCE(embed_method, ''), COALESCE(resolve_method, ''),
 		        COALESCE(planned_embed_chapter, 0), COALESCE(planned_resolve_chapter, 0),
-		        priority, status, COALESCE(tags, '{}'), created_at, updated_at
+		        priority, status, COALESCE(tags, '{}'),
+		        COALESCE(origin, 'manual'), COALESCE(cross_volume, false),
+		        created_at, updated_at
 		 FROM foreshadowings WHERE project_id = $1 ORDER BY priority DESC`, projectID)
 	if err != nil {
 		return nil, err
@@ -399,7 +401,9 @@ func (s *ForeshadowingService) List(ctx context.Context, projectID string) ([]mo
 		var f models.Foreshadowing
 		if err := rows.Scan(&f.ID, &f.ProjectID, &f.Content, &f.EmbedChapterID, &f.ResolveChapterID,
 			&f.EmbedMethod, &f.ResolveMethod, &f.PlannedEmbedChapter, &f.PlannedResolveChapter,
-			&f.Priority, &f.Status, &f.Tags, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			&f.Priority, &f.Status, &f.Tags,
+			&f.Origin, &f.CrossVolume,
+			&f.CreatedAt, &f.UpdatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, f)
@@ -417,11 +421,15 @@ func (s *ForeshadowingService) Create(ctx context.Context, projectID, content, e
 		 RETURNING id, project_id, content, embed_chapter_id, resolve_chapter_id,
 		           COALESCE(embed_method, ''), COALESCE(resolve_method, ''),
 		           COALESCE(planned_embed_chapter, 0), COALESCE(planned_resolve_chapter, 0),
-		           priority, status, COALESCE(tags, '{}'), created_at, updated_at`,
+		           priority, status, COALESCE(tags, '{}'),
+		           COALESCE(origin, 'manual'), COALESCE(cross_volume, false),
+		           created_at, updated_at`,
 		projectID, content, embedMethod, priority, plannedEmbedChapter, plannedResolveChapter).Scan(
 		&f.ID, &f.ProjectID, &f.Content, &f.EmbedChapterID, &f.ResolveChapterID,
 		&f.EmbedMethod, &f.ResolveMethod, &f.PlannedEmbedChapter, &f.PlannedResolveChapter,
-		&f.Priority, &f.Status, &f.Tags, &f.CreatedAt, &f.UpdatedAt)
+		&f.Priority, &f.Status, &f.Tags,
+		&f.Origin, &f.CrossVolume,
+		&f.CreatedAt, &f.UpdatedAt)
 	return &f, err
 }
 
@@ -438,11 +446,15 @@ func (s *ForeshadowingService) Update(ctx context.Context, id, content, embedMet
 		 RETURNING id, project_id, content, embed_chapter_id, resolve_chapter_id,
 		           COALESCE(embed_method, ''), COALESCE(resolve_method, ''),
 		           COALESCE(planned_embed_chapter, 0), COALESCE(planned_resolve_chapter, 0),
-		           priority, status, COALESCE(tags, '{}'), created_at, updated_at`,
+		           priority, status, COALESCE(tags, '{}'),
+		           COALESCE(origin, 'manual'), COALESCE(cross_volume, false),
+		           created_at, updated_at`,
 		content, embedMethod, tags, priority, plannedEmbedChapter, plannedResolveChapter, id).Scan(
 		&f.ID, &f.ProjectID, &f.Content, &f.EmbedChapterID, &f.ResolveChapterID,
 		&f.EmbedMethod, &f.ResolveMethod, &f.PlannedEmbedChapter, &f.PlannedResolveChapter,
-		&f.Priority, &f.Status, &f.Tags, &f.CreatedAt, &f.UpdatedAt)
+		&f.Priority, &f.Status, &f.Tags,
+		&f.Origin, &f.CrossVolume,
+		&f.CreatedAt, &f.UpdatedAt)
 	return &f, err
 }
 

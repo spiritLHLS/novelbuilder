@@ -77,6 +77,8 @@ type Foreshadowing struct {
 	Priority              int       `json:"priority" db:"priority"`
 	Status                string    `json:"status" db:"status"`
 	Tags                  []string  `json:"tags" db:"tags"`
+	Origin                string    `json:"origin" db:"origin"`
+	CrossVolume           bool      `json:"cross_volume" db:"cross_volume"`
 	CreatedAt             time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at" db:"updated_at"`
 }
@@ -111,22 +113,24 @@ type Volume struct {
 }
 
 type Chapter struct {
-	ID               string          `json:"id" db:"id"`
-	ProjectID        string          `json:"project_id" db:"project_id"`
-	VolumeID         *string         `json:"volume_id" db:"volume_id"`
-	ChapterNum       int             `json:"chapter_num" db:"chapter_num"`
-	Title            string          `json:"title" db:"title"`
-	Content          string          `json:"content" db:"content"`
-	WordCount        int             `json:"word_count" db:"word_count"`
-	Summary          string          `json:"summary" db:"summary"`
-	GenParams        json.RawMessage `json:"gen_params" db:"gen_params"`
-	QualityReport    json.RawMessage `json:"quality_report" db:"quality_report"`
-	OriginalityScore float64         `json:"originality_score" db:"originality_score"`
-	Status           string          `json:"status" db:"status"`
-	Version          int             `json:"version" db:"version"`
-	ReviewComment    string          `json:"review_comment" db:"review_comment"`
-	CreatedAt        time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at" db:"updated_at"`
+	ID                   string          `json:"id" db:"id"`
+	ProjectID            string          `json:"project_id" db:"project_id"`
+	VolumeID             *string         `json:"volume_id" db:"volume_id"`
+	ChapterNum           int             `json:"chapter_num" db:"chapter_num"`
+	Title                string          `json:"title" db:"title"`
+	Content              string          `json:"content" db:"content"`
+	WordCount            int             `json:"word_count" db:"word_count"`
+	Summary              string          `json:"summary" db:"summary"`
+	GenParams            json.RawMessage `json:"gen_params" db:"gen_params"`
+	QualityReport        json.RawMessage `json:"quality_report" db:"quality_report"`
+	OriginalityScore     float64         `json:"originality_score" db:"originality_score"`
+	GenreComplianceScore float64         `json:"genre_compliance_score" db:"genre_compliance_score"`
+	GenreViolations      json.RawMessage `json:"genre_violations" db:"genre_violations"`
+	Status               string          `json:"status" db:"status"`
+	Version              int             `json:"version" db:"version"`
+	ReviewComment        string          `json:"review_comment" db:"review_comment"`
+	CreatedAt            time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at" db:"updated_at"`
 }
 
 type ChapterSnapshot struct {

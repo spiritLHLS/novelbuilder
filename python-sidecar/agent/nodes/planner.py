@@ -27,8 +27,27 @@ _PLAN_SYSTEM = """你是一位专业的 AI 小说生成规划师。
 
 
 def planner_node(state: AgentState) -> dict[str, Any]:
-    """Decompose the writing task into plan_steps."""
+    """Decompose the writing task into plan_steps.
+    
+    For generate_chapter tasks, skip the LLM call entirely and use the
+    deterministic default plan. This saves tokens and latency since the
+    plan is always the same 6 steps for chapter generation.
+    """
     task_type = state.get("task_type", "generate_chapter")
+
+    # Chapter generation always follows the same pipeline — no LLM needed.
+    if task_type == "generate_chapter":
+        steps = _default_plan(task_type)
+        logger.info("Plan created (deterministic): %d steps for task=%s", len(steps), task_type)
+        return {
+            "plan_steps": steps,
+            "current_step": 0,
+            "retry_count": 0,
+            "max_retries": state.get("max_retries", 2),
+            "done": False,
+        }
+
+    # For other task types, use LLM planning
     user_prompt = state.get("user_prompt", "")
     chapter_num = state.get("chapter_num")
     outline_hint = state.get("outline_hint", "")

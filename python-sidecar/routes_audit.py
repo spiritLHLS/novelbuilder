@@ -182,6 +182,33 @@ def _heuristic_audit(text: str, context: dict) -> dict:
         "issues": [f"陈词滥调过多：{', '.join(cliche_hits[:5])}"] if len(cliche_hits) >= 4 else [],
     }
 
+    # genre_compliance — detect genre-breaking elements
+    genre = context.get("genre", "")
+    if genre:
+        _GENRE_FORBIDDEN_AUDIT = {
+            "西幻": ["修炼", "丹药", "灵石", "宗门", "渡劫", "飞升", "灵气", "元神", "金丹", "内功"],
+            "玄幻": ["精灵族", "矮人", "兽人", "骑士团", "魔杖", "咒语", "手机", "电脑", "枪械"],
+            "末世": ["修炼", "丹药", "灵石", "宗门", "精灵", "矮人", "魔法阵", "咒语"],
+            "科幻": ["修炼", "丹药", "灵石", "功法", "飞升", "魔法", "咒语", "魔杖"],
+            "都市": ["修炼飞升", "魔法", "精灵", "星际", "末世灾变"],
+        }
+        _SYS_BREAK = [
+            "系统面板", "系统提示", "任务面板", "经验值", "技能树", "技能点",
+            "属性面板", "等级提升", "升级提示", "技能冷却",
+        ]
+        forbidden = _GENRE_FORBIDDEN_AUDIT.get(genre, [])
+        genre_hits = [w for w in forbidden if w in text]
+        sys_hits = [w for w in _SYS_BREAK if w in text] if genre != "游戏" else []
+        all_genre_hits = genre_hits + sys_hits
+        genre_score = max(0.0, 1.0 - len(all_genre_hits) * 0.12)
+        dimensions["genre_compliance"] = {
+            "score": genre_score,
+            "passed": len(all_genre_hits) == 0,
+            "issues": [f"题材违规（{genre}）：出现 {', '.join(all_genre_hits[:6])}"] if all_genre_hits else [],
+        }
+    else:
+        dimensions["genre_compliance"] = {"score": 1.0, "passed": True, "issues": []}
+
     return dimensions
 
 
@@ -277,7 +304,7 @@ async def audit_chapter(req: AuditChapterRequest):
         "ai_pattern_detection", "repetitive_sentence_structure",
         "excessive_summarization", "high_freq_ai_words", "show_vs_tell",
         "sensory_detail", "inner_monologue_quality", "chapter_length_adequacy",
-        "ending_hook",
+        "ending_hook", "genre_compliance",
     ]
     for d in all_dims:
         if d not in merged:

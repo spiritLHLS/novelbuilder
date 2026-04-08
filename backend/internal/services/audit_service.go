@@ -101,15 +101,23 @@ func (s *AuditService) RunAudit(
 		return nil, fmt.Errorf("save audit report: %w", err)
 	}
 
-	// Also update chapters.quality_report with audit summary
+	// Also update chapters.quality_report and genre compliance with audit summary
+	var genreComplianceScore float64 = 1.0
+	var genreViolations []string
+	if gc, ok := result.Dimensions["genre_compliance"]; ok {
+		genreComplianceScore = gc.Score
+		genreViolations = gc.Issues
+	}
+	genreViolJSON, _ := json.Marshal(genreViolations)
 	summaryJSON, _ := json.Marshal(map[string]interface{}{
 		"overall_score":  result.OverallScore,
 		"passed":         result.Passed,
 		"ai_probability": result.AIProbability,
 		"issues":         result.Issues,
 	})
-	s.db.Exec(ctx, `UPDATE chapters SET quality_report = $1 WHERE id = $2`,
-		summaryJSON, chapter.ID)
+	s.db.Exec(ctx,
+		`UPDATE chapters SET quality_report = $1, genre_compliance_score = $2, genre_violations = $3 WHERE id = $4`,
+		summaryJSON, genreComplianceScore, genreViolJSON, chapter.ID)
 
 	return &models.AuditReport{
 		ID:            reportID,

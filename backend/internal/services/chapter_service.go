@@ -77,7 +77,9 @@ func (s *ChapterService) PingRedis(ctx context.Context) error {
 func (s *ChapterService) List(ctx context.Context, projectID string) ([]models.Chapter, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
-		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at
+		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0),
+		 COALESCE(genre_compliance_score, 1.0), COALESCE(genre_violations, '[]'),
+		 status, version, COALESCE(review_comment, ''), created_at, updated_at
 		 FROM chapters WHERE project_id = $1 ORDER BY chapter_num`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list chapters: %w", err)
@@ -89,6 +91,7 @@ func (s *ChapterService) List(ctx context.Context, projectID string) ([]models.C
 		var ch models.Chapter
 		if err := rows.Scan(&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 			&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
+			&ch.GenreComplianceScore, &ch.GenreViolations,
 			&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -104,10 +107,13 @@ func (s *ChapterService) Get(ctx context.Context, id string) (*models.Chapter, e
 	var ch models.Chapter
 	err := s.db.QueryRow(ctx,
 		`SELECT id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
-		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at
+		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0),
+		 COALESCE(genre_compliance_score, 1.0), COALESCE(genre_violations, '[]'),
+		 status, version, COALESCE(review_comment, ''), created_at, updated_at
 		 FROM chapters WHERE id = $1`, id).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
+		&ch.GenreComplianceScore, &ch.GenreViolations,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -162,10 +168,13 @@ func (s *ChapterService) GetByProjectAndNum(ctx context.Context, projectID strin
 	var ch models.Chapter
 	err := s.db.QueryRow(ctx,
 		`SELECT id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
-		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at
+		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0),
+		 COALESCE(genre_compliance_score, 1.0), COALESCE(genre_violations, '[]'),
+		 status, version, COALESCE(review_comment, ''), created_at, updated_at
 		 FROM chapters WHERE project_id = $1 AND chapter_num = $2`, projectID, chapterNum).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
+		&ch.GenreComplianceScore, &ch.GenreViolations,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -353,11 +362,14 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', 1, NOW(), NOW())
 		 ON CONFLICT (project_id, chapter_num) DO NOTHING
 		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
-		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at`,
+		 COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0),
+		 COALESCE(genre_compliance_score, 1.0), COALESCE(genre_violations, '[]'),
+		 status, version, COALESCE(review_comment, ''), created_at, updated_at`,
 		chID, projectID, volumeID, chapterNum, title, chapterContent, wordCount, summary, genParams,
 		totalInputTokens, totalOutputTokens).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
+		&ch.GenreComplianceScore, &ch.GenreViolations,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Another worker inserted this chapter in the narrow race window; fetch it.
@@ -569,11 +581,14 @@ func (s *ChapterService) RestoreFromSnapshot(ctx context.Context, chapterID, sna
 		     updated_at = NOW()
 		 WHERE id = $7
 		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
-		           COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at`,
+		           COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0),
+		           COALESCE(genre_compliance_score, 1.0), COALESCE(genre_violations, '[]'),
+		           status, version, COALESCE(review_comment, ''), created_at, updated_at`,
 		snapshot.Title, snapshot.Content, snapshot.WordCount, snapshot.Summary,
 		snapshot.QualityReport, snapshot.OriginalityScore, chapterID).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
+		&ch.GenreComplianceScore, &ch.GenreViolations,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -606,10 +621,13 @@ func (s *ChapterService) UpdateContent(ctx context.Context, id, content, status 
 		     updated_at = NOW()
 		 WHERE id = $5
 		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
-		           COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0), status, version, COALESCE(review_comment, ''), created_at, updated_at`,
+		           COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0),
+		           COALESCE(genre_compliance_score, 1.0), COALESCE(genre_violations, '[]'),
+		           status, version, COALESCE(review_comment, ''), created_at, updated_at`,
 		content, wordCount, summary, status, id).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
+		&ch.GenreComplianceScore, &ch.GenreViolations,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
 	if err != nil {
 		return nil, err

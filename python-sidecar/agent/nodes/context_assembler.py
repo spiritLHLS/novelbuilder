@@ -70,10 +70,20 @@ def assemble_context_node(state: AgentState) -> dict[str, Any]:
     if foresh:
         top_parts.append("【待回收伏笔】\n" + _fmt_list(foresh))
 
+    # Genre constraint (if available)
+    genre = style_profile.get("genre", "")
+    if genre:
+        top_parts.append(f"【题材约束】本作品为{genre}题材，严禁出现不属于该题材的元素。")
+
     anchor_top = "\n\n".join(top_parts)
 
     # ── TRACK-2: Narrative continuity (context middle) ────────────────────────
     mid_parts: list[str] = []
+
+    # Volume arc summary (long-term coherence, compressed)
+    volume_arc = narrative.get("current_arc_summary", "")
+    if volume_arc:
+        mid_parts.append("【本卷剧情脉络（压缩摘要）】\n" + volume_arc)
 
     summaries = narrative.get("recent_chapter_summaries", [])
     if summaries:
@@ -95,6 +105,11 @@ def assemble_context_node(state: AgentState) -> dict[str, Any]:
     style_samples = narrative.get("style_samples", [])
     if style_samples:
         mid_parts.append("【参考风格样本】\n" + "\n\n".join(style_samples[:2]))
+
+    # Plot momentum for continuity (prevents drift)
+    plot_momentum = narrative.get("plot_momentum", "")
+    if plot_momentum:
+        mid_parts.append("【当前剧情动量】\n" + plot_momentum)
 
     context_middle = "\n\n".join(mid_parts)
 
@@ -119,6 +134,9 @@ def assemble_context_node(state: AgentState) -> dict[str, Any]:
         "- 人物行为必须符合角色设定\n"
         "- 如有待回收伏笔，在合适处自然植入\n"
         "- 内容连贯，与近期章节摘要无矛盾\n"
+        "- 新角色/道具/能力首次出场必须交代来源，禁止凭空出现\n"
+        "- 角色只能使用角色设定中已记录的能力，禁止突然拥有新能力\n"
+        "- 章节必须在悬念/动作/对话高点处断章，禁止写总结段或展望段\n"
         "- 用中文写作，风格流畅，情节张力充足"
     )
 

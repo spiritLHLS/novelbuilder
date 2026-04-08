@@ -148,6 +148,21 @@ async def retrieve_narrative_node(state: AgentState) -> dict[str, Any]:
         )
         style_samples = [h["content"] for h in style_hits]
 
+        # Character voice samples — top 2 (for protagonist dialogue fidelity)
+        voice_hits = []
+        try:
+            voice_hits = await store.search(
+                project_id=project_id,
+                collection="character_voices",
+                query=query,
+                limit=2,
+            )
+        except Exception:
+            pass  # Collection may not exist yet
+
+        if voice_hits:
+            style_samples.extend([h["content"] for h in voice_hits])
+
         narrative_track["recent_chapter_summaries"] = recent_summaries
         narrative_track["style_samples"] = style_samples
         narrative_track["current_arc_summary"] = ""

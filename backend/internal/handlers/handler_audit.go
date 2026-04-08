@@ -17,6 +17,11 @@ import (
 func (h *Handler) buildAuditContext(ctx context.Context, chapter *models.Chapter) map[string]interface{} {
 	ctxPayload := map[string]interface{}{}
 
+	// Inject project genre for genre-compliance checking
+	if proj, err := h.projects.Get(ctx, chapter.ProjectID); err == nil && proj != nil && proj.Genre != "" {
+		ctxPayload["genre"] = proj.Genre
+	}
+
 	if rules, err := h.bookRules.Get(ctx, chapter.ProjectID); err == nil && rules != nil {
 		ctxPayload["book_rules"] = rules.RulesContent
 		if rules.StyleGuide != "" {

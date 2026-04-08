@@ -188,6 +188,97 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 		zap.Int("char_updates", len(settlement.CharacterStates)),
 		zap.Int("fs_planted", len(settlement.PlantedForeshadowings)),
 		zap.Int("fs_resolved", len(settlement.ResolvedForeshadowings)))
+
+	// ── 6. Auto-extract potential new foreshadowings from chapter content ─────
+	s.extractAutoForeshadowings(ctx, projectID, chapterID, content)
+
+	// ── 7. Update volume arc summary ──────────────────────────────────────────
+	s.updateVolumeArcSummary(ctx, projectID, chapterID, content)
+}
+
+// extractAutoForeshadowings uses the LLM to detect potential foreshadowing hooks
+// planted in the generated chapter text, and inserts them as auto_extracted foreshadowings.
+func (s *ChapterService) extractAutoForeshadowings(ctx context.Context, projectID, chapterID, content string) {
+	truncated := content
+	if utf8.RuneCountInString(truncated) > 3000 {
+		runes := []rune(truncated)
+		truncated = string(runes[:3000])
+	}
+
+	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
+		Task:      "foreshadowing_extraction",
+		MaxTokens: 500,
+		Messages: []gateway.ChatMessage{
+			{Role: "system", Content: `你是伏笔探测系统。从章节中找出作者有意或无意埋下的可以在后续章节回收的伏笔线索。只输出JSON数组，不要输出其他文字。
+每个元素格式：{"content":"伏笔内容简述","embed_method":"explicit或implicit","priority":1-10}
+如果没有发现任何伏笔则返回空数组[]。最多返回3条。`},
+			{Role: "user", Content: truncated},
+		},
+	})
+	if err != nil {
+		s.logger.Debug("extractAutoForeshadowings: LLM call failed", zap.Error(err))
+		return
+	}
+
+	raw := extractJSON(resp.Content)
+	var hooks []struct {
+		Content     string `json:"content"`
+		EmbedMethod string `json:"embed_method"`
+		Priority    int    `json:"priority"`
+	}
+	if err := json.Unmarshal([]byte(raw), &hooks); err != nil {
+		s.logger.Debug("extractAutoForeshadowings: parse failed", zap.Error(err))
+		return
+	}
+
+	for _, h := range hooks {
+		if h.Content == "" {
+			continue
+		}
+		if h.Priority < 1 {
+			h.Priority = 3
+		}
+		if h.EmbedMethod == "" {
+			h.EmbedMethod = "implicit"
+		}
+		s.db.Exec(ctx,
+			`INSERT INTO foreshadowings (project_id, content, embed_method, priority, status, embed_chapter_id, origin)
+			 VALUES ($1, $2, $3, $4, 'planted', $5, 'auto_extracted')
+			 ON CONFLICT DO NOTHING`,
+			projectID, h.Content, h.EmbedMethod, h.Priority, chapterID)
+	}
+	if len(hooks) > 0 {
+		s.logger.Info("auto-extracted foreshadowings",
+			zap.String("chapter_id", chapterID),
+			zap.Int("count", len(hooks)))
+	}
+}
+
+// updateVolumeArcSummary appends the chapter summary to the running volume arc summary.
+func (s *ChapterService) updateVolumeArcSummary(ctx context.Context, projectID, chapterID, content string) {
+	var volumeID string
+	var chapterNum int
+	err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(volume_id::text, ''), chapter_num FROM chapters WHERE id = $1`, chapterID).
+		Scan(&volumeID, &chapterNum)
+	if err != nil || volumeID == "" {
+		return
+	}
+
+	summary := s.generateSummary(ctx, content)
+	if summary == "" {
+		return
+	}
+
+	// Upsert volume arc summary
+	s.db.Exec(ctx,
+		`INSERT INTO volume_arc_summaries (project_id, volume_id, summary, key_events, last_chapter_num)
+		 VALUES ($1, $2::uuid, $3, '', $4)
+		 ON CONFLICT (project_id, volume_id) DO UPDATE
+		 SET summary = volume_arc_summaries.summary || E'\n' || $3,
+		     last_chapter_num = $4,
+		     updated_at = NOW()`,
+		projectID, volumeID, fmt.Sprintf("第%d章：%s", chapterNum, summary), chapterNum)
 }
 
 // buildSystemPrompt constructs the system prompt using the Lost-in-Middle layout:
