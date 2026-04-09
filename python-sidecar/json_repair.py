@@ -97,7 +97,8 @@ def repair_json(raw: str, max_attempts: int = 3) -> dict:
 
     # Strategy 1: Direct parse
     try:
-        return json.loads(raw)
+        result = json.loads(raw)
+        return result if isinstance(result, dict) else {"_items": result} if isinstance(result, list) else {}
     except json.JSONDecodeError:
         pass
     

@@ -29,12 +29,14 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 		s.logger.Warn("settle: failed to load characters", zap.Error(err))
 		return
 	}
+	defer charRows.Close()
 	for charRows.Next() {
 		var ci charInfo
-		charRows.Scan(&ci.id, &ci.name)
+		if err := charRows.Scan(&ci.id, &ci.name); err != nil {
+			continue
+		}
 		chars = append(chars, ci)
 	}
-	charRows.Close()
 
 	type fsInfo struct {
 		id      string
@@ -48,12 +50,14 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 		s.logger.Warn("settle: failed to load foreshadowings", zap.Error(err))
 		return
 	}
+	defer fsRows.Close()
 	for fsRows.Next() {
 		var fi fsInfo
-		fsRows.Scan(&fi.id, &fi.content, &fi.status)
+		if err := fsRows.Scan(&fi.id, &fi.content, &fi.status); err != nil {
+			continue
+		}
 		foreshadowings = append(foreshadowings, fi)
 	}
-	fsRows.Close()
 
 	if len(chars) == 0 && len(foreshadowings) == 0 {
 		return

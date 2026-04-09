@@ -61,7 +61,17 @@
 
         <!-- Relationship Graph -->
         <el-card shadow="hover" style="margin-top: 20px;">
-          <template #header><span>角色关系图谱</span></template>
+          <template #header>
+            <div class="card-header">
+              <span>角色关系图谱</span>
+              <div class="graph-controls">
+                <el-button size="small" @click="graphFit">适应窗口</el-button>
+                <el-button size="small" @click="graphZoomIn">放大</el-button>
+                <el-button size="small" @click="graphZoomOut">缩小</el-button>
+                <el-button size="small" @click="graphRelayout">重新布局</el-button>
+              </div>
+            </div>
+          </template>
           <div ref="cyContainer" class="cy-container"></div>
         </el-card>
       </el-col>
@@ -394,9 +404,54 @@ function buildGraph() {
           style: { 'line-color': 'rgba(200,220,255,0.9)', width: 2 },
         },
       ],
-      layout: { name: 'cose', animate: false, padding: 30, nodeRepulsion: () => 2000, idealEdgeLength: () => 80 },
+      layout: {
+        name: 'cose',
+        animate: false,
+        padding: 50,
+        nodeRepulsion: () => 12000,
+        idealEdgeLength: () => 200,
+        edgeElasticity: () => 100,
+        gravity: 0.25,
+        numIter: 500,
+        nodeOverlap: 30,
+      },
+      minZoom: 0.2,
+      maxZoom: 3,
+      wheelSensitivity: 0.3,
+    })
+
+    // Highlight neighbors on tap
+    cy.on('tap', 'node', (evt: any) => {
+      cy.elements().style({ opacity: 0.2 })
+      const node = evt.target
+      const neighborhood = node.neighborhood().add(node)
+      neighborhood.style({ opacity: 1 })
+    })
+    cy.on('tap', (evt: any) => {
+      if (evt.target === cy) {
+        cy.elements().style({ opacity: 1 })
+      }
     })
   })
+}
+
+function graphFit() {
+  if (cy) cy.fit(undefined, 50)
+}
+function graphZoomIn() {
+  if (cy) cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } })
+}
+function graphZoomOut() {
+  if (cy) cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } })
+}
+function graphRelayout() {
+  if (cy) {
+    cy.layout({
+      name: 'cose', animate: true, animationDuration: 500, padding: 50,
+      nodeRepulsion: () => 12000, idealEdgeLength: () => 200, edgeElasticity: () => 100,
+      gravity: 0.25, numIter: 500, nodeOverlap: 30,
+    }).run()
+  }
 }
 
 watch(() => characters.value, buildGraph, { deep: true })
@@ -417,5 +472,6 @@ watch(() => characters.value, buildGraph, { deep: true })
 .rel-item { padding: 4px 0; color: var(--nb-text-primary); }
 .text-content { color: var(--nb-text-secondary); line-height: 1.8; white-space: pre-wrap; }
 .rel-item { padding: 4px 0; color: var(--nb-text-secondary); }
-.cy-container { width: 100%; height: 400px; background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); border-radius: 8px; }
+.cy-container { width: 100%; height: 600px; background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); border-radius: 8px; }
+.graph-controls { display: flex; gap: 4px; }
 </style>

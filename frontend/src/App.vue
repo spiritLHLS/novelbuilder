@@ -134,6 +134,7 @@ const toolItems = computed(() => {
     { path: `/projects/${pid}/emotional-arcs`, icon: 'DataLine', label: '情绪弧线' },
     { path: `/projects/${pid}/character-matrix`, icon: 'Grid', label: '角色关系矩阵' },
     { path: `/projects/${pid}/radar`, icon: 'Aim', label: '雷达分析' },
+    { path: `/projects/${pid}/fanqie`, icon: 'Promotion', label: '番茄上传' },
   ]
 })
 

@@ -48,6 +48,9 @@ pdfminer.six==20221105
 # Async HTTP (used internally by novel-downloader search)
 aiohttp>=3.9.0
 
+# Browser automation (Fanqie auto-upload)
+playwright>=1.40.0
+
 # Novel download / search (multi-site: 笔趣阁, 起点 etc.)
 # Installed from the git submodule at python-sidecar/novel-downloader/
 # (see Dockerfile).  For local dev: pip install python-sidecar/novel-downloader

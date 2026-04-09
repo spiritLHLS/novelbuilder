@@ -31,6 +31,17 @@ func NewSidecarService(baseURL string, logger *zap.Logger) *SidecarService {
 	}
 }
 
+// BaseURL returns the configured base URL of the Python sidecar.
+func (s *SidecarService) BaseURL() string {
+	return s.baseURL
+}
+
+// Post exposes the internal HTTP POST helper for handler layers that need
+// to call arbitrary sidecar endpoints (e.g. Fanqie upload routes).
+func (s *SidecarService) Post(ctx context.Context, path string, body interface{}) (json.RawMessage, error) {
+	return s.post(ctx, path, body)
+}
+
 func (s *SidecarService) post(ctx context.Context, path string, body interface{}) (json.RawMessage, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -221,6 +232,9 @@ func (s *SidecarService) RunBatchAgent(ctx context.Context, projectID string, re
 		"outline_hints": req.OutlineHints,
 		"llm_config":    req.LLMConfig,
 		"max_retries":   req.MaxRetries,
+	}
+	if req.StyleProfile != nil {
+		body["style_profile"] = req.StyleProfile
 	}
 	raw, err := s.post(ctx, "/agent/batch-run", body)
 	if err != nil {

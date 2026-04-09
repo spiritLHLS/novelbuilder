@@ -465,6 +465,7 @@ class BatchAgentRunRequest(BaseModel):
     project_id: str
     chapter_nums: list[int]       # ordered list of chapter numbers to generate
     outline_hints: dict = {}      # str(chapter_num) -> hint text
+    style_profile: Optional[dict] = None
     llm_config: dict = {}
     max_retries: int = 2
 
@@ -511,6 +512,7 @@ async def agent_batch_run(req: BatchAgentRunRequest, background_tasks: Backgroun
                     "user_prompt": hint or "请继续写下一章。",
                     "chapter_num": chapter_num,
                     "outline_hint": hint,
+                    "style_profile": req.style_profile or {},
                     "llm_config": req.llm_config,
                     "max_retries": req.max_retries,
                     "messages": [],
@@ -667,6 +669,14 @@ async def graph_upsert(req: GraphUpsertRequest):
             status=req.properties.get("status", "active"),
             priority=req.properties.get("priority", 3),
         )
+    elif req.entity_type == "Event":
+        await neo4j.upsert_event(
+            project_id=req.project_id,
+            event_id=req.entity_id,
+            description=req.properties.get("description", req.name),
+            chapter_num=req.properties.get("chapter_num", 0),
+            involved_chars=req.properties.get("involved_chars", []),
+        )
     else:
         raise HTTPException(status_code=400, detail=f"Unknown entity_type: {req.entity_type}")
 
@@ -682,7 +692,7 @@ async def graph_sync_project(project_id: str):
     """
     neo4j = get_neo4j()
     conn = get_db()
-    synced = {"characters": 0, "rules": 0, "foreshadowings": 0}
+    synced = {"characters": 0, "rules": 0, "foreshadowings": 0, "errors": []}
 
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
@@ -700,14 +710,18 @@ async def graph_sync_project(project_id: str):
         """, (project_id,))
         chars = cur.fetchall()
         for c in chars:
-            await neo4j.upsert_character(
-                project_id=project_id,
-                char_id=str(c["id"]),
-                name=c["name"],
-                role_type=c["role_type"] or "supporting",
-                core_traits=c["core_traits"] or "",
-            )
-            synced["characters"] += 1
+            try:
+                await neo4j.upsert_character(
+                    project_id=project_id,
+                    char_id=str(c["id"]),
+                    name=c["name"],
+                    role_type=c["role_type"] or "supporting",
+                    core_traits=c["core_traits"] or "",
+                )
+                synced["characters"] += 1
+            except Exception as exc:
+                logger.warning("graph sync: failed to upsert character %s: %s", c["id"], exc)
+                synced["errors"].append(f"character {c['id']}: {exc}")
 
         # Batch load all foreshadowings (single query)
         cur.execute("""
@@ -715,14 +729,18 @@ async def graph_sync_project(project_id: str):
             FROM foreshadowings WHERE project_id = %s
         """, (project_id,))
         for f in cur.fetchall():
-            await neo4j.upsert_foreshadowing(
-                project_id=project_id,
-                fs_id=str(f["id"]),
-                content=f["content"],
-                status=f["status"],
-                priority=int(f["priority"]),
-            )
-            synced["foreshadowings"] += 1
+            try:
+                await neo4j.upsert_foreshadowing(
+                    project_id=project_id,
+                    fs_id=str(f["id"]),
+                    content=f["content"],
+                    status=f["status"],
+                    priority=int(f["priority"]),
+                )
+                synced["foreshadowings"] += 1
+            except Exception as exc:
+                logger.warning("graph sync: failed to upsert foreshadowing %s: %s", f["id"], exc)
+                synced["errors"].append(f"foreshadowing {f['id']}: {exc}")
 
         # Batch load world constitution rules (single query)
         cur.execute("""
@@ -736,7 +754,7 @@ async def graph_sync_project(project_id: str):
                 rule_id=rule_id,
                 content=r["rule"],
                 immutable=True,
-                priority=10 - i,
+                priority=max(1, 10 - i),
             )
             synced["rules"] += 1
 
@@ -751,7 +769,7 @@ async def graph_sync_project(project_id: str):
                 rule_id=rule_id,
                 content=r["rule"],
                 immutable=False,
-                priority=5 - i,
+                priority=max(1, 5 - i),
             )
             synced["rules"] += 1
 
@@ -888,11 +906,13 @@ from routes_analysis import router as analysis_router
 from routes_audit import router as audit_router
 from routes_novels import router as novels_router
 from routes_deep_analysis import router as deep_analysis_router
+from routes_fanqie import router as fanqie_router
 
 app.include_router(analysis_router)
 app.include_router(audit_router)
 app.include_router(novels_router)
 app.include_router(deep_analysis_router)
+app.include_router(fanqie_router)
 
 if __name__ == '__main__':
     import uvicorn

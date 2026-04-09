@@ -14,17 +14,11 @@ from pydantic import BaseModel
 from typing import Optional
 
 from json_repair import repair_json
-from analyzers.style_analyzer import StyleAnalyzer
-from analyzers.narrative_analyzer import NarrativeAnalyzer
-from analyzers.atmosphere_analyzer import AtmosphereAnalyzer
-from analyzers.plot_extractor import PlotExtractor
-from humanizer.pipeline import HumanizationPipeline
-from humanizer.metrics import PerplexityBurstinessEstimator
 
 logger = logging.getLogger("python-agent")
 
 
-# ── Pydantic request models (must be defined here so FastAPI can resolve them) ─
+# ── Pydantic request models ──────────────────────────────────────────────────
 class AnalyzeRequest(BaseModel):
     file_path: str
     material_id: str
@@ -57,12 +51,11 @@ def get_qdrant():
     return QdrantStore.get_instance()
 
 
-style_analyzer = StyleAnalyzer()
-narrative_analyzer = NarrativeAnalyzer()
-atmosphere_analyzer = AtmosphereAnalyzer()
-plot_extractor = PlotExtractor()
-humanizer = HumanizationPipeline()
-metrics_estimator = PerplexityBurstinessEstimator()
+def _get_analyzers():
+    """Lazy-import analyzer singletons from main to avoid duplicate instantiation."""
+    from main import (style_analyzer, narrative_analyzer, atmosphere_analyzer,
+                      plot_extractor, humanizer, metrics_estimator)
+    return style_analyzer, narrative_analyzer, atmosphere_analyzer, plot_extractor, humanizer, metrics_estimator
 
 
 # ── Sensory words ─────────────────────────────────────────────────────────────
@@ -117,10 +110,16 @@ def _repair_json(raw: str) -> dict:
     return result
 
 
+_ALLOWED_UPLOAD_DIR = os.path.abspath(os.getenv("UPLOAD_DIR", "/app/uploads"))
+
 def _read_file(file_path: str) -> str:
-    if not os.path.exists(file_path):
+    abs_path = os.path.abspath(file_path)
+    if not abs_path.startswith(_ALLOWED_UPLOAD_DIR):
+        logger.warning("Path traversal blocked: %s", file_path)
         return ""
-    ext = os.path.splitext(file_path)[1].lower()
+    if not os.path.exists(abs_path):
+        return ""
+    ext = os.path.splitext(abs_path)[1].lower()
     if ext == ".pdf":
         try:
             from pdfminer.high_level import extract_text
@@ -169,10 +168,11 @@ async def analyze_reference(req: AnalyzeRequest, background_tasks: BackgroundTas
         raise HTTPException(status_code=400, detail="无法读取文件")
 
     sentences = [s.strip() for s in re.split(r'[。！？\n]+', text) if s.strip()]
-    style_result = style_analyzer.analyze(text)
-    narrative_result = narrative_analyzer.analyze(text)
-    atmosphere_result = atmosphere_analyzer.analyze(text)
-    plot_result = plot_extractor.extract(text)
+    sa, na, aa, pe, _, _ = _get_analyzers()
+    style_result = sa.analyze(text)
+    narrative_result = na.analyze(text)
+    atmosphere_result = aa.analyze(text)
+    plot_result = pe.extract(text)
     style_samples = _extract_style_samples(sentences)
     sensory_samples = _extract_sensory_samples(sentences)
 
@@ -245,13 +245,15 @@ async def analyze_reference(req: AnalyzeRequest, background_tasks: BackgroundTas
 
 @router.post("/style-fingerprint")
 async def extract_style(req: EmbedRequest):
-    result = style_analyzer.analyze(req.text)
+    sa, _, _, _, _, _ = _get_analyzers()
+    result = sa.analyze(req.text)
     return {"fingerprint": result}
 
 
 @router.post("/humanize")
 async def humanize_text(req: HumanizeRequest):
-    result = humanizer.process(req.text, req.style_fingerprint, req.intensity)
+    _, _, _, _, h, _ = _get_analyzers()
+    result = h.process(req.text, req.style_fingerprint, req.intensity)
     return {"result": result}
 
 
@@ -261,7 +263,8 @@ async def metrics_flat(req: MetricsRequest):
     Flat /metrics endpoint consumed by the Go originality_service.
     Returns perplexity, burstiness, ai_probability, verdict at top level.
     """
-    result = metrics_estimator.estimate(req.text)
+    _, _, _, _, _, me = _get_analyzers()
+    result = me.estimate(req.text)
     return {
         "perplexity": result.get("perplexity_estimate", 0.0),
         "burstiness": result.get("burstiness", 0.0),
@@ -272,7 +275,8 @@ async def metrics_flat(req: MetricsRequest):
 
 @router.post("/metrics/perplexity-burstiness")
 async def estimate_metrics(req: MetricsRequest):
-    result = metrics_estimator.estimate(req.text)
+    _, _, _, _, _, me = _get_analyzers()
+    result = me.estimate(req.text)
     return {"metrics": result}
 
 

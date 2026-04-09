@@ -404,6 +404,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 
 	// ── Service Logs ──────────────────────────────────────────────────────────
 	api.GET("/logs", h.GetServiceLogs)
+
+	// ── 番茄小说网自动上传 ────────────────────────────────────────────────────
+	api.GET("/projects/:id/fanqie/account", h.GetFanqieAccount)
+	api.POST("/projects/:id/fanqie/configure", h.ConfigureFanqie)
+	api.POST("/projects/:id/fanqie/validate", h.ValidateFanqieCookies)
+	api.POST("/projects/:id/fanqie/books", h.ListFanqieBooks)
+	api.POST("/projects/:id/fanqie/upload/:chapter_id", h.UploadChapterToFanqie)
+	api.POST("/projects/:id/fanqie/batch-upload", h.BatchUploadToFanqie)
+	api.GET("/projects/:id/fanqie/uploads", h.ListFanqieUploads)
+	api.POST("/projects/:id/fanqie/login-screenshot", h.GetFanqieLoginScreenshot)
 }
 
 // ── Shared LLM Config Helpers ─────────────────────────────────────────────────
@@ -444,14 +454,13 @@ func (h *Handler) resolveAgentLLMConfig(ctx context.Context, agentType, projectI
 	if apiKey == "" {
 		return h.resolveLLMConfig(ctx)
 	}
-	if _, hasTemp := cfg["temperature"]; !hasTemp {
-		if defCfg, defErr := h.resolveLLMConfig(ctx); defErr == nil && defCfg != nil {
-			cfg["temperature"] = defCfg["temperature"]
-			cfg["max_tokens"] = defCfg["max_tokens"]
-			cfg["rpm_limit"] = defCfg["rpm_limit"]
-			cfg["omit_max_tokens"] = defCfg["omit_max_tokens"]
-			cfg["omit_temperature"] = defCfg["omit_temperature"]
-			cfg["api_style"] = defCfg["api_style"]
+	// Fill in any fields missing from the agent-specific profile using the default profile.
+	defCfg, defErr := h.resolveLLMConfig(ctx)
+	if defErr == nil && defCfg != nil {
+		for _, key := range []string{"temperature", "max_tokens", "rpm_limit", "omit_max_tokens", "omit_temperature", "api_style"} {
+			if _, exists := cfg[key]; !exists {
+				cfg[key] = defCfg[key]
+			}
 		}
 	}
 	return cfg, nil

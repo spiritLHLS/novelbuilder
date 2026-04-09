@@ -744,3 +744,23 @@ export const genreTemplateApi = {
   }) => api.put(`/genre-templates/${encodeURIComponent(genre)}`, data),
   delete: (genre: string) => api.delete(`/genre-templates/${encodeURIComponent(genre)}`),
 }
+
+// ── 番茄小说网自动上传 ────────────────────────────────────────────────────────
+export const fanqieApi = {
+  getAccount: (projectId: string) =>
+    api.get(`/projects/${projectId}/fanqie/account`),
+  configure: (projectId: string, data: { cookies: string; book_id?: string; book_title?: string }) =>
+    api.post(`/projects/${projectId}/fanqie/configure`, data),
+  validate: (projectId: string) =>
+    api.post(`/projects/${projectId}/fanqie/validate`, {}),
+  listBooks: (projectId: string) =>
+    api.post(`/projects/${projectId}/fanqie/books`, {}),
+  uploadChapter: (projectId: string, chapterId: string) =>
+    api.post(`/projects/${projectId}/fanqie/upload/${chapterId}`, {}),
+  batchUpload: (projectId: string, chapterIds: string[]) =>
+    api.post(`/projects/${projectId}/fanqie/batch-upload`, { chapter_ids: chapterIds }),
+  listUploads: (projectId: string) =>
+    api.get(`/projects/${projectId}/fanqie/uploads`),
+  loginScreenshot: (projectId: string) =>
+    api.post(`/projects/${projectId}/fanqie/login-screenshot`, {}),
+}

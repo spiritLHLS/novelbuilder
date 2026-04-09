@@ -107,16 +107,6 @@ func (s *PromptPresetService) Create(ctx context.Context, projectID *string, req
 func (s *PromptPresetService) Update(ctx context.Context, id string, req models.UpdatePromptPresetRequest) (*models.PromptPreset, error) {
 	now := time.Now()
 
-	// Resolve pointer fields with defaults
-	isGlobal := false
-	if req.IsGlobal != nil {
-		isGlobal = *req.IsGlobal
-	}
-	sortOrder := 0
-	if req.SortOrder != nil {
-		sortOrder = *req.SortOrder
-	}
-
 	var p models.PromptPreset
 	err := s.db.QueryRow(ctx,
 		`UPDATE prompt_presets SET
@@ -125,13 +115,13 @@ func (s *PromptPresetService) Update(ctx context.Context, id string, req models.
 		   category = COALESCE(NULLIF($3,''), category),
 		   content = COALESCE(NULLIF($4,''), content),
 		   variables = COALESCE($5, variables),
-		   is_global = $6,
-		   sort_order = CASE WHEN $7 != 0 THEN $7 ELSE sort_order END,
+		   is_global = COALESCE($6, is_global),
+		   sort_order = COALESCE($7, sort_order),
 		   updated_at = $8
 		 WHERE id = $9
 		 RETURNING id, project_id, name, description, category, content, variables, is_global, sort_order, created_at, updated_at`,
 		req.Name, req.Description, req.Category, req.Content,
-		req.Variables, isGlobal, sortOrder, now, id).Scan(
+		req.Variables, req.IsGlobal, req.SortOrder, now, id).Scan(
 		&p.ID, &p.ProjectID, &p.Name, &p.Description, &p.Category,
 		&p.Content, &p.Variables, &p.IsGlobal, &p.SortOrder,
 		&p.CreatedAt, &p.UpdatedAt)

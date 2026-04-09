@@ -59,6 +59,12 @@ def _build_prompt(state: AgentState) -> str:
     chapter_label = f"第 {chapter_num} 章" if chapter_num else "本章"
     parts.append(f"\n【写作任务】\n请创作{chapter_label}正文。{user_prompt}")
 
+    # On retry, inject quality feedback from the previous attempt
+    quality_issues = state.get("quality_issues", [])
+    if quality_issues and state.get("retry_count", 0) > 0:
+        feedback = "\n".join(f"- {issue}" for issue in quality_issues[:10])
+        parts.append(f"\n【上次质量检查反馈（请在本次创作中修正）】\n{feedback}")
+
     return "\n\n" + ("\n\n" + "─" * 40 + "\n\n").join(parts)
 
 

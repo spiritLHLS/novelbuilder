@@ -152,10 +152,7 @@ func (h *Handler) SearchReferenceNovels(c *gin.Context) {
 		body.PerSiteLimit = 10
 	}
 
-	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
-	if sidecarURL == "" {
-		sidecarURL = "http://localhost:8081"
-	}
+	sidecarURL := h.sidecar.BaseURL()
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"keyword":        body.Keyword,
@@ -195,10 +192,7 @@ func (h *Handler) SearchReferenceNovelsStream(c *gin.Context) {
 		body.PerSiteLimit = 10
 	}
 
-	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
-	if sidecarURL == "" {
-		sidecarURL = "http://localhost:8081"
-	}
+	sidecarURL := h.sidecar.BaseURL()
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"keyword":        body.Keyword,
@@ -258,10 +252,7 @@ func (h *Handler) GetReferenceBookInfo(c *gin.Context) {
 		return
 	}
 
-	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
-	if sidecarURL == "" {
-		sidecarURL = "http://localhost:8081"
-	}
+	sidecarURL := h.sidecar.BaseURL()
 
 	reqBody, _ := json.Marshal(body)
 	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, sidecarURL+"/novels/book-info", bytes.NewReader(reqBody))
@@ -319,10 +310,7 @@ func (h *Handler) FetchImportReference(c *gin.Context) {
 	})
 
 	// Background goroutine: download chapters from sidecar, persist to DB.
-	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
-	if sidecarURL == "" {
-		sidecarURL = "http://localhost:8081"
-	}
+	sidecarURL := h.sidecar.BaseURL()
 	go h.runBackgroundDownload(ref.ID, sidecarURL, body.Site, body.BookID,
 		body.Title, body.Author, body.ChapterIDs)
 }
@@ -504,10 +492,7 @@ func (h *Handler) ResumeReferenceDownload(c *gin.Context) {
 		"remaining": len(remaining),
 	})
 
-	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
-	if sidecarURL == "" {
-		sidecarURL = "http://localhost:8081"
-	}
+	sidecarURL := h.sidecar.BaseURL()
 	go h.runBackgroundDownload(refID, sidecarURL, ref.FetchSite, ref.FetchBookID,
 		ref.Title, ref.Author, remaining)
 }
@@ -647,10 +632,7 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 		return
 	}
 
-	sidecarURL := os.Getenv("PYTHON_SIDECAR_URL")
-	if sidecarURL == "" {
-		sidecarURL = "http://localhost:8081"
-	}
+	sidecarURL := h.sidecar.BaseURL()
 
 	// For references imported via the download flow, chapters are stored in
 	// reference_book_chapters rather than a physical file. Assemble a temp file so the

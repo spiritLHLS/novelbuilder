@@ -147,17 +147,18 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 
 	var apiKey, model, baseURL, provider *string
 	var maxTokens, rpmLimit *int
+	var temperature *float64
 	var omitMaxTokens, omitTemperature *bool
 	var apiStyle *string
 	if profileID != nil {
-		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url, provider, max_tokens, rpm_limit, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE id = $1`, profileID).
-			Scan(&apiKey, &model, &baseURL, &provider, &maxTokens, &rpmLimit, &omitMaxTokens, &omitTemperature, &apiStyle)
+		s.db.QueryRow(ctx, `SELECT api_key, model_name, base_url, provider, max_tokens, rpm_limit, temperature, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE id = $1`, profileID).
+			Scan(&apiKey, &model, &baseURL, &provider, &maxTokens, &rpmLimit, &temperature, &omitMaxTokens, &omitTemperature, &apiStyle)
 	}
 	if apiKey == nil {
 		// Fall back to default profile
 		err2 := s.db.QueryRow(ctx,
-			`SELECT api_key, model_name, base_url, provider, max_tokens, rpm_limit, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
-		).Scan(&apiKey, &model, &baseURL, &provider, &maxTokens, &rpmLimit, &omitMaxTokens, &omitTemperature, &apiStyle)
+			`SELECT api_key, model_name, base_url, provider, max_tokens, rpm_limit, temperature, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
+		).Scan(&apiKey, &model, &baseURL, &provider, &maxTokens, &rpmLimit, &temperature, &omitMaxTokens, &omitTemperature, &apiStyle)
 		if err2 != nil {
 			return nil, nil // No profile at all; caller handles
 		}
@@ -204,6 +205,9 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 				cfg["max_tokens"] = modelCap
 			}
 		}
+	}
+	if temperature != nil {
+		cfg["temperature"] = *temperature
 	}
 	if rpmLimit != nil {
 		cfg["rpm_limit"] = *rpmLimit

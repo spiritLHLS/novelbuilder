@@ -79,6 +79,7 @@ type AgentRunRequest struct {
 type BatchAgentRunRequest struct {
 	ChapterNums  []int                  `json:"chapter_nums"`  // ordered list of chapter numbers
 	OutlineHints map[string]string      `json:"outline_hints"` // str(chapter_num) -> hint
+	StyleProfile map[string]interface{} `json:"style_profile,omitempty"`
 	LLMConfig    map[string]interface{} `json:"llm_config,omitempty"`
 	MaxRetries   int                    `json:"max_retries,omitempty"`
 }

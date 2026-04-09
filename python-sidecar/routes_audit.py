@@ -4,6 +4,9 @@ import json
 import logging
 import os
 import re
+import math
+import uuid
+from typing import Optional
 
 import httpx
 import psycopg2
@@ -11,18 +14,50 @@ import psycopg2.extras
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
 
-from analyzers.style_analyzer import StyleAnalyzer
-from analyzers.narrative_analyzer import NarrativeAnalyzer
-from analyzers.atmosphere_analyzer import AtmosphereAnalyzer
-from analyzers.plot_extractor import PlotExtractor
-from humanizer.pipeline import HumanizationPipeline
-from humanizer.metrics import PerplexityBurstinessEstimator
 from json_repair import repair_json
 from llm_utils import build_llm
 
 logger = logging.getLogger("python-agent")
+
+
+# ── Pydantic request models (defined locally to avoid circular imports with main.py) ─
+class AuditChapterRequest(BaseModel):
+    chapter_id: str
+    project_id: str
+    chapter_text: str
+    chapter_num: int = 1
+    context: dict = {}
+    llm_config: dict = {}
+
+class AntiDetectRequest(BaseModel):
+    chapter_id: str
+    text: str
+    intensity: str = "medium"
+    style_guide: str = ""
+    anti_ai_wordlist: list[str] = []
+    banned_patterns: list[str] = []
+    llm_config: dict = {}
+
+class CreativeBriefRequest(BaseModel):
+    brief_text: str
+    genre: str = "现代都市"
+    llm_config: dict = {}
+
+class ImportChaptersRequest(BaseModel):
+    project_id: str
+    import_id: str
+    source_text: str
+    split_pattern: str = r"第.{1,4}[章节回]"
+    fanfic_mode: Optional[str] = None
+    llm_config: dict = {}
+
+class NarrativeReviseRequest(BaseModel):
+    chapter_id: str
+    chapter_text: str
+    failing_dimensions: list[str] = []
+    top_issues: list[str] = []
+    llm_config: dict = {}
 
 
 def get_db():
@@ -34,21 +69,15 @@ def put_db(conn):
     from main import put_db as _put_db
     _put_db(conn)
 
-
 def get_qdrant():
     from vector_store.qdrant_store import QdrantStore
     return QdrantStore.get_instance()
 
-
-style_analyzer = StyleAnalyzer()
-narrative_analyzer = NarrativeAnalyzer()
-atmosphere_analyzer = AtmosphereAnalyzer()
-plot_extractor = PlotExtractor()
-humanizer = HumanizationPipeline()
-metrics_estimator = PerplexityBurstinessEstimator()
-
-import math
-import uuid
+def _get_analyzers():
+    """Lazy-import analyzer singletons from main to avoid duplicate instantiation."""
+    from main import (style_analyzer, narrative_analyzer, atmosphere_analyzer,
+                      plot_extractor, humanizer, metrics_estimator)
+    return style_analyzer, narrative_analyzer, atmosphere_analyzer, plot_extractor, humanizer, metrics_estimator
 
 
 router = APIRouter()
@@ -367,6 +396,7 @@ async def anti_detect_rewrite(req: AntiDetectRequest):
         raise HTTPException(status_code=400, detail="llm_config.api_key is required for anti-detect rewrite")
 
     # Measure AI probability before
+    _, _, _, _, _, metrics_estimator = _get_analyzers()
     metrics_before = metrics_estimator.estimate(req.text)
     ai_prob_before = metrics_before.get("ai_probability", 0.0)
 
@@ -416,7 +446,8 @@ async def anti_detect_rewrite(req: AntiDetectRequest):
         logger.error("Anti-detect rewrite failed: %s", repr(exc), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Anti-detect rewrite failed: {exc}")
 
-    metrics_after = metrics_estimator.estimate(rewritten)
+    _, _, _, _, _, me = _get_analyzers()
+    metrics_after = me.estimate(rewritten)
     ai_prob_after = metrics_after.get("ai_probability", 0.0)
 
     return {

@@ -192,6 +192,11 @@ const router = createRouter({
       name: 'genre-templates',
       component: () => import('@/views/GenreTemplates.vue'),
     },
+    {
+      path: '/projects/:projectId/fanqie',
+      name: 'fanqie-upload',
+      component: () => import('@/views/FanqieUpload.vue'),
+    },
   ],
 })
 

@@ -155,40 +155,42 @@ func main() {
 					logger.Warn("auto_write query failed", zap.Error(qErr))
 					continue
 				}
-				for rows.Next() {
-					var pid string
-					var intervalMins int
-					if err := rows.Scan(&pid, &intervalMins); err != nil {
-						continue
+				func() {
+					defer rows.Close()
+					for rows.Next() {
+						var pid string
+						var intervalMins int
+						if err := rows.Scan(&pid, &intervalMins); err != nil {
+							continue
+						}
+						if intervalMins <= 0 {
+							intervalMins = 60
+						}
+						// Check Redis to see when last auto-write ran for this project.
+						lastKey := fmt.Sprintf("auto_write_last:%s", pid)
+						var shouldEnqueue bool
+						lastVal, rErr := rdb.Get(serverCtx, lastKey).Int64()
+						if rErr != nil {
+							shouldEnqueue = true // never ran
+						} else {
+							elapsed := time.Now().Unix() - lastVal
+							shouldEnqueue = elapsed >= int64(intervalMins)*60
+						}
+						if !shouldEnqueue {
+							continue
+						}
+						rdb.Set(serverCtx, lastKey, time.Now().Unix(), time.Duration(intervalMins*2)*time.Minute)
+						if _, enqErr := taskQueueService.Enqueue(serverCtx, models.CreateTaskRequest{
+							TaskType:  "generate_next_chapter",
+							ProjectID: pid,
+						}); enqErr != nil {
+							logger.Warn("auto_write enqueue failed",
+								zap.String("project_id", pid), zap.Error(enqErr))
+						} else {
+							logger.Info("auto_write task enqueued", zap.String("project_id", pid))
+						}
 					}
-					if intervalMins <= 0 {
-						intervalMins = 60
-					}
-					// Check Redis to see when last auto-write ran for this project.
-					lastKey := fmt.Sprintf("auto_write_last:%s", pid)
-					var shouldEnqueue bool
-					lastVal, rErr := rdb.Get(serverCtx, lastKey).Int64()
-					if rErr != nil {
-						shouldEnqueue = true // never ran
-					} else {
-						elapsed := time.Now().Unix() - lastVal
-						shouldEnqueue = elapsed >= int64(intervalMins)*60
-					}
-					if !shouldEnqueue {
-						continue
-					}
-					rdb.Set(serverCtx, lastKey, time.Now().Unix(), time.Duration(intervalMins*2)*time.Minute)
-					if _, enqErr := taskQueueService.Enqueue(serverCtx, models.CreateTaskRequest{
-						TaskType:  "generate_next_chapter",
-						ProjectID: pid,
-					}); enqErr != nil {
-						logger.Warn("auto_write enqueue failed",
-							zap.String("project_id", pid), zap.Error(enqErr))
-					} else {
-						logger.Info("auto_write task enqueued", zap.String("project_id", pid))
-					}
-				}
-				rows.Close()
+				}()
 			case <-serverCtx.Done():
 				return
 			}

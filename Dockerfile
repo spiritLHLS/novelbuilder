@@ -115,6 +115,9 @@ RUN pip install --no-cache-dir \
     torch==2.5.1+cpu \
     --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
+# Install Playwright and Chromium browser for Fanqie auto-upload
+RUN pip install --no-cache-dir playwright>=1.40.0 \
+    && playwright install --with-deps chromium
 # Install novel-downloader: prefer local submodule copy; fall back to GitHub if submodule
 # was not initialised (i.e. the directory is empty after a shallow clone).
 RUN if [ -f "./novel-downloader/pyproject.toml" ]; then \

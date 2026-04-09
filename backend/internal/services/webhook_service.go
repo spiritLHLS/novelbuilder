@@ -174,8 +174,10 @@ func (s *WebhookService) Fire(ctx context.Context, projectID, event string, payl
 				s.logger.Warn("webhook fire: blocked private URL", zap.String("webhook_id", h.id), zap.String("url", h.url))
 				return
 			}
+			deliveryCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 			sig := computeHMAC(body, h.secret)
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.url, bytes.NewReader(body))
+			req, err := http.NewRequestWithContext(deliveryCtx, http.MethodPost, h.url, bytes.NewReader(body))
 			if err != nil {
 				s.logger.Warn("webhook fire: build request failed", zap.String("webhook_id", h.id), zap.Error(err))
 				return

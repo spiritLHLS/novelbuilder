@@ -44,7 +44,7 @@ class Neo4jClient:
         """Execute a read Cypher query and return list of row dicts."""
         if self._driver is None:
             return []
-        async with self._driver.session() as session:
+        async with self._driver.session(default_access_mode="READ") as session:
             result = await session.run(cypher, params or {})
             records = await result.data()
             return records

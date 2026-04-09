@@ -29,6 +29,11 @@ func (s *ProjectService) Ping(ctx context.Context) error {
 	return s.db.Ping(ctx)
 }
 
+// DB exposes the underlying connection pool for ad-hoc queries by handler layers.
+func (s *ProjectService) DB() *pgxpool.Pool {
+	return s.db
+}
+
 func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, title, genre, description, style_description, target_words, chapter_words, status, created_at, updated_at
