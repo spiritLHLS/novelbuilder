@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/workflow"
+	"go.uber.org/zap"
 )
 
 func (h *Handler) ListVolumes(c *gin.Context) {
@@ -91,25 +92,38 @@ func (h *Handler) GenerateChapter(c *gin.Context) {
 		chapterNum = 1
 	}
 
-	// Store only safe, serialisable fields - never LLM credentials.
-	payloadBytes, _ := json.Marshal(map[string]any{
-		"chapter_num":       chapterNum,
-		"chapter_words_min": req.ChapterWordsMin,
-		"chapter_words_max": req.ChapterWordsMax,
-		"context_hint":      req.ContextHint,
-	})
-
-	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
-		ProjectID: projectID,
-		TaskType:  "chapter_generate",
-		Payload:   payloadBytes,
-		Priority:  5,
-	})
+	// Resolve LLM config via agent routing (writer agent).
+	llmCfg, err := h.resolveAgentLLMConfig(c.Request.Context(), "writer", projectID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": "failed to resolve LLM config: " + err.Error()})
 		return
 	}
-	c.JSON(202, gin.H{"task_id": task.ID, "message": "章节生成任务已加入队列"})
+	if req.LLMConfig != nil {
+		for k, v := range req.LLMConfig {
+			llmCfg[k] = v
+		}
+	}
+
+	agentReq := models.AgentRunRequest{
+		TaskType:    "generate_chapter",
+		ChapterNum:  &chapterNum,
+		OutlineHint: req.ContextHint,
+		LLMConfig:   llmCfg,
+		MaxRetries:  1,
+	}
+	if req.ChapterWordsMin > 0 {
+		agentReq.LLMConfig["chapter_words_min"] = req.ChapterWordsMin
+	}
+	if req.ChapterWordsMax > 0 {
+		agentReq.LLMConfig["chapter_words_max"] = req.ChapterWordsMax
+	}
+
+	sessionID, err := h.sidecar.RunAgent(c.Request.Context(), projectID, agentReq)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "agent service unavailable: " + err.Error()})
+		return
+	}
+	c.JSON(202, gin.H{"session_id": sessionID, "status": "running", "chapter_num": chapterNum})
 }
 
 func (h *Handler) ContinueGenerate(c *gin.Context) {
@@ -241,28 +255,32 @@ func (h *Handler) RejectChapter(c *gin.Context) {
 func (h *Handler) RegenerateChapter(c *gin.Context) {
 	chapterID := c.Param("id")
 
-	// Fetch the chapter to get its project_id for task routing.
+	// Fetch the chapter to get project_id and chapter_num.
 	ch, err := h.chapters.Get(c.Request.Context(), chapterID)
 	if err != nil || ch == nil {
 		c.JSON(404, gin.H{"error": "chapter not found"})
 		return
 	}
 
-	payloadBytes, _ := json.Marshal(map[string]any{
-		"chapter_id": chapterID,
-	})
-
-	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
-		ProjectID: ch.ProjectID,
-		TaskType:  "chapter_regenerate",
-		Payload:   payloadBytes,
-		Priority:  5,
-	})
+	llmCfg, err := h.resolveAgentLLMConfig(c.Request.Context(), "writer", ch.ProjectID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": "failed to resolve LLM config: " + err.Error()})
 		return
 	}
-	c.JSON(202, gin.H{"task_id": task.ID, "message": "重新生成任务已加入队列"})
+
+	agentReq := models.AgentRunRequest{
+		TaskType:   "regenerate_chapter",
+		ChapterNum: &ch.ChapterNum,
+		LLMConfig:  llmCfg,
+		MaxRetries: 1,
+	}
+
+	sessionID, err := h.sidecar.RunAgent(c.Request.Context(), ch.ProjectID, agentReq)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "agent service unavailable: " + err.Error()})
+		return
+	}
+	c.JSON(202, gin.H{"session_id": sessionID, "status": "running", "chapter_num": ch.ChapterNum})
 }
 
 func (h *Handler) QualityCheck(c *gin.Context) {
@@ -291,10 +309,12 @@ func (h *Handler) BatchGenerateChapters(c *gin.Context) {
 		return
 	}
 
-	var tasks []models.CreateTaskRequest
+	// Build an ordered list of chapter numbers to generate.
+	var chapterNums []int
+	outlineHints := map[string]string{}
 
 	if req.VolumeID != nil && *req.VolumeID != "" {
-		// ── Volume-based: generate every chapter in [chapter_start, chapter_end] ──
+		// Volume-based: generate every chapter in [chapter_start, chapter_end].
 		vol, err := h.volumes.Get(c.Request.Context(), *req.VolumeID)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
@@ -312,68 +332,73 @@ func (h *Handler) BatchGenerateChapters(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "volume has no valid chapter range; set chapter_start and chapter_end first"})
 			return
 		}
-		// Chain generation: only enqueue the first chapter with batch context.
-		// After it completes, the task handler will auto-enqueue the next chapter.
-		firstHint := ""
-		if len(req.OutlineHints) > 0 {
-			firstHint = req.OutlineHints[0]
+		for i := vol.ChapterStart; i <= vol.ChapterEnd; i++ {
+			chapterNums = append(chapterNums, i)
 		}
-		payloadBytes, _ := json.Marshal(map[string]any{
-			"chapter_num":         vol.ChapterStart,
-			"chapter_words_min":   req.ChapterWordsMin,
-			"chapter_words_max":   req.ChapterWordsMax,
-			"context_hint":        firstHint,
-			"batch_volume_id":     *req.VolumeID,
-			"batch_start_chapter": vol.ChapterStart,
-			"batch_end_chapter":   vol.ChapterEnd,
-			"batch_hints":         req.OutlineHints,
-		})
-		tasks = append(tasks, models.CreateTaskRequest{
-			ProjectID: projectID,
-			TaskType:  "chapter_generate",
-			Payload:   payloadBytes,
-			Priority:  5,
-		})
+		for idx, hint := range req.OutlineHints {
+			if idx < len(chapterNums) {
+				outlineHints[strconv.Itoa(chapterNums[idx])] = hint
+			}
+		}
 	} else {
-		// ── Count-based: enqueue first chapter with chain context ──
+		// Count-based.
 		count := req.Count
 		if count <= 0 {
 			c.JSON(400, gin.H{"error": "count must be at least 1"})
 			return
 		}
-		if count > 50 {
-			c.JSON(400, gin.H{"error": "count must not exceed 50"})
+		if count > 200 {
+			c.JSON(400, gin.H{"error": "count must not exceed 200"})
 			return
 		}
-		// Chain generation: only enqueue first task, auto-enqueues next after completion
-		firstHint := ""
-		if len(req.OutlineHints) > 0 {
-			firstHint = req.OutlineHints[0]
+		// Determine starting chapter number.
+		lastNum, err := h.chapters.MaxChapterNum(c.Request.Context(), projectID)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to determine next chapter number"})
+			return
 		}
-		payloadBytes, _ := json.Marshal(map[string]any{
-			"generate": map[string]any{
-				"chapter_words_min": req.ChapterWordsMin,
-				"chapter_words_max": req.ChapterWordsMax,
-			},
-			"context_hint":    firstHint,
-			"batch_count":     count,
-			"batch_remaining": count - 1,
-			"batch_hints":     req.OutlineHints,
-		})
-		tasks = append(tasks, models.CreateTaskRequest{
-			ProjectID: projectID,
-			TaskType:  "generate_next_chapter",
-			Payload:   payloadBytes,
-			Priority:  5,
-		})
+		start := lastNum + 1
+		for i := 0; i < count; i++ {
+			chapterNums = append(chapterNums, start+i)
+		}
+		for idx, hint := range req.OutlineHints {
+			if idx < len(chapterNums) {
+				outlineHints[strconv.Itoa(chapterNums[idx])] = hint
+			}
+		}
 	}
 
-	ids, err := h.taskQueue.EnqueueBatch(c.Request.Context(), tasks)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	if len(chapterNums) == 0 {
+		c.JSON(400, gin.H{"error": "no chapters to generate"})
 		return
 	}
-	c.JSON(200, gin.H{"data": gin.H{"count": len(tasks), "task_ids": ids}})
+
+	llmCfg, err := h.resolveAgentLLMConfig(c.Request.Context(), "writer", projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to resolve LLM config: " + err.Error()})
+		return
+	}
+	if req.ChapterWordsMin > 0 {
+		llmCfg["chapter_words_min"] = req.ChapterWordsMin
+	}
+	if req.ChapterWordsMax > 0 {
+		llmCfg["chapter_words_max"] = req.ChapterWordsMax
+	}
+
+	batchReq := models.BatchAgentRunRequest{
+		ChapterNums:  chapterNums,
+		OutlineHints: outlineHints,
+		LLMConfig:    llmCfg,
+		MaxRetries:   1,
+	}
+
+	batchID, err := h.sidecar.RunBatchAgent(c.Request.Context(), projectID, batchReq)
+	if err != nil {
+		h.logger.Error("batch generate chapters: agent service unavailable", zap.Error(err))
+		c.JSON(502, gin.H{"error": "agent service unavailable: " + err.Error()})
+		return
+	}
+	c.JSON(202, gin.H{"batch_id": batchID, "status": "running", "total": len(chapterNums), "chapter_nums": chapterNums})
 }
 
 func (h *Handler) CreateChapterImport(c *gin.Context) {

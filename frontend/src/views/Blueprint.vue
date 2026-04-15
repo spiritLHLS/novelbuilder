@@ -795,9 +795,9 @@ async function approveBlueprint() {
         const firstVolume = volumes.value[0]
         if (firstVolume) {
           const response = await batchWriteApi.generateByVolume(projectId, firstVolume.id)
-          if (response.data?.data?.task_ids?.length) {
+          if (response.data?.batch_id) {
             ElMessage.success({
-              message: `已启动第1卷章节生成任务，系统将自动链式生成所有章节。请在"任务队列"中查看进度`,
+              message: `已启动第1卷 ${response.data.total} 章高质量Agent生成，可在"Agent生成"页面查看进度`,
               duration: 8000
             })
           }

@@ -252,13 +252,14 @@ async function startBatchGenerate() {
         ElMessage.warning('请选择要生成的卷')
         return
       }
-      await batchWriteApi.generateByVolume(projectId, batchVolumeId.value)
+      const volRes = await batchWriteApi.generateByVolume(projectId, batchVolumeId.value)
       const vol = volumes.value.find((v: any) => v.id === batchVolumeId.value)
-      const count = vol ? vol.chapter_end - vol.chapter_start + 1 : '多'
-      ElMessage.success(`已将第${vol?.volume_num}卷共 ${count} 个章节加入生成队列`)
+      const total = volRes.data?.total ?? (vol ? vol.chapter_end - vol.chapter_start + 1 : '?')
+      ElMessage.success(`第${vol?.volume_num}卷共 ${total} 章高质量Agent生成已启动`)
     } else {
-      await batchWriteApi.generate(projectId, batchCount.value)
-      ElMessage.success(`已将 ${batchCount.value} 个章节加入生成队列`)
+      const cntRes = await batchWriteApi.generate(projectId, batchCount.value)
+      const started = cntRes.data?.total ?? batchCount.value
+      ElMessage.success(`${started} 章高质量Agent生成已启动`)
     }
     showBatchDialog.value = false
   } catch (e: any) {
@@ -302,7 +303,7 @@ async function startGenerate() {
       context_hint: genForm.value.context_hint,
     })
     showGenerateDialog.value = false
-    ElMessage({ message: '章节生成任务已加入队列，可在"任务队列"中查看进度', type: 'success', duration: 5000 })
+    ElMessage({ message: '章节高质量Agent生成已启动，可在"Agent生成"页面查看进度', type: 'success', duration: 5000 })
     await fetchChapters()
   } catch (e: any) {
     const msg = e.response?.data?.message || e.response?.data?.error || '生成失败'
