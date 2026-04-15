@@ -392,6 +392,24 @@ func (s *ChapterService) Generate(ctx context.Context, projectID string, chapter
 	// Store content in Redis for recent context
 	s.rdb.Set(ctx, fmt.Sprintf("chapter_content:%s:%d", projectID, chapterNum), chapterContent, 24*time.Hour)
 
+	// ── Async chapter similarity check (anti-repetition logging) ──────────────
+	go func(pid, cid, content string, cNum int) {
+		sCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		s.logChapterSimilarity(sCtx, pid, cid, content, cNum)
+	}(projectID, ch.ID, chapterContent, chapterNum)
+
+	// ── Async Qdrant memory upsert (store chapter summary for future retrieval) ──
+	if s.rag != nil {
+		go func(pid string, cNum int, sum string) {
+			rCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_ = s.rag.StoreEmbedding(rCtx, pid, "chapter_summaries", sum, "chapter", fmt.Sprintf("ch_%d", cNum), map[string]interface{}{
+				"chapter_num": cNum,
+			})
+		}(projectID, chapterNum, summary)
+	}
+
 	// ── Async originality audit ───────────────────────────────────────────────
 	if s.originality != nil {
 		go func() {
@@ -906,6 +924,103 @@ func (s *ChapterService) ensureChapterWordCount(
 	}
 
 	return adjusted, totalInputTokens, totalOutputTokens, nil
+}
+
+// logChapterSimilarity compares the new chapter content with recent chapters
+// and logs similarity scores to chapter_similarity_log for repetition tracking.
+// Uses character-level 4-gram Jaccard similarity (fast, no external deps).
+func (s *ChapterService) logChapterSimilarity(ctx context.Context, projectID, chapterID, content string, chapterNum int) {
+	if chapterNum <= 1 {
+		return
+	}
+	// Fetch last 10 chapters' content snippets in a single query (no N+1)
+	rows, err := s.db.Query(ctx,
+		`SELECT id, chapter_num, content
+		 FROM chapters
+		 WHERE project_id = $1 AND chapter_num < $2 AND chapter_num >= $3
+		 ORDER BY chapter_num DESC`,
+		projectID, chapterNum, max(1, chapterNum-10))
+	if err != nil {
+		s.logger.Debug("similarity check: failed to load recent chapters", zap.Error(err))
+		return
+	}
+	defer rows.Close()
+
+	newGrams := buildNgramSet(content, 4)
+	if len(newGrams) == 0 {
+		return
+	}
+
+	batch := &pgx.Batch{}
+	for rows.Next() {
+		var prevID string
+		var prevNum int
+		var prevContent string
+		if rows.Scan(&prevID, &prevNum, &prevContent) != nil {
+			continue
+		}
+		prevGrams := buildNgramSet(prevContent, 4)
+		if len(prevGrams) == 0 {
+			continue
+		}
+		sim := jaccardSimilarity(newGrams, prevGrams)
+		batch.Queue(
+			`INSERT INTO chapter_similarity_log (project_id, chapter_a_id, chapter_b_id, similarity_score, detection_method, created_at)
+			 VALUES ($1, $2, $3, $4, 'ngram_jaccard', NOW())
+			 ON CONFLICT DO NOTHING`,
+			projectID, chapterID, prevID, sim)
+		if sim > 0.4 {
+			s.logger.Warn("high chapter similarity detected",
+				zap.String("project_id", projectID),
+				zap.Int("new_chapter", chapterNum),
+				zap.Int("prev_chapter", prevNum),
+				zap.Float64("similarity", sim))
+		}
+	}
+	if batch.Len() > 0 {
+		br := s.db.SendBatch(ctx, batch)
+		defer br.Close()
+		for i := 0; i < batch.Len(); i++ {
+			br.Exec()
+		}
+	}
+}
+
+func buildNgramSet(text string, n int) map[string]struct{} {
+	runes := []rune(text)
+	// Remove whitespace/newlines
+	filtered := make([]rune, 0, len(runes))
+	for _, r := range runes {
+		if r != '\n' && r != '\r' && r != ' ' && r != '\t' {
+			filtered = append(filtered, r)
+		}
+	}
+	if len(filtered) < n {
+		return nil
+	}
+	set := make(map[string]struct{}, len(filtered)-n+1)
+	for i := 0; i <= len(filtered)-n; i++ {
+		gram := string(filtered[i : i+n])
+		set[gram] = struct{}{}
+	}
+	return set
+}
+
+func jaccardSimilarity(a, b map[string]struct{}) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	intersection := 0
+	for k := range a {
+		if _, ok := b[k]; ok {
+			intersection++
+		}
+	}
+	union := len(a) + len(b) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
 }
 
 // settleChapterState performs post-generation state settlement in a background goroutine.

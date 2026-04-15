@@ -15,12 +15,15 @@ const sessionKeyPrefix = "session:"
 // Returns 401 when the token is missing, invalid, or expired.
 func RequireAuth(rdb *redis.Client, sessionTTL time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		var token string
 		header := c.GetHeader("Authorization")
-		if !strings.HasPrefix(header, "Bearer ") {
-			c.AbortWithStatusJSON(401, gin.H{"error": "unauthorized"})
-			return
+		if strings.HasPrefix(header, "Bearer ") {
+			token = strings.TrimPrefix(header, "Bearer ")
 		}
-		token := strings.TrimPrefix(header, "Bearer ")
+		// Fallback: accept token from query param (used by EventSource/SSE which cannot set headers).
+		if token == "" {
+			token = c.Query("token")
+		}
 		if token == "" {
 			c.AbortWithStatusJSON(401, gin.H{"error": "unauthorized"})
 			return

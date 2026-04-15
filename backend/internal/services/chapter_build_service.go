@@ -403,6 +403,75 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	}
 	sb.WriteString("\n")
 
+	// ===== Anti-Repetition Event Digest (prevents 10-30 chapter similar plots) =====
+	// Fetch key events from last 15 chapters' outlines in a single query to detect repetition patterns
+	{
+		antiRepRows, antiRepErr := s.db.Query(ctx,
+			`SELECT o.order_num, o.content
+			 FROM outlines o
+			 WHERE o.project_id = $1 AND o.level = 'chapter'
+			   AND o.order_num >= $2 AND o.order_num < $3
+			 ORDER BY o.order_num DESC
+			 LIMIT 15`,
+			projectID, max(1, chapterNum-15), chapterNum)
+		if antiRepErr == nil {
+			var usedEvents []string
+			for antiRepRows.Next() {
+				var oNum int
+				var oContent json.RawMessage
+				if antiRepRows.Scan(&oNum, &oContent) != nil {
+					continue
+				}
+				var oData map[string]interface{}
+				if json.Unmarshal(oContent, &oData) == nil {
+					if events, ok := oData["events"].([]interface{}); ok {
+						for _, ev := range events {
+							if es, ok := ev.(string); ok && es != "" {
+								usedEvents = append(usedEvents, fmt.Sprintf("第%d章：%s", oNum, es))
+							}
+						}
+					}
+				}
+			}
+			antiRepRows.Close()
+			if len(usedEvents) > 0 {
+				sb.WriteString("=== 近期已使用的剧情事件（禁止重复）===\n")
+				sb.WriteString("以下事件已在近期章节中展开过，本章禁止出现雷同或高度相似的情节设置：\n")
+				shown := usedEvents
+				if len(shown) > 20 {
+					shown = shown[:20]
+				}
+				for _, ue := range shown {
+					sb.WriteString(fmt.Sprintf("  ✗ %s\n", ue))
+				}
+				sb.WriteString("如发现本章大纲事件与以上已有事件雷同（如相同的偶遇、相同的打斗模式、相同的交易场景），必须用不同的切入角度、不同的场景环境、不同的人物反应来处理，避免读者产生\"又来了\"的感觉。\n\n")
+			}
+		}
+	}
+
+	// ===== Qdrant Narrative context retrieval (plot-relevant past content) =====
+	if s.rag != nil {
+		// Query for plot-relevant narrative context using the current chapter outline
+		var outlineQuery string
+		var outJSON json.RawMessage
+		if s.db.QueryRow(ctx,
+			`SELECT content FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num = $2`,
+			projectID, chapterNum).Scan(&outJSON) == nil {
+			outlineQuery = string(outJSON)
+		}
+		if outlineQuery == "" {
+			outlineQuery = fmt.Sprintf("第%d章 %s", chapterNum, req.TargetPace)
+		}
+		narrativeHits, nErr := s.rag.SearchSensory(ctx, projectID, outlineQuery, "chapter_summaries", 3)
+		if nErr == nil && len(narrativeHits) > 0 {
+			sb.WriteString("=== 相关历史情节（语义检索）===\n")
+			for i, hit := range narrativeHits {
+				sb.WriteString(fmt.Sprintf("【关联片段%d】%s\n", i+1, hit))
+			}
+			sb.WriteString("请确保本章内容与以上历史情节保持连贯但不重复。\n\n")
+		}
+	}
+
 	// Foreshadowing status
 	type promptForeshadowing struct {
 		Content               string

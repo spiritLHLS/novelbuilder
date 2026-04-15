@@ -258,9 +258,13 @@ export async function* streamSearchNovels(
   keyword: string,
   options?: { sites?: string[] | null; perSiteLimit?: number; signal?: AbortSignal },
 ): AsyncGenerator<NovelSearchStreamEvent> {
+  const token = localStorage.getItem(TOKEN_KEY)
   const resp = await fetch(`/api/projects/${projectId}/references/search-stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify({
       keyword,
       sites: options?.sites ?? null,
@@ -309,9 +313,13 @@ export async function* streamFetchImport(
     chapter_ids: string[]
   },
 ): AsyncGenerator<FetchImportEvent> {
+  const token = localStorage.getItem(TOKEN_KEY)
   const resp = await fetch(`/api/projects/${projectId}/references/fetch-import`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify(data),
   })
   if (!resp.ok) {
@@ -363,10 +371,12 @@ export const agentReviewApi = {
     onDone: () => void,
     signal?: AbortSignal,
   ) => {
+    const token = localStorage.getItem(TOKEN_KEY)
     const query = new URLSearchParams({
       scope: params.scope,
       ...(params.target_id ? { target_id: params.target_id } : {}),
       rounds: String(params.rounds ?? 3),
+      ...(token ? { token } : {}),
     })
     const url = `/api/projects/${projectId}/agent-reviews/stream?${query}`
     const es = new EventSource(url)
@@ -521,7 +531,9 @@ export const agentApi = {
     onDone: () => void,
     signal?: AbortSignal,
   ): EventSource => {
-    const url = `/api/agent/sessions/${sessionId}/stream`
+    const token = localStorage.getItem(TOKEN_KEY)
+    const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : ''
+    const url = `/api/agent/sessions/${sessionId}/stream${tokenQuery}`
     const es = new EventSource(url)
     es.onmessage = (ev) => {
       try {

@@ -150,6 +150,18 @@ func (h *Handler) AgentRun(c *gin.Context) {
 		if _, ok := req.LLMConfig["graphiti_base_url"]; !ok {
 			req.LLMConfig["graphiti_base_url"] = profile.BaseURL
 		}
+		if _, ok := req.LLMConfig["api_style"]; !ok && profile.APIStyle != "" {
+			req.LLMConfig["api_style"] = profile.APIStyle
+		}
+		if _, ok := req.LLMConfig["omit_max_tokens"]; !ok && profile.OmitMaxTokens {
+			req.LLMConfig["omit_max_tokens"] = true
+		}
+		if _, ok := req.LLMConfig["omit_temperature"]; !ok && profile.OmitTemperature {
+			req.LLMConfig["omit_temperature"] = true
+		}
+		if _, ok := req.LLMConfig["rpm_limit"]; !ok && profile.RPMLimit > 0 {
+			req.LLMConfig["rpm_limit"] = profile.RPMLimit
+		}
 	}
 
 	sessionID, err := h.sidecar.RunAgent(c.Request.Context(), projectID, req)

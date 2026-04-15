@@ -415,6 +415,9 @@ func (s *ForeshadowingService) List(ctx context.Context, projectID string) ([]mo
 }
 
 func (s *ForeshadowingService) Create(ctx context.Context, projectID, content, embedMethod string, priority, plannedEmbedChapter, plannedResolveChapter int) (*models.Foreshadowing, error) {
+	if plannedEmbedChapter > 0 && plannedResolveChapter > 0 && plannedResolveChapter <= plannedEmbedChapter+4 {
+		return nil, fmt.Errorf("planned_resolve_chapter (%d) must be at least 5 chapters after planned_embed_chapter (%d)", plannedResolveChapter, plannedEmbedChapter)
+	}
 	var f models.Foreshadowing
 	err := s.db.QueryRow(ctx,
 		`INSERT INTO foreshadowings (project_id, content, embed_method, priority, planned_embed_chapter, planned_resolve_chapter) VALUES ($1, $2, $3, $4, $5, $6)
@@ -439,6 +442,9 @@ func (s *ForeshadowingService) UpdateStatus(ctx context.Context, id, status stri
 }
 
 func (s *ForeshadowingService) Update(ctx context.Context, id, content, embedMethod string, tags []string, priority, plannedEmbedChapter, plannedResolveChapter int) (*models.Foreshadowing, error) {
+	if plannedEmbedChapter > 0 && plannedResolveChapter > 0 && plannedResolveChapter <= plannedEmbedChapter+4 {
+		return nil, fmt.Errorf("planned_resolve_chapter (%d) must be at least 5 chapters after planned_embed_chapter (%d)", plannedResolveChapter, plannedEmbedChapter)
+	}
 	var f models.Foreshadowing
 	err := s.db.QueryRow(ctx,
 		`UPDATE foreshadowings SET content = $1, embed_method = $2, tags = $3, priority = $4, planned_embed_chapter = $5, planned_resolve_chapter = $6

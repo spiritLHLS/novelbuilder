@@ -254,7 +254,8 @@ async def extract_style(req: EmbedRequest):
 async def humanize_text(req: HumanizeRequest):
     _, _, _, _, h, _ = _get_analyzers()
     result = h.process(req.text, req.style_fingerprint, req.intensity)
-    return {"result": result}
+    # Go sidecar expects {"text": "..."} at top level
+    return {"text": result.get("humanized", req.text), "result": result}
 
 
 @router.post("/metrics")
