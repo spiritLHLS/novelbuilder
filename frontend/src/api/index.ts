@@ -54,6 +54,7 @@ export const projectApi = {
 export const blueprintApi = {
   generate: (projectId: string, data: any) => api.post(`/projects/${projectId}/blueprint/generate`, data),
   get: (projectId: string) => api.get(`/projects/${projectId}/blueprint`),
+  update: (_projectId: string, id: string, data: any) => api.put(`/blueprints/${id}`, data),
   submitReview: (_projectId: string, id: string) => api.post(`/blueprints/${id}/submit-review`),
   approve: (_projectId: string, id: string, comment?: string) => api.post(`/blueprints/${id}/approve`, { review_comment: comment }),
   reject: (_projectId: string, id: string, comment?: string) => api.post(`/blueprints/${id}/reject`, { review_comment: comment }),
@@ -113,6 +114,7 @@ export const volumeApi = {
 export const chapterApi = {
   list: (projectId: string) => api.get(`/projects/${projectId}/chapters`),
   get: (_projectId: string, id: string) => api.get(`/chapters/${id}`),
+  update: (_projectId: string, id: string, data: any) => api.put(`/chapters/${id}`, data),
   delete: (_projectId: string, id: string) => api.delete(`/chapters/${id}`),
   generate: (projectId: string, data: any) =>
     api.post(`/projects/${projectId}/chapters/generate`, data),

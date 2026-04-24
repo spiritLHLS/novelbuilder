@@ -17,6 +17,29 @@ from agent.state import AgentState, GraphEntity, VectorHit, WorldContext, Narrat
 logger = logging.getLogger(__name__)
 
 
+def _truncate_text(text: str, max_chars: int) -> str:
+    clean = " ".join(str(text).split())
+    if max_chars <= 0:
+        return ""
+    if len(clean) <= max_chars:
+        return clean
+    return clean[: max_chars - 1].rstrip() + "…"
+
+
+def _dedupe_hits(hits: list[dict[str, Any]], *, limit: int, max_chars: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for hit in hits:
+        content = _truncate_text(hit.get("content", ""), max_chars)
+        if not content or content in seen:
+            continue
+        seen.add(content)
+        out.append({**hit, "content": content})
+        if len(out) >= limit:
+            break
+    return out
+
+
 # ── Neo4j retrieval ───────────────────────────────────────────────────────────
 
 async def retrieve_world_node(state: AgentState) -> dict[str, Any]:
@@ -125,6 +148,8 @@ async def retrieve_narrative_node(state: AgentState) -> dict[str, Any]:
     project_id = state["project_id"]
     query = state.get("user_prompt", "") + " " + state.get("outline_hint", "")
     store = QdrantStore.get_instance()
+    short_term = state.get("short_term_paragraphs", [])
+    summary_limit = 3 if short_term else 4
 
     narrative_track = NarrativeContext()
     hits: list[VectorHit] = []
@@ -135,8 +160,9 @@ async def retrieve_narrative_node(state: AgentState) -> dict[str, Any]:
             project_id=project_id,
             collection="chapter_summaries",
             query=query,
-            limit=5,
+            limit=summary_limit + 2,
         )
+        summary_hits = _dedupe_hits(summary_hits, limit=summary_limit, max_chars=420)
         recent_summaries = [h["content"] for h in summary_hits]
 
         # Style sample retrieval — top 3
@@ -146,6 +172,7 @@ async def retrieve_narrative_node(state: AgentState) -> dict[str, Any]:
             query=query,
             limit=3,
         )
+        style_hits = _dedupe_hits(style_hits, limit=2, max_chars=320)
         style_samples = [h["content"] for h in style_hits]
 
         # Character voice samples — top 2 (for protagonist dialogue fidelity)
@@ -161,19 +188,20 @@ async def retrieve_narrative_node(state: AgentState) -> dict[str, Any]:
             pass  # Collection may not exist yet
 
         if voice_hits:
-            style_samples.extend([h["content"] for h in voice_hits])
+            deduped_voice_hits = _dedupe_hits(voice_hits, limit=1, max_chars=240)
+            style_samples.extend([h["content"] for h in deduped_voice_hits])
 
         narrative_track["recent_chapter_summaries"] = recent_summaries
         narrative_track["style_samples"] = style_samples
         narrative_track["current_arc_summary"] = ""
-        narrative_track["plot_momentum"] = ""
+        narrative_track["plot_momentum"] = recent_summaries[0][:180] if recent_summaries else ""
 
         # Also append short-term paragraphs as immediate context
-        stm = state.get("short_term_paragraphs", [])
-        if stm:
+        if short_term:
+            condensed_stm = "\n\n".join(_truncate_text(p, 180) for p in short_term[-3:])
             narrative_track["recent_chapter_summaries"] = (
-                ["\n\n".join(stm[-3:])] + recent_summaries
-            )[:5]
+                [condensed_stm] + recent_summaries
+            )[:4]
 
         hits = summary_hits + style_hits
 

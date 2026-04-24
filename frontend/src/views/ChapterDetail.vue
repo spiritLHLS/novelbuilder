@@ -20,6 +20,7 @@
         <el-button v-if="chapter.status === 'pending_review'" type="success" @click="approveChapter">通过</el-button>
         <el-button v-if="chapter.status === 'pending_review'" type="danger" @click="rejectChapter">驳回</el-button>
         <el-button type="info" @click="runQualityCheck" :loading="checking">质量检查</el-button>
+        <el-button plain @click="copyChapter" :loading="copying">复制章节</el-button>
         <el-button type="danger" plain @click="deleteChapter">删除章节</el-button>
       </div>
     </div>
@@ -30,11 +31,24 @@
         <el-card shadow="hover">
           <template #header>
             <div class="card-header">
-              <span>章节内容</span>
-              <span style="color: #888; font-size: 13px;">{{ chapter.word_count || 0 }} 字 | 版本 {{ chapter.version }}</span>
+              <div class="card-title-group">
+                <span>章节内容</span>
+                <span style="color: #888; font-size: 13px;">{{ chapter.word_count || 0 }} 字 | 版本 {{ chapter.version }}</span>
+              </div>
+              <div class="card-actions">
+                <el-button v-if="!isEditing" size="small" type="primary" plain @click="startEdit">编辑正文</el-button>
+                <template v-else>
+                  <el-button size="small" @click="cancelEdit">取消</el-button>
+                  <el-button size="small" type="primary" :loading="saving" @click="saveEdit">保存修改</el-button>
+                </template>
+              </div>
             </div>
           </template>
-          <div class="chapter-content" v-html="renderedContent"></div>
+          <div v-if="isEditing" class="chapter-editor">
+            <el-input v-model="editTitle" class="editor-title" placeholder="章节标题" />
+            <el-input v-model="editContent" type="textarea" :rows="26" resize="vertical" placeholder="输入章节正文" />
+          </div>
+          <div v-else class="chapter-content rich-text" v-html="renderedContent"></div>
         </el-card>
       </el-col>
 
@@ -66,7 +80,7 @@
             </div>
           </template>
 
-          <div class="score-grid">
+          <div v-if="qualityReport?.scores" class="score-grid">
             <div class="score-item" v-for="(score, role) in qualityReport.scores" :key="role">
               <div class="score-label">{{ roleLabel(role as unknown as string) }}</div>
               <el-progress :percentage="(score as number) * 10" :color="scoreColor(score as number)"
@@ -119,6 +133,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { chapterApi, qualityApi } from '@/api'
+import { renderRichText } from '@/utils/richText'
 
 const route = useRoute()
 const router = useRouter()
@@ -129,6 +144,11 @@ const chapter = ref<any>(null)
 const qualityReport = ref<any>(null)
 const reviews = ref<any[]>([])
 const checking = ref(false)
+const isEditing = ref(false)
+const saving = ref(false)
+const copying = ref(false)
+const editTitle = ref('')
+const editContent = ref('')
 
 const statusType = computed(() => {
   const m: Record<string, string> = {
@@ -145,12 +165,7 @@ const statusLabel = computed(() => {
 })
 
 const renderedContent = computed(() => {
-  if (!chapter.value?.content) return ''
-  return chapter.value.content
-    .replace(/\n\n/g, '</p><p>')
-    .replace(/\n/g, '<br>')
-    .replace(/^/, '<p>')
-    .replace(/$/, '</p>')
+  return renderRichText(chapter.value?.content || '')
 })
 
 function formatDate(d: string) {
@@ -170,10 +185,12 @@ function scoreColor(score: number) {
   return '#f56c6c'
 }
 
-onMounted(async () => {
+async function loadChapter() {
   try {
     const res = await chapterApi.get(projectId, chapterId)
     chapter.value = res.data.data
+    editTitle.value = chapter.value?.title || ''
+    editContent.value = chapter.value?.content || ''
     if (chapter.value?.quality_report) {
       qualityReport.value = chapter.value.quality_report
     }
@@ -181,7 +198,9 @@ onMounted(async () => {
   } catch {
     ElMessage.error('加载章节失败')
   }
-})
+}
+
+onMounted(loadChapter)
 
 function goBack() {
   router.push({ name: 'chapters', params: { projectId } })
@@ -244,6 +263,56 @@ async function runQualityCheck() {
   }
 }
 
+function startEdit() {
+  if (!chapter.value) return
+  editTitle.value = chapter.value.title || ''
+  editContent.value = chapter.value.content || ''
+  isEditing.value = true
+}
+
+function cancelEdit() {
+  if (!chapter.value) return
+  editTitle.value = chapter.value.title || ''
+  editContent.value = chapter.value.content || ''
+  isEditing.value = false
+}
+
+async function saveEdit() {
+  if (!chapter.value) return
+  saving.value = true
+  try {
+    const res = await chapterApi.update(projectId, chapterId, {
+      title: editTitle.value,
+      content: editContent.value,
+      version: chapter.value.version,
+    })
+    chapter.value = res.data.data
+    editTitle.value = chapter.value.title || ''
+    editContent.value = chapter.value.content || ''
+    isEditing.value = false
+    ElMessage.success('章节已保存')
+  } catch (e: any) {
+    const msg = e.response?.data?.message || e.response?.data?.error || '保存失败'
+    ElMessage.error(msg)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function copyChapter() {
+  if (!chapter.value?.content) return
+  copying.value = true
+  try {
+    const text = `第${chapter.value.chapter_num}章 ${chapter.value.title || ''}\n\n${chapter.value.content}`.trim()
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('章节已复制')
+  } catch {
+    ElMessage.error('复制失败')
+  } finally {
+    copying.value = false
+  }
+}
+
 async function deleteChapter() {
   if (!chapter.value) return
   await ElMessageBox.confirm(
@@ -268,8 +337,17 @@ async function deleteChapter() {
 .page-header h1 { font-size: 22px; color: #e0e0e0; margin-top: 8px; }
 .header-actions { display: flex; align-items: center; gap: 8px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
+.card-title-group { display: flex; align-items: center; gap: 12px; }
+.card-actions { display: flex; align-items: center; gap: 8px; }
 .chapter-content { color: var(--nb-text-primary); line-height: 2; font-size: 15px; max-height: 70vh; overflow-y: auto; }
-.chapter-content p { margin-bottom: 16px; text-indent: 2em; }
+.rich-text :deep(p) { margin-bottom: 16px; text-indent: 2em; }
+.rich-text :deep(h1),
+.rich-text :deep(h2),
+.rich-text :deep(h3) { margin: 1em 0 0.6em; }
+.rich-text :deep(ul),
+.rich-text :deep(ol) { margin: 0.75em 0; padding-left: 1.4em; }
+.chapter-editor { display: flex; flex-direction: column; gap: 12px; }
+.editor-title { margin-bottom: 4px; }
 .score-grid { display: grid; gap: 12px; }
 .score-item { }
 .score-label { color: var(--nb-text-secondary); font-size: 13px; margin-bottom: 4px; }

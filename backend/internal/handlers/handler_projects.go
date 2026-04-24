@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/services"
+	"github.com/novelbuilder/backend/internal/workflow"
 	"go.uber.org/zap"
 )
 
@@ -95,6 +97,24 @@ func (h *Handler) GetBlueprint(c *gin.Context) {
 	}
 	if bp == nil {
 		c.JSON(404, gin.H{"error": "blueprint not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": bp})
+}
+
+func (h *Handler) UpdateBlueprint(c *gin.Context) {
+	var req models.UpdateBlueprintRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	bp, err := h.blueprints.Update(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		if errors.Is(err, workflow.ErrOptimisticLock) {
+			c.JSON(409, gin.H{"error": err.Error(), "code": "WF_006", "message": "当前蓝图版本已过期，请刷新后重试。"})
+		} else {
+			c.JSON(500, gin.H{"error": err.Error()})
+		}
 		return
 	}
 	c.JSON(200, gin.H{"data": bp})

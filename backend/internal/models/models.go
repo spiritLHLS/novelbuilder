@@ -224,6 +224,13 @@ type GenerateBlueprintRequest struct {
 	ChapterWordsMax int    `json:"chapter_words_max"`
 }
 
+type UpdateBlueprintRequest struct {
+	MasterOutline  string `json:"master_outline"`
+	RelationGraph  string `json:"relation_graph"`
+	GlobalTimeline string `json:"global_timeline"`
+	Version        int    `json:"version" binding:"required,min=1"`
+}
+
 type ReviewRequest struct {
 	ReviewComment string `json:"review_comment"`
 	StrictReview  bool   `json:"strict_review"`
@@ -254,6 +261,12 @@ type GenerateChapterRequest struct {
 	ContextHint string `json:"context_hint"`
 	// LLMConfig is populated internally by the handler via agent routing; not sent from the frontend.
 	LLMConfig map[string]interface{} `json:"llm_config,omitempty"`
+}
+
+type UpdateChapterContentRequest struct {
+	Title   string `json:"title"`
+	Content string `json:"content" binding:"required"`
+	Version int    `json:"version" binding:"required,min=1"`
 }
 
 type UploadReferenceRequest struct {

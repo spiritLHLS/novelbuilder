@@ -653,6 +653,109 @@ func (s *ChapterService) UpdateContent(ctx context.Context, id, content, status 
 	return &ch, nil
 }
 
+func summarizeManualChapterContent(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return ""
+	}
+
+	parts := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	selected := make([]string, 0, 3)
+	runeCount := 0
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		selected = append(selected, part)
+		runeCount += utf8.RuneCountInString(part)
+		if len(selected) >= 3 || runeCount >= 300 {
+			break
+		}
+	}
+	if len(selected) == 0 {
+		selected = append(selected, trimmed)
+	}
+
+	summary := strings.Join(selected, " / ")
+	runes := []rune(summary)
+	if len(runes) > 300 {
+		return string(runes[:300]) + "..."
+	}
+	return summary
+}
+
+func (s *ChapterService) UpdateManualContent(ctx context.Context, id, title, content string, version int) (*models.Chapter, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, errors.New("content cannot be empty")
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	snapshotResult, err := tx.Exec(ctx,
+		`INSERT INTO chapter_snapshots
+		    (chapter_id, version, title, content, word_count, summary, quality_report, originality_score, source, note, created_at)
+		 SELECT id, version, title, content, word_count, summary, quality_report, originality_score,
+		        'before_manual_edit', 'before manual chapter edit', NOW()
+		 FROM chapters WHERE id = $1 AND version = $2`,
+		id, version,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if snapshotResult.RowsAffected() == 0 {
+		return nil, workflow.ErrOptimisticLock
+	}
+
+	wordCount := utf8.RuneCountInString(content)
+	summary := summarizeManualChapterContent(content)
+	title = strings.TrimSpace(title)
+
+	var ch models.Chapter
+	err = tx.QueryRow(ctx,
+		`UPDATE chapters
+		 SET title = CASE WHEN $1 = '' THEN title ELSE $1 END,
+		     content = $2,
+		     word_count = $3,
+		     summary = $4,
+		     status = CASE
+		         WHEN status IN ('approved', 'pending_review', 'needs_recheck') THEN 'needs_recheck'
+		         ELSE 'draft'
+		     END,
+		     version = version + 1,
+		     updated_at = NOW()
+		 WHERE id = $5 AND version = $6
+		 RETURNING id, project_id, volume_id, chapter_num, title, content, word_count, COALESCE(summary, ''),
+		           COALESCE(gen_params, '{}'), COALESCE(quality_report, '{}'), COALESCE(originality_score, 0),
+		           COALESCE(genre_compliance_score, 1.0), COALESCE(genre_violations, '[]'),
+		           status, version, COALESCE(review_comment, ''), created_at, updated_at`,
+		title, content, wordCount, summary, id, version,
+	).Scan(
+		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
+		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
+		&ch.GenreComplianceScore, &ch.GenreViolations,
+		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, workflow.ErrOptimisticLock
+		}
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &ch, nil
+}
+
 func (s *ChapterService) SubmitReview(ctx context.Context, id string) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE chapters SET status = 'pending_review', updated_at = NOW() WHERE id = $1`, id)

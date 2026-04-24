@@ -22,6 +22,10 @@ _SYSTEM = (
     "不得不说、毋庸置疑、显而易见、不可否认、从某种程度上说等）"
     "\n3. 用自然流畅的叙事推进情节，避免说教式或总结式语气"
     "\n4. 直接展现场景和对话，而非分析和归纳"
+    "\n5. 场景描写必须服务于剧情推进、冲突施压或情绪映射，禁止为了文采而堆砌空镜和辞藻"
+    "\n6. 心理描写必须先有触发源，再有情绪波动，最后落到判断、对话或动作，禁止空转式内心独白"
+    "\n7. 每一个场景至少产生一种推进：信息揭示、风险升级、关系变化、目标受阻、代价落地"
+    "\n8. 如需写环境、氛围、感官细节，必须让读者看见它如何改变人物的决定或下一步行动"
     "\n\n【强制断章规范】"
     "\n章节必须在动作、对话或悬念的高点处戛然而止。"
     "\n严禁：总结段、展望段、升华段、情绪收束段、预告性句式（如'他知道...未来...'）。"
@@ -32,6 +36,10 @@ _SYSTEM = (
     "\n- 武器/法宝/道具首次出场必须有来源说明"
     "\n- 角色只能使用设定中记载的能力，禁止凭空出现新能力"
     "\n- 一章最多1次实力提升，获得过程不少于200字"
+    "\n\n【描写失控熔断规则】"
+    "\n- 连续两段以上纯景物描写时，第三段必须转入人物目标、障碍、发现或互动"
+    "\n- 连续两段以上纯心理描写时，必须插入外部刺激或人物行动，禁止假大空抒情"
+    "\n- 任何漂亮句子若不推动情节、情绪或关系，宁可删除，不要保留"
 )
 
 _SUMMARY_SYSTEM = (
@@ -62,7 +70,7 @@ def _build_prompt(state: AgentState) -> str:
     # On retry, inject quality feedback from the previous attempt
     quality_issues = state.get("quality_issues", [])
     if quality_issues and state.get("retry_count", 0) > 0:
-        feedback = "\n".join(f"- {issue}" for issue in quality_issues[:10])
+        feedback = "\n".join(f"- {str(issue)[:160]}" for issue in quality_issues[:6])
         parts.append(f"\n【上次质量检查反馈（请在本次创作中修正）】\n{feedback}")
 
     return "\n\n" + ("\n\n" + "─" * 40 + "\n\n").join(parts)
@@ -71,7 +79,7 @@ def _build_prompt(state: AgentState) -> str:
 async def generator_node(state: AgentState) -> dict[str, Any]:
     """Call LLM and generate the chapter draft."""
     llm_cfg = state.get("llm_config", {})
-    llm = build_llm(llm_cfg, default_temperature=0.85, default_max_tokens=4096)
+    llm = build_llm(llm_cfg, default_temperature=0.72, default_max_tokens=4096)
 
     prompt = _build_prompt(state)
 
@@ -106,7 +114,7 @@ async def _generate_summary(text: str, cfg: dict) -> str:
     try:
         resp = await llm.ainvoke([
             {"role": "system", "content": _SUMMARY_SYSTEM},
-            {"role": "user", "content": text[:3000]},
+            {"role": "user", "content": text[:2400]},
         ])
         return resp.content.strip()
     except Exception as exc:

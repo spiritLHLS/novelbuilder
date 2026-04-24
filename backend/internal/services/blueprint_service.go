@@ -933,6 +933,51 @@ func (s *BlueprintService) Get(ctx context.Context, projectID string) (*models.B
 	return &bp, nil
 }
 
+func (s *BlueprintService) Update(ctx context.Context, id string, req models.UpdateBlueprintRequest) (*models.BookBlueprint, error) {
+	masterOutline, err := json.Marshal(strings.TrimSpace(req.MasterOutline))
+	if err != nil {
+		return nil, fmt.Errorf("marshal master outline: %w", err)
+	}
+	relationGraph, err := json.Marshal(strings.TrimSpace(req.RelationGraph))
+	if err != nil {
+		return nil, fmt.Errorf("marshal relation graph: %w", err)
+	}
+	globalTimeline, err := json.Marshal(strings.TrimSpace(req.GlobalTimeline))
+	if err != nil {
+		return nil, fmt.Errorf("marshal global timeline: %w", err)
+	}
+
+	var bp models.BookBlueprint
+	err = s.db.QueryRow(ctx,
+		`UPDATE book_blueprints
+		 SET master_outline = $1,
+		     relation_graph = $2,
+		     global_timeline = $3,
+		     status = CASE
+		         WHEN status IN ('failed', 'rejected', 'pending_review') THEN 'draft'
+		         ELSE status
+		     END,
+		     error_message = NULL,
+		     version = version + 1,
+		     updated_at = NOW()
+		 WHERE id = $4 AND version = $5
+		 RETURNING id, project_id, world_bible_ref, master_outline, relation_graph, global_timeline,
+		           status, version, review_comment, error_message, created_at, updated_at`,
+		masterOutline, relationGraph, globalTimeline, id, req.Version,
+	).Scan(
+		&bp.ID, &bp.ProjectID, &bp.WorldBibleRef, &bp.MasterOutline, &bp.RelationGraph,
+		&bp.GlobalTimeline, &bp.Status, &bp.Version, &bp.ReviewComment, &bp.ErrorMessage,
+		&bp.CreatedAt, &bp.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, workflow.ErrOptimisticLock
+		}
+		return nil, fmt.Errorf("update blueprint: %w", err)
+	}
+	return &bp, nil
+}
+
 func (s *BlueprintService) SubmitReview(ctx context.Context, id string) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE book_blueprints SET status = 'pending_review', updated_at = NOW() WHERE id = $1`, id)

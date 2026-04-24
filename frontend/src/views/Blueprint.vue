@@ -248,13 +248,16 @@
                 <span style="font-weight: 500; margin-right: 8px;">第{{ outline.order_num }}章</span>
                 <span style="color: #606266;">{{ outline.title }}</span>
               </template>
-              <div v-if="outline.content && outline.content.events" class="chapter-events">
-                <div v-for="(event, idx) in outline.content.events" :key="idx" class="event-item">
-                  <el-icon style="color: #409eff; margin-right: 4px;"><Finished /></el-icon>
-                  {{ event }}
+              <div class="outline-edit-surface" @dblclick.stop="openOutlineEditor(outline)">
+                <div v-if="outline.content && outline.content.events" class="chapter-events">
+                  <div v-for="(event, idx) in outline.content.events" :key="idx" class="event-item">
+                    <el-icon style="color: #409eff; margin-right: 4px;"><Finished /></el-icon>
+                    <div class="event-content bp-rich-text" v-html="renderRichText(event)"></div>
+                  </div>
+                  <div class="outline-edit-hint">双击此处可编辑本章细纲</div>
                 </div>
+                <el-empty v-else description="暂无事件，双击可补充" :image-size="60" style="padding: 20px 0;" />
               </div>
-              <el-empty v-else description="暂无事件" :image-size="60" style="padding: 20px 0;" />
             </el-collapse-item>
           </el-collapse>
           <el-pagination
@@ -291,13 +294,16 @@
               <span style="font-weight: 500; margin-right: 8px;">第{{ outline.order_num }}章</span>
               <span style="color: #606266;">{{ outline.title }}</span>
             </template>
-            <div v-if="outline.content && outline.content.events" class="chapter-events">
-              <div v-for="(event, idx) in outline.content.events" :key="idx" class="event-item">
-                <el-icon style="color: #409eff; margin-right: 4px;"><Finished /></el-icon>
-                {{ event }}
+            <div class="outline-edit-surface" @dblclick.stop="openOutlineEditor(outline)">
+              <div v-if="outline.content && outline.content.events" class="chapter-events">
+                <div v-for="(event, idx) in outline.content.events" :key="idx" class="event-item">
+                  <el-icon style="color: #409eff; margin-right: 4px;"><Finished /></el-icon>
+                  <div class="event-content bp-rich-text" v-html="renderRichText(event)"></div>
+                </div>
+                <div class="outline-edit-hint">双击此处可编辑本章细纲</div>
               </div>
+              <el-empty v-else description="暂无事件，双击可补充" :image-size="60" style="padding: 20px 0;" />
             </div>
-            <el-empty v-else description="暂无事件" :image-size="60" style="padding: 20px 0;" />
           </el-collapse-item>
         </el-collapse>
         <el-pagination
@@ -313,38 +319,82 @@
 
       <!-- Blueprint Raw Content -->
       <el-card shadow="hover" style="margin-top: 20px;">
-        <template #header><span>蓝图详情</span></template>
+        <template #header>
+          <div class="bp-card-header">
+            <span>蓝图详情</span>
+            <div class="bp-card-actions">
+              <span class="bp-edit-hint">双击任一分区可快速编辑</span>
+              <el-button size="small" type="primary" plain @click="openBlueprintEditor">编辑蓝图</el-button>
+            </div>
+          </div>
+        </template>
         <template v-if="hasData(currentBlueprint.master_outline) || hasData(currentBlueprint.relation_graph) || hasData(currentBlueprint.global_timeline)">
-          <div v-if="hasData(currentBlueprint.master_outline)" class="bp-section">
+          <div v-if="hasData(currentBlueprint.master_outline)" class="bp-section bp-editable" @dblclick="openBlueprintEditor">
             <div class="bp-section-title">总体大纲</div>
             <div class="bp-outline-list">
               <div v-for="(item, idx) in parseMasterOutline(currentBlueprint.master_outline)" :key="idx" class="bp-outline-item">
                 <span v-if="item.vol" class="bp-outline-vol">{{ item.vol }}</span>
-                <span class="bp-outline-desc">{{ item.desc }}</span>
+                <div class="bp-outline-desc bp-rich-text" v-html="renderRichText(item.desc)"></div>
               </div>
             </div>
           </div>
-          <div v-if="hasData(currentBlueprint.relation_graph)" class="bp-section">
+          <div v-if="hasData(currentBlueprint.relation_graph)" class="bp-section bp-editable" @dblclick="openBlueprintEditor">
             <div class="bp-section-title">角色关系</div>
             <div class="bp-relation-list">
               <div v-for="(rel, idx) in parseRelationGraph(currentBlueprint.relation_graph)" :key="idx" class="bp-relation-item">
                 <el-tag size="small" type="info" style="flex-shrink: 0;">{{ rel.pair }}</el-tag>
-                <span class="bp-relation-desc">{{ rel.desc }}</span>
+                <div class="bp-relation-desc bp-rich-text" v-html="renderRichText(rel.desc)"></div>
               </div>
             </div>
           </div>
-          <div v-if="hasData(currentBlueprint.global_timeline)" class="bp-section">
+          <div v-if="hasData(currentBlueprint.global_timeline)" class="bp-section bp-editable" @dblclick="openBlueprintEditor">
             <div class="bp-section-title">全局时间线</div>
             <div class="bp-timeline-list">
               <div v-for="(event, idx) in parseGlobalTimeline(currentBlueprint.global_timeline)" :key="idx" class="bp-timeline-item">
                 <span class="bp-timeline-point">{{ event.point }}</span>
-                <span class="bp-timeline-event">{{ event.event }}</span>
+                <div class="bp-timeline-event bp-rich-text" v-html="renderRichText(event.event)"></div>
               </div>
             </div>
           </div>
         </template>
         <el-empty v-else description="蓝图内容正在解析或生成失败，请查看错误信息" />
       </el-card>
+
+      <el-dialog v-model="showBlueprintEditor" title="编辑蓝图详情" width="820px">
+        <el-form label-position="top">
+          <el-form-item label="总体大纲">
+            <el-input v-model="blueprintEditForm.master_outline" type="textarea" :rows="8" placeholder="按卷或按主线输入总体大纲" />
+          </el-form-item>
+          <el-form-item label="角色关系">
+            <el-input v-model="blueprintEditForm.relation_graph" type="textarea" :rows="6" placeholder="例如：角色A-角色B: 盟友兼竞争者；角色C-角色D: 师徒" />
+          </el-form-item>
+          <el-form-item label="全局时间线">
+            <el-input v-model="blueprintEditForm.global_timeline" type="textarea" :rows="6" placeholder="例如：序章: 世界规则建立；第一卷末: 主角第一次重大转折" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="showBlueprintEditor = false">取消</el-button>
+          <el-button type="primary" :loading="savingBlueprint" @click="saveBlueprintEdits">保存蓝图</el-button>
+        </template>
+      </el-dialog>
+
+      <el-dialog v-model="showOutlineEditor" title="编辑章节细纲" width="720px">
+        <el-form label-position="top">
+          <el-form-item label="章节标题">
+            <el-input v-model="outlineEditForm.title" placeholder="输入章节标题" />
+          </el-form-item>
+          <el-form-item label="本章摘要">
+            <el-input v-model="outlineEditForm.summary" type="textarea" :rows="4" placeholder="概述本章推进、冲突与情绪目标" />
+          </el-form-item>
+          <el-form-item label="关键事件（每行一条）">
+            <el-input v-model="outlineEditForm.events" type="textarea" :rows="8" placeholder="每行一条关键事件，便于生成时严格遵循" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="showOutlineEditor = false">取消</el-button>
+          <el-button type="primary" :loading="savingOutline" @click="saveOutlineEdits">保存细纲</el-button>
+        </template>
+      </el-dialog>
     </template>
   </div>
 </template>
@@ -354,6 +404,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, type FormInstance, type UploadFile } from 'element-plus'
 import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, projectApi, batchWriteApi } from '@/api'
+import { renderRichText } from '@/utils/richText'
 import { Download, Upload, UploadFilled, Finished } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -365,6 +416,12 @@ const generatingStep = ref(0)
 const generationError = ref('')
 const volumes = ref<any[]>([])
 const generatingOutlines = ref<Set<number>>(new Set())
+const showBlueprintEditor = ref(false)
+const savingBlueprint = ref(false)
+const blueprintEditForm = ref({ master_outline: '', relation_graph: '', global_timeline: '', version: 1 })
+const showOutlineEditor = ref(false)
+const savingOutline = ref(false)
+const outlineEditForm = ref({ id: '', title: '', summary: '', events: '', tension_target: 0 })
 
 const worldBibleCount = ref(0)
 const characterCount = ref(0)
@@ -550,6 +607,26 @@ function hasData(val: any): boolean {
   return Boolean(val)
 }
 
+function extractBlueprintFieldText(
+  val: any,
+  field: 'master_outline' | 'relation_graph' | 'global_timeline',
+): string {
+  if (val == null) return ''
+  if (typeof val === 'string') return val
+  if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
+    try {
+      const parsed = JSON.parse(val.raw_content)
+      if (parsed && typeof parsed[field] === 'string') {
+        return parsed[field]
+      }
+      return String(val.raw_content)
+    } catch {
+      return String(val.raw_content)
+    }
+  }
+  return JSON.stringify(val, null, 2)
+}
+
 function parseMasterOutline(val: any): { vol: string; desc: string }[] {
   if (val == null) return []
   let text = ''
@@ -629,6 +706,76 @@ function parseGlobalTimeline(val: any): { point: string; event: string }[] {
     if (ci > 0) return { point: p.slice(0, ci).trim(), event: p.slice(ci + 1).trim() }
     return { point: p.trim(), event: '' }
   })
+}
+
+function openBlueprintEditor() {
+  if (!currentBlueprint.value) return
+  blueprintEditForm.value = {
+    master_outline: extractBlueprintFieldText(currentBlueprint.value.master_outline, 'master_outline'),
+    relation_graph: extractBlueprintFieldText(currentBlueprint.value.relation_graph, 'relation_graph'),
+    global_timeline: extractBlueprintFieldText(currentBlueprint.value.global_timeline, 'global_timeline'),
+    version: currentBlueprint.value.version || 1,
+  }
+  showBlueprintEditor.value = true
+}
+
+async function saveBlueprintEdits() {
+  if (!currentBlueprint.value) return
+  savingBlueprint.value = true
+  try {
+    const res = await blueprintApi.update(projectId, currentBlueprint.value.id, blueprintEditForm.value)
+    currentBlueprint.value = res.data.data
+    showBlueprintEditor.value = false
+    ElMessage.success('蓝图已保存')
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.response?.data?.error || '保存蓝图失败'
+    ElMessage.error(msg)
+  } finally {
+    savingBlueprint.value = false
+  }
+}
+
+function openOutlineEditor(outline: any) {
+  const content = outline?.content && typeof outline.content === 'object' ? outline.content : {}
+  outlineEditForm.value = {
+    id: outline.id,
+    title: outline.title || '',
+    summary: typeof content.content === 'string' ? content.content : '',
+    events: Array.isArray(content.events) ? content.events.join('\n') : '',
+    tension_target: outline.tension_target || 0,
+  }
+  showOutlineEditor.value = true
+}
+
+async function saveOutlineEdits() {
+  if (!outlineEditForm.value.id) return
+  savingOutline.value = true
+  try {
+    const original = outlines.value.find(o => o.id === outlineEditForm.value.id)
+    const originalContent = original?.content && typeof original.content === 'object' ? { ...original.content } : {}
+    const events = outlineEditForm.value.events
+      .split(/\r?\n/)
+      .map(item => item.trim())
+      .filter(Boolean)
+
+    await outlineApi.update(projectId, outlineEditForm.value.id, {
+      title: outlineEditForm.value.title.trim() || original?.title || '未命名章节',
+      content: {
+        ...originalContent,
+        content: outlineEditForm.value.summary.trim(),
+        events,
+      },
+      tension_target: outlineEditForm.value.tension_target,
+    })
+    showOutlineEditor.value = false
+    ElMessage.success('章节细纲已保存')
+    await fetchAll()
+  } catch (err: any) {
+    const msg = err?.response?.data?.message || err?.response?.data?.error || '保存章节细纲失败'
+    ElMessage.error(msg)
+  } finally {
+    savingOutline.value = false
+  }
 }
 
 onMounted(async () => {
@@ -994,6 +1141,9 @@ async function regenerateChapterOutlines(volumeNum: number) {
 .status-value { color: var(--nb-text-primary); font-size: 14px; }
 .asset-card { text-align: center; }
 .blueprint-content { background: var(--nb-table-header-bg); border: 1px solid var(--nb-card-border); padding: 16px; border-radius: 8px; font-size: 12px; color: var(--nb-text-secondary); max-height: 500px; overflow: auto; white-space: pre-wrap; }
+.bp-card-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.bp-card-actions { display: flex; align-items: center; gap: 12px; }
+.bp-edit-hint { color: #888; font-size: 12px; }
 
 /* Inline generation panel */
 .generate-panel { max-width: 700px; margin: 0 auto; }
@@ -1003,6 +1153,7 @@ async function regenerateChapterOutlines(volumeNum: number) {
 
 /* Blueprint detail sections */
 .bp-section { margin-bottom: 24px; }
+.bp-editable { cursor: pointer; }
 .bp-section:last-child { margin-bottom: 0; }
 .bp-section-title { font-size: 14px; font-weight: 600; color: #409eff; margin-bottom: 12px; padding-bottom: 6px; border-bottom: 1px solid var(--nb-card-border, #333); }
 .bp-outline-item { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--nb-table-header-bg, #2a2a2a); }
@@ -1016,8 +1167,16 @@ async function regenerateChapterOutlines(volumeNum: number) {
 .bp-timeline-item { display: flex; gap: 12px; padding-left: 12px; border-left: 2px solid #409eff; }
 .bp-timeline-point { flex-shrink: 0; min-width: 80px; font-weight: 600; color: #e6a23c; font-size: 13px; }
 .bp-timeline-event { color: var(--nb-text-primary); font-size: 13px; line-height: 1.6; }
+.bp-rich-text { color: var(--nb-text-primary); line-height: 1.8; }
+.bp-rich-text :deep(p) { margin: 0 0 8px; }
+.bp-rich-text :deep(ul),
+.bp-rich-text :deep(ol) { margin: 8px 0; padding-left: 1.25rem; }
+.bp-rich-text :deep(li) { margin-bottom: 4px; }
 
 .chapter-events { display: flex; flex-direction: column; gap: 12px; }
 .event-item { display: flex; align-items: flex-start; padding: 10px 12px; background: var(--nb-card-bg, #1a1a1a); border-radius: 4px; border-left: 3px solid #409eff; }
 .event-item:hover { background: var(--nb-hover-bg, #2a2a2a); }
+.event-content { flex: 1; }
+.outline-edit-surface { cursor: pointer; }
+.outline-edit-hint { color: #888; font-size: 12px; padding-left: 12px; }
 </style>

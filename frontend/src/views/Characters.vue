@@ -41,19 +41,20 @@
               <el-descriptions-item label="性别">{{ selected.profile?.gender || '-' }}</el-descriptions-item>
             </el-descriptions>
             <h4 style="margin: 16px 0 8px; color: #409eff;">背景故事</h4>
-            <p class="text-content">{{ selected.profile?.backstory || '暂无' }}</p>
+            <div class="text-content rich-text" v-html="renderRichText(selected.profile?.backstory || '暂无')"></div>
             <h4 style="margin: 16px 0 8px; color: #409eff;">性格特征</h4>
             <div v-if="selected.profile?.personality_traits?.length">
               <el-tag v-for="t in selected.profile.personality_traits" :key="t" style="margin: 2px;">{{ t }}</el-tag>
             </div>
             <h4 style="margin: 16px 0 8px; color: #409eff;">动机</h4>
-            <p class="text-content">{{ selected.profile?.motivation || '暂无' }}</p>
+            <div class="text-content rich-text" v-html="renderRichText(selected.profile?.motivation || '暂无')"></div>
             <h4 style="margin: 16px 0 8px; color: #409eff;">成长弧线</h4>
-            <p class="text-content">{{ selected.profile?.growth_arc || '暂无' }}</p>
+            <div class="text-content rich-text" v-html="renderRichText(selected.profile?.growth_arc || '暂无')"></div>
             <h4 style="margin: 16px 0 8px; color: #409eff;">关系网络</h4>
             <div v-if="selected.profile?.relationships">
               <div v-for="(rel, name) in selected.profile.relationships" :key="name" class="rel-item">
-                <strong>{{ name }}</strong>: {{ rel }}
+                <strong>{{ name }}</strong>
+                <div class="rich-text" v-html="renderRichText(rel)"></div>
               </div>
             </div>
           </template>
@@ -173,6 +174,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { characterApi } from '@/api'
 import cytoscape from 'cytoscape'
+import { renderRichText } from '@/utils/richText'
 
 const route = useRoute()
 const projectId = route.params.projectId as string
@@ -304,22 +306,73 @@ async function deleteChar() {
 function buildGraph() {
   nextTick(() => {
     if (!cyContainer.value) return
-    const nodes = characters.value.map(c => ({
-      data: { id: c.id, label: c.name, role: c.role },
-    }))
-    const edges: any[] = []
+    const relationMap = new Map<string, { source: string; target: string; labels: Set<string> }>()
+
+    const nodes = characters.value.map(c => {
+      const relationCount = c.profile?.relationships ? Object.keys(c.profile.relationships).length : 0
+      return {
+        data: {
+          id: c.id,
+          label: c.name,
+          role: c.role_type,
+          weight: Math.max(1, relationCount),
+        },
+      }
+    })
+
     characters.value.forEach(c => {
       if (c.profile?.relationships) {
         Object.entries(c.profile.relationships).forEach(([targetName, rel]) => {
           const target = characters.value.find(t => t.name === targetName)
           if (target) {
-            edges.push({
-              data: { source: c.id, target: target.id, label: rel as string },
-            })
+            const [source, destination] = [c.id, target.id].sort()
+            const key = `${source}:${destination}`
+            const entry = relationMap.get(key) || {
+              source,
+              target: destination,
+              labels: new Set<string>(),
+            }
+            const relationText = String(rel || '').trim()
+            if (relationText) {
+              if (c.id === source) {
+                entry.labels.add(relationText)
+              } else {
+                entry.labels.add(relationText)
+              }
+            }
+            relationMap.set(key, entry)
           }
         })
       }
     })
+
+    const edges = Array.from(relationMap.values()).map((edge, index) => ({
+      data: {
+        id: `edge-${index}`,
+        source: edge.source,
+        target: edge.target,
+        label: Array.from(edge.labels).join(' / '),
+      },
+    }))
+
+    const layoutOptions = {
+      name: 'cose',
+      animate: false,
+      fit: true,
+      padding: nodes.length > 12 ? 90 : 70,
+      nodeDimensionsIncludeLabels: true,
+      componentSpacing: nodes.length > 12 ? 180 : 120,
+      nodeRepulsion: (node: any) => node.connectedEdges().length > 3 ? 26000 : 18000,
+      idealEdgeLength: () => edges.length > 14 ? 240 : 190,
+      edgeElasticity: () => 140,
+      gravity: 0.08,
+      numIter: nodes.length > 12 ? 1500 : 1000,
+      nodeOverlap: 120,
+      randomize: true,
+      initialTemp: 200,
+      coolingFactor: 0.95,
+      minTemp: 1.0,
+    }
 
     if (cy) cy.destroy()
     cy = cytoscape({
@@ -330,48 +383,50 @@ function buildGraph() {
           selector: 'node',
           style: {
             label: 'data(label)',
-            'background-color': '#4a90d9',
-            'background-opacity': 0.9,
-            color: '#ffffff',
-            'text-valign': 'bottom',
+            shape: 'roundrectangle',
+            'background-color': '#315b7a',
+            'background-opacity': 0.96,
+            color: '#f5f8ff',
+            'text-valign': 'center',
             'text-halign': 'center',
-            'text-margin-y': 6,
-            'font-size': 11,
+            'font-size': 12,
             'font-weight': '500',
-            'text-background-color': 'rgba(0,0,0,0.5)',
-            'text-background-opacity': 0.7,
-            'text-background-padding': '3px',
-            'text-background-shape': 'roundrectangle',
-            width: 26,
-            height: 26,
-            'border-width': 2,
-            'border-color': 'rgba(255,255,255,0.3)',
+            'text-wrap': 'wrap',
+            'text-max-width': 96,
+            padding: '14px',
+            width: 'label',
+            height: 'label',
+            'border-width': 1.5,
+            'border-color': 'rgba(255,255,255,0.18)',
+            'shadow-blur': 18,
+            'shadow-color': 'rgba(0, 0, 0, 0.28)',
+            'shadow-opacity': 0.35,
+            'shadow-offset-x': 0,
+            'shadow-offset-y': 8,
           },
         },
         {
           selector: 'node[role="protagonist"]',
           style: {
-            'background-color': '#e05c6c',
-            width: 34,
-            height: 34,
-            'border-color': 'rgba(255,180,180,0.5)',
+            'background-color': '#9d3d52',
+            'border-color': 'rgba(255,210,218,0.45)',
             'border-width': 2.5,
           },
         },
         {
           selector: 'node[role="antagonist"]',
           style: {
-            'background-color': '#c97b30',
-            'border-color': 'rgba(255,210,100,0.4)',
+            'background-color': '#8f5a24',
+            'border-color': 'rgba(255,223,168,0.4)',
           },
         },
         {
           selector: 'node[role="mentor"]',
-          style: { 'background-color': '#4caf7d' },
+          style: { 'background-color': '#2f7a62' },
         },
         {
           selector: 'node[role="minor"]',
-          style: { 'background-color': '#7a7a8c', width: 20, height: 20 },
+          style: { 'background-color': '#5e6478', color: '#eef3ff' },
         },
         {
           selector: 'node:selected',
@@ -379,45 +434,45 @@ function buildGraph() {
             'border-color': '#ffffff',
             'border-width': 3,
             'background-opacity': 1,
+            'shadow-opacity': 0.5,
           },
         },
         {
           selector: 'edge',
           style: {
             label: 'data(label)',
-            'line-color': 'rgba(150,160,180,0.5)',
-            'target-arrow-color': 'rgba(150,160,180,0.7)',
-            'target-arrow-shape': 'triangle',
-            'arrow-scale': 0.8,
-            'curve-style': 'bezier',
+            'line-color': 'rgba(132, 170, 214, 0.46)',
+            'line-style': 'solid',
+            'curve-style': 'unbundled-bezier',
+            'control-point-distances': 40,
+            'control-point-weights': 0.5,
+            'target-arrow-shape': 'none',
+            'source-arrow-shape': 'none',
             'font-size': 9,
-            color: 'rgba(200,210,220,0.85)',
-            'text-background-color': 'rgba(20,20,30,0.6)',
-            'text-background-opacity': 0.8,
-            'text-background-padding': '2px',
+            color: 'rgba(222,232,245,0.9)',
+            'text-rotation': 'autorotate',
+            'text-wrap': 'wrap',
+            'text-max-width': 120,
+            'text-background-color': 'rgba(14,20,32,0.78)',
+            'text-background-opacity': 1,
+            'text-background-padding': '4px',
             'text-background-shape': 'roundrectangle',
-            width: 1.2,
+            width: 2,
           },
         },
         {
           selector: 'edge:selected',
-          style: { 'line-color': 'rgba(200,220,255,0.9)', width: 2 },
+          style: { 'line-color': 'rgba(223,236,255,0.95)', width: 3 },
         },
       ],
-      layout: {
-        name: 'cose',
-        animate: false,
-        padding: 50,
-        nodeRepulsion: () => 12000,
-        idealEdgeLength: () => 200,
-        edgeElasticity: () => 100,
-        gravity: 0.25,
-        numIter: 500,
-        nodeOverlap: 30,
-      },
+      layout: layoutOptions,
       minZoom: 0.2,
       maxZoom: 3,
       wheelSensitivity: 0.3,
+    })
+
+    cy.ready(() => {
+      cy.fit(undefined, nodes.length > 12 ? 100 : 80)
     })
 
     // Highlight neighbors on tap
@@ -426,6 +481,10 @@ function buildGraph() {
       const node = evt.target
       const neighborhood = node.neighborhood().add(node)
       neighborhood.style({ opacity: 1 })
+      const matched = characters.value.find((item: any) => item.id === node.id())
+      if (matched) {
+        selected.value = matched
+      }
     })
     cy.on('tap', (evt: any) => {
       if (evt.target === cy) {
@@ -447,9 +506,23 @@ function graphZoomOut() {
 function graphRelayout() {
   if (cy) {
     cy.layout({
-      name: 'cose', animate: true, animationDuration: 500, padding: 50,
-      nodeRepulsion: () => 12000, idealEdgeLength: () => 200, edgeElasticity: () => 100,
-      gravity: 0.25, numIter: 500, nodeOverlap: 30,
+      name: 'cose',
+      animate: true,
+      animationDuration: 500,
+      fit: true,
+      padding: characters.value.length > 12 ? 90 : 70,
+      nodeDimensionsIncludeLabels: true,
+      componentSpacing: characters.value.length > 12 ? 180 : 120,
+      nodeRepulsion: (node: any) => node.connectedEdges().length > 3 ? 26000 : 18000,
+      idealEdgeLength: () => cy.edges().length > 14 ? 240 : 190,
+      edgeElasticity: () => 140,
+      gravity: 0.08,
+      numIter: characters.value.length > 12 ? 1500 : 1000,
+      nodeOverlap: 120,
+      randomize: true,
+      initialTemp: 200,
+      coolingFactor: 0.95,
+      minTemp: 1.0,
     }).run()
   }
 }
@@ -469,9 +542,10 @@ watch(() => characters.value, buildGraph, { deep: true })
 .char-name { font-weight: 500; color: var(--nb-text-primary); }
 .rel-editor { display: flex; flex-direction: column; gap: 8px; }
 .rel-editor-row { display: flex; align-items: center; }
-.rel-item { padding: 4px 0; color: var(--nb-text-primary); }
+.rel-item { padding: 8px 0; color: var(--nb-text-primary); display: flex; flex-direction: column; gap: 4px; }
 .text-content { color: var(--nb-text-secondary); line-height: 1.8; white-space: pre-wrap; }
+.rich-text :deep(p) { margin: 0 0 6px; }
 .rel-item { padding: 4px 0; color: var(--nb-text-secondary); }
-.cy-container { width: 100%; height: 600px; background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); border-radius: 8px; }
+.cy-container { width: 100%; height: 600px; background: radial-gradient(circle at top, rgba(57,91,125,0.24), rgba(12,16,24,0.92) 60%); border: 1px solid var(--nb-card-border); border-radius: 8px; }
 .graph-controls { display: flex; gap: 4px; }
 </style>

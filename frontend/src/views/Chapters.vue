@@ -42,9 +42,10 @@
       <el-table-column label="创建时间" width="180">
         <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="280">
+      <el-table-column label="操作" width="340">
         <template #default="{ row }">
           <el-button size="small" @click="viewChapter(row)">查看</el-button>
+          <el-button size="small" plain :loading="copyingChapterId === row.id" @click="copyChapter(row)">复制</el-button>
           <el-button
             v-if="row.status === 'draft' || row.status === 'needs_recheck' || row.status === 'generated'"
             size="small"
@@ -152,6 +153,7 @@ const canGenerate = ref(true)
 
 const showGenerateDialog = ref(false)
 const generating = ref(false)
+const copyingChapterId = ref<string | null>(null)
 
 const genForm = ref({
   chapter_num: 1, chapter_words_min: 2000, chapter_words_max: 3500, context_hint: '',
@@ -326,6 +328,22 @@ async function deleteChapter(ch: any) {
   } catch (e: any) {
     const msg = e.response?.data?.message || e.response?.data?.error || '删除失败'
     ElMessage.error(msg)
+  }
+}
+
+async function copyChapter(ch: any) {
+  copyingChapterId.value = ch.id
+  try {
+    const res = await chapterApi.get(projectId, ch.id)
+    const detail = res.data?.data
+    const text = `第${detail.chapter_num}章 ${detail.title || ''}\n\n${detail.content || ''}`.trim()
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('章节已复制')
+  } catch (e: any) {
+    const msg = e.response?.data?.message || e.response?.data?.error || '复制失败'
+    ElMessage.error(msg)
+  } finally {
+    copyingChapterId.value = null
   }
 }
 </script>

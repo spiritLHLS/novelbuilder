@@ -197,6 +197,25 @@ func (h *Handler) GetChapter(c *gin.Context) {
 	c.JSON(200, gin.H{"data": ch})
 }
 
+func (h *Handler) UpdateChapter(c *gin.Context) {
+	var req models.UpdateChapterContentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	updated, err := h.chapters.UpdateManualContent(c.Request.Context(), c.Param("id"), req.Title, req.Content, req.Version)
+	if err != nil {
+		if errors.Is(err, workflow.ErrOptimisticLock) {
+			c.JSON(409, gin.H{"error": err.Error(), "code": "WF_006", "message": "当前章节版本已过期，请刷新后重试。"})
+		} else {
+			c.JSON(500, gin.H{"error": err.Error()})
+		}
+		return
+	}
+	c.JSON(200, gin.H{"data": updated})
+}
+
 func (h *Handler) DeleteChapter(c *gin.Context) {
 	err := h.chapters.Delete(c.Request.Context(), c.Param("id"))
 	if err != nil && strings.Contains(err.Error(), "only the latest chapter can be deleted") {
