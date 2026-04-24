@@ -475,13 +475,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, Search, Loading, Lock, Delete, DocumentCopy, Download } from '@element-plus/icons-vue'
 import { referenceApi, streamSearchNovels } from '@/api'
 import type { NovelSearchResult, FetchBookInfo, FetchChapterInfo, ReferenceChapter } from '@/api'
 import { useDownloadStore } from '@/stores/download'
+import { useReferenceDeepAnalysis } from '@/views/references/useReferenceDeepAnalysis'
 
 const route = useRoute()
 const projectId = route.params.projectId as string
@@ -498,168 +499,6 @@ const exportingBatch = ref(false)
 const selectedRefId = ref('')
 const selectedIds = ref<string[]>([])
 const localFileInput = ref<HTMLInputElement | null>(null)
-
-// ─── deep analysis ────────────────────────────────────────────────────────────
-const showDeepAnalysisDialog = ref(false)
-const deepAnalysisRef = ref<any>(null)
-const deepAnalysisJob = ref<any>(null)
-const deepAnalysisDialogLoading = ref(false)
-const deepAnalysisStarting = ref(false)
-const deepAnalysisImporting = ref(false)
-const deepAnalysisResetting = ref(false)
-let deepAnalysisPollTimer: ReturnType<typeof setInterval> | null = null
-
-const daStatusType = computed(() => {
-  const s = deepAnalysisJob.value?.status
-  if (s === 'completed') return 'success'
-  if (s === 'failed') return 'danger'
-  if (s === 'cancelled') return 'info'
-  return 'warning'
-})
-
-const daStatusText = computed(() => {
-  const map: Record<string, string> = {
-    pending: '等待中', running: '分析中', completed: '已完成', failed: '失败', cancelled: '已取消',
-  }
-  return map[deepAnalysisJob.value?.status] ?? deepAnalysisJob.value?.status ?? '—'
-})
-
-// Extracted data computed properties for result preview
-const daChars = computed<any[]>(() => {
-  const raw = deepAnalysisJob.value?.extracted_characters
-  if (!raw) return []
-  try { return Array.isArray(raw) ? raw : JSON.parse(raw) } catch { return [] }
-})
-
-const daWorld = computed<any>(() => {
-  const raw = deepAnalysisJob.value?.extracted_world
-  if (!raw) return {}
-  try { return (typeof raw === 'object' && !Array.isArray(raw)) ? raw : JSON.parse(raw) } catch { return {} }
-})
-
-const daOutline = computed<any[]>(() => {
-  const raw = deepAnalysisJob.value?.extracted_outline
-  if (!raw) return []
-  try { return Array.isArray(raw) ? raw : JSON.parse(raw) } catch { return [] }
-})
-
-const daGlossary = computed<any[]>(() => {
-  const raw = deepAnalysisJob.value?.extracted_glossary
-  if (!raw) return []
-  try { return Array.isArray(raw) ? raw : JSON.parse(raw) } catch { return [] }
-})
-
-const daForeshadowings = computed<any[]>(() => {
-  const raw = deepAnalysisJob.value?.extracted_foreshadowings
-  if (!raw) return []
-  try { return Array.isArray(raw) ? raw : JSON.parse(raw) } catch { return [] }
-})
-
-function roleTagType(role: string): string {
-  const r = (role || '').toLowerCase()
-  if (r.includes('主角') || r === 'protagonist') return 'success'
-  if (r.includes('反派') || r === 'antagonist') return 'danger'
-  if (r.includes('配角') || r === 'supporting') return 'warning'
-  return 'info'
-}
-
-async function openDeepAnalysisDialog(refRow: any) {
-  deepAnalysisRef.value = refRow
-  deepAnalysisJob.value = null
-  deepAnalysisDialogLoading.value = true
-  showDeepAnalysisDialog.value = true
-  try {
-    const res = await referenceApi.getDeepAnalysisJob(refRow.id)
-    deepAnalysisJob.value = (res.data as any).data ?? null
-  } catch {
-    // no job yet — normal
-  } finally {
-    deepAnalysisDialogLoading.value = false
-  }
-  if (deepAnalysisJob.value?.status === 'pending' || deepAnalysisJob.value?.status === 'running') {
-    startDeepAnalysisPoll(refRow.id)
-  }
-}
-
-async function doStartDeepAnalysis() {
-  if (!deepAnalysisRef.value) return
-  deepAnalysisStarting.value = true
-  try {
-    const res = await referenceApi.startDeepAnalysis(deepAnalysisRef.value.id)
-    deepAnalysisJob.value = (res.data as any).data
-    startDeepAnalysisPoll(deepAnalysisRef.value.id)
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error || '启动深度分析失败')
-  } finally {
-    deepAnalysisStarting.value = false
-  }
-}
-
-function startDeepAnalysisPoll(refId: string) {
-  stopDeepAnalysisPoll()
-  deepAnalysisPollTimer = setInterval(async () => {
-    try {
-      const res = await referenceApi.getDeepAnalysisJob(refId)
-      deepAnalysisJob.value = (res.data as any).data ?? deepAnalysisJob.value
-    } catch { /* ignore */ }
-    const status = deepAnalysisJob.value?.status
-    if (status !== 'pending' && status !== 'running') {
-      stopDeepAnalysisPoll()
-    }
-  }, 3000)
-}
-
-function stopDeepAnalysisPoll() {
-  if (deepAnalysisPollTimer) {
-    clearInterval(deepAnalysisPollTimer)
-    deepAnalysisPollTimer = null
-  }
-}
-
-async function cancelDeepAnalysis() {
-  if (!deepAnalysisRef.value) return
-  try {
-    await referenceApi.cancelDeepAnalysis(deepAnalysisRef.value.id)
-    if (deepAnalysisJob.value) deepAnalysisJob.value = { ...deepAnalysisJob.value, status: 'cancelled' }
-    stopDeepAnalysisPoll()
-    ElMessage.success('已取消')
-  } catch {
-    ElMessage.error('取消失败')
-  }
-}
-
-async function importDeepAnalysisResult() {
-  if (!deepAnalysisRef.value) return
-  deepAnalysisImporting.value = true
-  try {
-    await referenceApi.importDeepAnalysisResult(deepAnalysisRef.value.id)
-    ElMessage.success('已成功导入到项目（人物、世界观、大纲、术语表、伏笔），请到对应页面查看')
-    showDeepAnalysisDialog.value = false
-    await fetchRefs()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error || '导入失败')
-  } finally {
-    deepAnalysisImporting.value = false
-  }
-}
-
-// Reset all deep analysis data and start fresh
-async function doResetDeepAnalysis() {
-  if (!deepAnalysisRef.value) return
-  deepAnalysisResetting.value = true
-  try {
-    stopDeepAnalysisPoll()
-    await referenceApi.resetDeepAnalysis(deepAnalysisRef.value.id)
-    deepAnalysisJob.value = null
-    ElMessage.success('已清除历史分析记录，点击「开始深度分析」重新开始')
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error || '重置失败')
-  } finally {
-    deepAnalysisResetting.value = false
-  }
-}
-
-onUnmounted(stopDeepAnalysisPoll)
 
 // ─── chapter management ───────────────────────────────────────────────────────
 const showChaptersDialog = ref(false)
@@ -1000,6 +839,30 @@ async function fetchRefs() {
     loading.value = false
   }
 }
+
+const {
+  showDeepAnalysisDialog,
+  deepAnalysisRef,
+  deepAnalysisJob,
+  deepAnalysisDialogLoading,
+  deepAnalysisStarting,
+  deepAnalysisImporting,
+  deepAnalysisResetting,
+  daStatusType,
+  daStatusText,
+  daChars,
+  daWorld,
+  daOutline,
+  daGlossary,
+  daForeshadowings,
+  roleTagType,
+  openDeepAnalysisDialog,
+  doStartDeepAnalysis,
+  stopDeepAnalysisPoll,
+  cancelDeepAnalysis,
+  importDeepAnalysisResult,
+  doResetDeepAnalysis,
+} = useReferenceDeepAnalysis(fetchRefs)
 
 async function deleteReference(id: string) {
   try {

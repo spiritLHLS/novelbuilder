@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"github.com/gin-gonic/gin"
+	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -89,10 +90,11 @@ func (h *Handler) AuditChapter(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "chapter not found"})
 		return
 	}
+	auditCtx := gateway.WithSessionID(c.Request.Context(), taskSessionID("audit_chapter", chapter.ProjectID, &chapter.ChapterNum, "manual"))
 
 	llmCfg := map[string]interface{}{}
 	if req.LLMProfileID != "" {
-		profile, pErr := h.llmProfiles.GetFull(c.Request.Context(), req.LLMProfileID)
+		profile, pErr := h.llmProfiles.GetFull(auditCtx, req.LLMProfileID)
 		if pErr != nil {
 			c.JSON(500, gin.H{"error": pErr.Error()})
 			return
@@ -101,24 +103,18 @@ func (h *Handler) AuditChapter(c *gin.Context) {
 			c.JSON(404, gin.H{"error": "llm profile not found"})
 			return
 		}
-		llmCfg = map[string]interface{}{
-			"api_key":     profile.APIKey,
-			"model":       profile.ModelName,
-			"base_url":    profile.BaseURL,
-			"max_tokens":  profile.MaxTokens,
-			"temperature": profile.Temperature,
-		}
+		llmCfg = llmConfigFromProfile(profile)
 	} else {
-		llmCfg, err = h.resolveLLMConfig(c.Request.Context())
+		llmCfg, err = h.resolveLLMConfig(auditCtx)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
 	}
 
-	auditContext := h.buildAuditContext(c.Request.Context(), chapter)
+	auditContext := h.buildAuditContext(auditCtx, chapter)
 
-	report, err := h.audit.RunAudit(c.Request.Context(), chapter, chapter.ProjectID, llmCfg, auditContext)
+	report, err := h.audit.RunAudit(auditCtx, chapter, chapter.ProjectID, llmCfg, auditContext)
 	if err != nil {
 		c.JSON(502, gin.H{"error": "audit failed: " + err.Error()})
 		return
@@ -131,32 +127,26 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 	if err != nil || chapter == nil {
 		return nil, fmt.Errorf("chapter not found")
 	}
+	pipelineCtx := gateway.WithSessionID(ctx, taskSessionID("audit_revise", chapter.ProjectID, &chapter.ChapterNum, "pipeline"))
 
 	var auditorCfg map[string]interface{}
 	if req.LLMProfileID != "" {
-		profile, pErr := h.llmProfiles.GetFull(ctx, req.LLMProfileID)
+		profile, pErr := h.llmProfiles.GetFull(pipelineCtx, req.LLMProfileID)
 		if pErr != nil {
 			return nil, pErr
 		}
 		if profile == nil {
 			return nil, fmt.Errorf("llm profile not found")
 		}
-		auditorCfg = map[string]interface{}{
-			"api_key":     profile.APIKey,
-			"model":       profile.ModelName,
-			"base_url":    profile.BaseURL,
-			"provider":    profile.Provider,
-			"max_tokens":  profile.MaxTokens,
-			"temperature": profile.Temperature,
-		}
+		auditorCfg = llmConfigFromProfile(profile)
 	} else {
-		auditorCfg, err = h.resolveAgentLLMConfig(ctx, "auditor", chapter.ProjectID)
+		auditorCfg, err = h.resolveAgentLLMConfig(pipelineCtx, "auditor", chapter.ProjectID)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	reviserCfg, rErr := h.resolveAgentLLMConfig(ctx, "reviser", chapter.ProjectID)
+	reviserCfg, rErr := h.resolveAgentLLMConfig(pipelineCtx, "reviser", chapter.ProjectID)
 	if rErr != nil {
 		reviserCfg = auditorCfg
 	}
@@ -174,11 +164,11 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 	}
 
 	rounds := make([]gin.H, 0, maxRounds)
-	rules, _ := h.bookRules.Get(ctx, chapter.ProjectID)
+	rules, _ := h.bookRules.Get(pipelineCtx, chapter.ProjectID)
 	var latest *models.AuditReport
 	for i := 1; i <= maxRounds; i++ {
-		auditContext := h.buildAuditContext(ctx, chapter)
-		report, aErr := h.audit.RunAudit(ctx, chapter, chapter.ProjectID, auditorCfg, auditContext)
+		auditContext := h.buildAuditContext(pipelineCtx, chapter)
+		report, aErr := h.audit.RunAudit(pipelineCtx, chapter, chapter.ProjectID, auditorCfg, auditContext)
 		if aErr != nil {
 			return nil, aErr
 		}
@@ -198,13 +188,13 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 		rewritten := false
 
 		if !report.Passed {
-			narrativeRewrite, nrErr := h.bookRules.NarrativeRevise(ctx, chapter.ID, chapter.Content, report, reviserCfg)
+			narrativeRewrite, nrErr := h.bookRules.NarrativeRevise(pipelineCtx, chapter.ID, chapter.Content, report, reviserCfg)
 			if nrErr == nil && narrativeRewrite != nil && narrativeRewrite.RewrittenText != "" &&
 				narrativeRewrite.RewrittenText != chapter.Content {
-				_ = h.chapters.CreateSnapshot(ctx, chapter.ID, "before_narrative_revise", fmt.Sprintf("narrative revise round %d", i))
-				updated, upErr := h.chapters.UpdateContent(ctx, chapter.ID, narrativeRewrite.RewrittenText, "needs_recheck")
+				_ = h.chapters.CreateSnapshot(pipelineCtx, chapter.ID, "before_narrative_revise", fmt.Sprintf("narrative revise round %d", i))
+				updated, upErr := h.chapters.UpdateContent(pipelineCtx, chapter.ID, narrativeRewrite.RewrittenText, "needs_recheck")
 				if upErr == nil {
-					_ = h.chapters.CreateSnapshot(ctx, chapter.ID, "after_narrative_revise", fmt.Sprintf("narrative revise round %d", i))
+					_ = h.chapters.CreateSnapshot(pipelineCtx, chapter.ID, "after_narrative_revise", fmt.Sprintf("narrative revise round %d", i))
 					chapter = updated
 					rewritten = true
 					round["narrative_rewrite"] = narrativeRewrite
@@ -215,7 +205,7 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 		}
 
 		if report.AIProbability > 0.67 {
-			antiRewrite, rwErr := h.bookRules.AntiDetectRewrite(ctx, chapter.ID, chapter.Content, intensity, rules, reviserCfg)
+			antiRewrite, rwErr := h.bookRules.AntiDetectRewrite(pipelineCtx, chapter.ID, chapter.Content, intensity, rules, reviserCfg)
 			if rwErr != nil {
 				round["rewrite_error"] = rwErr.Error()
 				rounds = append(rounds, round)
@@ -226,14 +216,14 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 				rounds = append(rounds, round)
 				break
 			}
-			_ = h.chapters.CreateSnapshot(ctx, chapter.ID, "before_auto_revise", fmt.Sprintf("auto revise round %d", i))
-			updated, upErr := h.chapters.UpdateContent(ctx, chapter.ID, antiRewrite.RewrittenText, "needs_recheck")
+			_ = h.chapters.CreateSnapshot(pipelineCtx, chapter.ID, "before_auto_revise", fmt.Sprintf("auto revise round %d", i))
+			updated, upErr := h.chapters.UpdateContent(pipelineCtx, chapter.ID, antiRewrite.RewrittenText, "needs_recheck")
 			if upErr != nil {
 				round["rewrite_error"] = upErr.Error()
 				rounds = append(rounds, round)
 				break
 			}
-			_ = h.chapters.CreateSnapshot(ctx, chapter.ID, "after_auto_revise", fmt.Sprintf("auto revise round %d", i))
+			_ = h.chapters.CreateSnapshot(pipelineCtx, chapter.ID, "after_auto_revise", fmt.Sprintf("auto revise round %d", i))
 			chapter = updated
 			rewritten = true
 			round["rewrite_result"] = antiRewrite
@@ -248,7 +238,7 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 		rounds = append(rounds, round)
 	}
 
-	finalChapter, _ := h.chapters.Get(ctx, chapterID)
+	finalChapter, _ := h.chapters.Get(pipelineCtx, chapterID)
 	return gin.H{"chapter": finalChapter, "final_audit": latest, "rounds": rounds}, nil
 }
 
@@ -324,16 +314,17 @@ func (h *Handler) AntiDetectChapter(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "chapter not found"})
 		return
 	}
+	rewriteCtx := gateway.WithSessionID(c.Request.Context(), taskSessionID("anti_detect_rewrite", chapter.ProjectID, &chapter.ChapterNum, "manual"))
 
-	llmCfg, err := h.resolveLLMConfig(c.Request.Context())
+	llmCfg, err := h.resolveLLMConfig(rewriteCtx)
 	if err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
-	rules, _ := h.bookRules.Get(c.Request.Context(), chapter.ProjectID)
+	rules, _ := h.bookRules.Get(rewriteCtx, chapter.ProjectID)
 
-	result, err := h.bookRules.AntiDetectRewrite(c.Request.Context(), chapterID, chapter.Content, req.Intensity, rules, llmCfg)
+	result, err := h.bookRules.AntiDetectRewrite(rewriteCtx, chapterID, chapter.Content, req.Intensity, rules, llmCfg)
 	if err != nil {
 		c.JSON(502, gin.H{"error": "anti-detect rewrite failed: " + err.Error()})
 		return
@@ -375,14 +366,15 @@ func (h *Handler) GenerateCreativeBrief(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	briefCtx := gateway.WithSessionID(c.Request.Context(), taskSessionID("creative_brief", projectID, nil, "manual"))
 
-	llmCfg, err := h.resolveLLMConfig(c.Request.Context())
+	llmCfg, err := h.resolveLLMConfig(briefCtx)
 	if err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
-	result, err := h.bookRules.GenerateFromBrief(c.Request.Context(), projectID, req, llmCfg)
+	result, err := h.bookRules.GenerateFromBrief(briefCtx, projectID, req, llmCfg)
 	if err != nil {
 		c.JSON(502, gin.H{"error": "creative brief failed: " + err.Error()})
 		return
@@ -391,7 +383,7 @@ func (h *Handler) GenerateCreativeBrief(c *gin.Context) {
 	if result.RulesContent != "" || result.StyleGuide != "" {
 		antiJSON, _ := json.Marshal(result.AntiAIWordlist)
 		bannedJSON, _ := json.Marshal(result.BannedPatterns)
-		h.bookRules.Upsert(c.Request.Context(), projectID, models.UpdateBookRulesRequest{
+		h.bookRules.Upsert(briefCtx, projectID, models.UpdateBookRulesRequest{
 			RulesContent:   result.RulesContent,
 			StyleGuide:     result.StyleGuide,
 			AntiAIWordlist: antiJSON,
@@ -415,7 +407,7 @@ func (h *Handler) GenerateCreativeBrief(c *gin.Context) {
 			}
 		}
 		if wbJSON, err := json.Marshal(mapped); err == nil {
-			if _, wbErr := h.worldBibles.Update(c.Request.Context(), projectID, wbJSON); wbErr != nil {
+			if _, wbErr := h.worldBibles.Update(briefCtx, projectID, wbJSON); wbErr != nil {
 				h.logger.Warn("creative brief: failed to save world bible",
 					zap.String("project_id", projectID), zap.Error(wbErr))
 			}

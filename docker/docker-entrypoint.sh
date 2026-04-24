@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # ============================================================
 # NovelBuilder docker-entrypoint.sh
@@ -102,8 +102,11 @@ if [ ! -d "$NEO4J_DATA/databases/neo4j" ]; then
     chown -R neo4j:neo4j "${NEO4J_HOME}" 2>/dev/null || true
 
     # Set initial password via neo4j-admin (Neo4j 5.x syntax)
-    su - neo4j -s /bin/bash -c "/opt/neo4j/bin/neo4j-admin dbms set-initial-password '${NEO4J_PASSWORD}'" 2>/dev/null || \
-        gosu neo4j /opt/neo4j/bin/neo4j-admin dbms set-initial-password "${NEO4J_PASSWORD}" 2>/dev/null || true
+    if ! su - neo4j -s /bin/bash -c "/opt/neo4j/bin/neo4j-admin dbms set-initial-password '${NEO4J_PASSWORD}'" 2>/dev/null && \
+       ! gosu neo4j /opt/neo4j/bin/neo4j-admin dbms set-initial-password "${NEO4J_PASSWORD}" 2>/dev/null; then
+        echo "ERROR: failed to set initial Neo4j password." >&2
+        exit 1
+    fi
 
     echo "==> Neo4j password set."
 fi
@@ -129,6 +132,22 @@ chown redis:redis /var/lib/redis 2>/dev/null || chmod 777 /var/lib/redis
 
 # ── Docker helper scripts dir ───────────────────────────
 mkdir -p /app/docker
+if [ ! -w /app/docker ]; then
+    echo "ERROR: /app/docker is not writable." >&2
+    exit 1
+fi
+
+for helper in /app/docker/wait-for-port.sh /app/docker/wait-for-pg.sh; do
+    if [ ! -f "$helper" ]; then
+        echo "ERROR: required helper script missing: $helper" >&2
+        exit 1
+    fi
+    chmod +x "$helper" 2>/dev/null || true
+    if [ ! -x "$helper" ]; then
+        echo "ERROR: helper script is not executable: $helper" >&2
+        exit 1
+    fi
+done
 
 # ── Wait helper (used post-startup if needed) ─────────────
 wait_for_port() {

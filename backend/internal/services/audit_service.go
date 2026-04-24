@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -43,6 +43,13 @@ func (s *AuditService) RunAudit(
 	llmCfg map[string]interface{},
 	context_ map[string]interface{},
 ) (*models.AuditReport, error) {
+	ctx = contextWithLLMSession(ctx, llmCfg, fmt.Sprintf("audit_chapter:%s", chapter.ID))
+	llmCfg = ensureContextSessionConfig(ctx, llmCfg, fmt.Sprintf("audit_chapter:%s", chapter.ID))
+	if sessionID := gateway.SessionIDFromContext(ctx); sessionID != "" {
+		s.logger.Debug("audit session attached",
+			zap.String("chapter_id", chapter.ID),
+			zap.String("session_id", sessionID))
+	}
 	body := map[string]interface{}{
 		"chapter_id":   chapter.ID,
 		"project_id":   projectID,
@@ -53,21 +60,17 @@ func (s *AuditService) RunAudit(
 	}
 	data, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		s.sidecarURL+"/audit/chapter", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(req)
+	raw, err := doRetriableJSONRequest(ctx, s.httpClient, s.logger, "POST /audit/chapter", func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			s.sidecarURL+"/audit/chapter", bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("audit sidecar: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("audit sidecar %d: %s", resp.StatusCode, string(raw))
 	}
 
 	var result struct {

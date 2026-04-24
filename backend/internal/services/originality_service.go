@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"regexp"
@@ -169,25 +168,20 @@ func (s *OriginalityService) AuditChapter(ctx context.Context, chapterID, projec
 // callMetrics calls the Python sidecar /metrics endpoint.
 func (s *OriginalityService) callMetrics(ctx context.Context, text string) (*metricsResponse, error) {
 	body, _ := json.Marshal(metricsRequest{Text: text})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sidecarURL+"/metrics", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(req)
+	raw, err := doRetriableJSONRequest(ctx, s.httpClient, s.logger, "POST /metrics", func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sidecarURL+"/metrics", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("sidecar /metrics unreachable: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("metrics returned %d: %s", resp.StatusCode, string(raw))
-	}
 
 	var mr metricsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
+	if err := json.Unmarshal(raw, &mr); err != nil {
 		return nil, fmt.Errorf("decode metrics response: %w", err)
 	}
 	return &mr, nil

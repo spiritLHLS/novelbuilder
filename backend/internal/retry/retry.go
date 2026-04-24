@@ -47,7 +47,10 @@ func Do(ctx context.Context, cfg Config, fn func(attempt int) (shouldRetry bool,
 			return nil
 		}
 		lastErr = err
-		if !retry || attempt == cfg.MaxAttempts {
+		if !retry {
+			return lastErr
+		}
+		if attempt == cfg.MaxAttempts {
 			break
 		}
 		delay := backoffDelay(cfg, attempt)
@@ -56,6 +59,9 @@ func Do(ctx context.Context, cfg Config, fn func(attempt int) (shouldRetry bool,
 			return ctx.Err()
 		case <-time.After(delay):
 		}
+	}
+	if lastErr == nil {
+		return nil
 	}
 	return fmt.Errorf("%w: %w", ErrMaxAttemptsReached, lastErr)
 }

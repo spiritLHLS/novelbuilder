@@ -3,9 +3,12 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
+	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/services"
 	"github.com/novelbuilder/backend/internal/workflow"
 	"go.uber.org/zap"
@@ -420,13 +423,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 
 // ── Shared LLM Config Helpers ─────────────────────────────────────────────────
 
-func (h *Handler) resolveLLMConfig(ctx context.Context) (map[string]interface{}, error) {
-	profile, err := h.llmProfiles.GetDefault(ctx)
-	if err != nil {
-		return nil, err
-	}
+func llmConfigFromProfile(profile *models.LLMProfileFull) map[string]interface{} {
 	if profile == nil {
-		return nil, errors.New("no default AI model configured: please set one in 设置 → AI 模型配置")
+		return map[string]interface{}{}
 	}
 	return map[string]interface{}{
 		"api_key":          profile.APIKey,
@@ -439,7 +438,18 @@ func (h *Handler) resolveLLMConfig(ctx context.Context) (map[string]interface{},
 		"omit_max_tokens":  profile.OmitMaxTokens,
 		"omit_temperature": profile.OmitTemperature,
 		"api_style":        profile.APIStyle,
-	}, nil
+	}
+}
+
+func (h *Handler) resolveLLMConfig(ctx context.Context) (map[string]interface{}, error) {
+	profile, err := h.llmProfiles.GetDefault(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if profile == nil {
+		return nil, errors.New("no default AI model configured: please set one in 设置 → AI 模型配置")
+	}
+	return llmConfigFromProfile(profile), nil
 }
 
 // resolveAgentLLMConfig returns an LLM config map for a given agent type,
@@ -476,4 +486,35 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func cloneConfigMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return map[string]interface{}{}
+	}
+	cloned := make(map[string]interface{}, len(src))
+	for key, value := range src {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func taskSessionID(taskType, projectID string, chapterNum *int, suffix string) string {
+	parts := []string{strings.TrimSpace(taskType), strings.TrimSpace(projectID)}
+	if chapterNum != nil {
+		parts = append(parts, fmt.Sprintf("chapter-%d", *chapterNum))
+	}
+	if trimmed := strings.TrimSpace(suffix); trimmed != "" {
+		parts = append(parts, trimmed)
+	}
+	return strings.Join(parts, ":")
+}
+
+func injectTaskSession(cfg map[string]interface{}, sessionID string) map[string]interface{} {
+	cloned := cloneConfigMap(cfg)
+	if strings.TrimSpace(sessionID) == "" {
+		return cloned
+	}
+	cloned["session_id"] = sessionID
+	return cloned
 }

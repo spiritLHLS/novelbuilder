@@ -24,6 +24,18 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+func attachTaskSession(ctx context.Context, cfg map[string]interface{}, sessionID string) (context.Context, map[string]interface{}) {
+	if sessionID == "" {
+		return ctx, cfg
+	}
+	cloned := make(map[string]interface{}, len(cfg)+1)
+	for key, value := range cfg {
+		cloned[key] = value
+	}
+	cloned["session_id"] = sessionID
+	return gateway.WithSessionID(ctx, sessionID), cloned
+}
+
 func main() {
 	// Build a human-readable console logger (GVA style).
 	encCfg := zap.NewProductionEncoderConfig()
@@ -72,7 +84,7 @@ func main() {
 	// All AI model config is stored in the database (llm_profiles table).
 	// The frontend Settings → AI 模型配置 page manages these profiles.
 	llmProfileService := services.NewLLMProfileService(db, encryptionKey, logger)
-	aiGateway := gateway.NewAIGateway(llmProfileService, logger)
+	aiGateway := gateway.NewAIGateway(llmProfileService, rdb, logger)
 
 	// Initialize Workflow Engine
 	wfEngine := workflow.NewEngine(db, logger)
@@ -237,9 +249,112 @@ func main() {
 	)
 
 	// Register background task handlers.
-	// NOTE: chapter_generate, chapter_regenerate, and generate_next_chapter handlers have
-	// been removed — all chapter generation now routes through the LangGraph Agent
-	// (high-quality path) via RunAgent / RunBatchAgent in handler_chapters.go.
+	autoApproveIfAllowed := func(ctx context.Context, projectID string, chapter *models.Chapter, report *models.QualityReport) error {
+		if chapter == nil || report == nil || !report.Pass || wfEngine.IsStrictReview(ctx, projectID) {
+			return nil
+		}
+		return chapterService.AutoApprove(ctx, chapter.ID, "auto-approved after passing generation quality gate")
+	}
+
+	taskQueueService.RegisterHandler("chapter_generate", func(ctx context.Context, task models.TaskQueueItem) error {
+		if task.ProjectID == nil || *task.ProjectID == "" {
+			return fmt.Errorf("chapter_generate requires project_id")
+		}
+
+		var payload models.ChapterGenerateTaskPayload
+		if len(task.Payload) > 0 {
+			if err := json.Unmarshal(task.Payload, &payload); err != nil {
+				return fmt.Errorf("chapter_generate: parse payload: %w", err)
+			}
+		}
+		if payload.Request.ChapterNum <= 0 {
+			return fmt.Errorf("chapter_generate: invalid chapter_num")
+		}
+
+		llmCfg, err := agentRoutingService.ResolveForAgent(ctx, "writer", *task.ProjectID)
+		if err != nil {
+			return fmt.Errorf("chapter_generate: resolve llm config: %w", err)
+		}
+		if llmCfg == nil {
+			return fmt.Errorf("chapter_generate: no writer llm profile configured")
+		}
+		sessionID := fmt.Sprintf("chapter_generate:%s:chapter-%d:task", *task.ProjectID, payload.Request.ChapterNum)
+		ctx, payload.Request.LLMConfig = attachTaskSession(ctx, llmCfg, sessionID)
+
+		chapter, report, err := services.GenerateChapterWithQualityRetries(ctx, chapterService, qualityService, *task.ProjectID, payload.Request.ChapterNum, payload.Request)
+		if err != nil {
+			return err
+		}
+		return autoApproveIfAllowed(ctx, *task.ProjectID, chapter, report)
+	})
+
+	taskQueueService.RegisterHandler("chapter_regenerate", func(ctx context.Context, task models.TaskQueueItem) error {
+		if task.ProjectID == nil || *task.ProjectID == "" {
+			return fmt.Errorf("chapter_regenerate requires project_id")
+		}
+
+		var payload models.ChapterRegenerateTaskPayload
+		if len(task.Payload) > 0 {
+			if err := json.Unmarshal(task.Payload, &payload); err != nil {
+				return fmt.Errorf("chapter_regenerate: parse payload: %w", err)
+			}
+		}
+		if payload.ChapterID == "" {
+			return fmt.Errorf("chapter_regenerate: missing chapter_id")
+		}
+
+		llmCfg, err := agentRoutingService.ResolveForAgent(ctx, "writer", *task.ProjectID)
+		if err != nil {
+			return fmt.Errorf("chapter_regenerate: resolve llm config: %w", err)
+		}
+		if llmCfg == nil {
+			return fmt.Errorf("chapter_regenerate: no writer llm profile configured")
+		}
+		sessionID := fmt.Sprintf("chapter_regenerate:%s:chapter-%d:task", *task.ProjectID, payload.Request.ChapterNum)
+		ctx, payload.Request.LLMConfig = attachTaskSession(ctx, llmCfg, sessionID)
+
+		chapter, report, err := services.RegenerateChapterWithQualityRetries(ctx, chapterService, qualityService, payload.ChapterID, payload.Request)
+		if err != nil {
+			return err
+		}
+		return autoApproveIfAllowed(ctx, *task.ProjectID, chapter, report)
+	})
+
+	taskQueueService.RegisterHandler("generate_next_chapter", func(ctx context.Context, task models.TaskQueueItem) error {
+		if task.ProjectID == nil || *task.ProjectID == "" {
+			return fmt.Errorf("generate_next_chapter requires project_id")
+		}
+
+		var payload models.GenerateNextChapterTaskPayload
+		if len(task.Payload) > 0 {
+			if err := json.Unmarshal(task.Payload, &payload); err != nil {
+				return fmt.Errorf("generate_next_chapter: parse payload: %w", err)
+			}
+		}
+
+		nextNum, err := chapterService.MaxChapterNum(ctx, *task.ProjectID)
+		if err != nil {
+			return fmt.Errorf("generate_next_chapter: get max chapter: %w", err)
+		}
+		nextNum++
+
+		llmCfg, err := agentRoutingService.ResolveForAgent(ctx, "writer", *task.ProjectID)
+		if err != nil {
+			return fmt.Errorf("generate_next_chapter: resolve llm config: %w", err)
+		}
+		if llmCfg == nil {
+			return fmt.Errorf("generate_next_chapter: no writer llm profile configured")
+		}
+		payload.Request.ChapterNum = nextNum
+		sessionID := fmt.Sprintf("generate_next_chapter:%s:chapter-%d:task", *task.ProjectID, nextNum)
+		ctx, payload.Request.LLMConfig = attachTaskSession(ctx, llmCfg, sessionID)
+
+		chapter, report, err := services.GenerateChapterWithQualityRetries(ctx, chapterService, qualityService, *task.ProjectID, nextNum, payload.Request)
+		if err != nil {
+			return err
+		}
+		return autoApproveIfAllowed(ctx, *task.ProjectID, chapter, report)
+	})
 
 	// chapter_import_process: enqueued by ProcessChapterImport handler.
 	// Runs the AI-assisted chapter-split and reverse-engineering pipeline for an import record.

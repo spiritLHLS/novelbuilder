@@ -146,21 +146,34 @@ type ReferenceExportItem struct {
 // ── Quality Analysis Types ────────────────────────────────────────────────────
 
 type QualityReport struct {
-	EstimatedPerplexity float64            `json:"estimated_perplexity"`
-	EstimatedBurstiness float64            `json:"estimated_burstiness"`
-	AIScoreEstimate     float64            `json:"ai_score_estimate"`
-	OriginalityScore    float64            `json:"originality_score"`
-	SuspiciousSegments  []string           `json:"suspicious_segments"`
-	TechUsage           map[string]float64 `json:"tech_usage"`
-	TensionCurve        []float64          `json:"tension_curve"`
-	RewardDensity       float64            `json:"reward_density"`
-	HookStrength        float64            `json:"hook_strength"`
-	WorldConsistency    bool               `json:"world_consistency"`
-	CharConsistency     bool               `json:"character_consistency"`
-	TimeConsistency     bool               `json:"timeline_consistency"`
-	OverallScore        float64            `json:"overall_score"`
-	Pass                bool               `json:"pass"`
-	Issues              []QualityIssue     `json:"issues"`
+	EstimatedPerplexity float64                   `json:"estimated_perplexity"`
+	EstimatedBurstiness float64                   `json:"estimated_burstiness"`
+	AIScoreEstimate     float64                   `json:"ai_score_estimate"`
+	AIProbability       float64                   `json:"ai_probability,omitempty"`
+	OriginalityScore    float64                   `json:"originality_score"`
+	SuspiciousSegments  []string                  `json:"suspicious_segments"`
+	TechUsage           map[string]float64        `json:"tech_usage"`
+	TensionCurve        []float64                 `json:"tension_curve"`
+	RewardDensity       float64                   `json:"reward_density"`
+	HookStrength        float64                   `json:"hook_strength"`
+	WorldConsistency    bool                      `json:"world_consistency"`
+	CharConsistency     bool                      `json:"character_consistency"`
+	TimeConsistency     bool                      `json:"timeline_consistency"`
+	Scores              map[string]float64        `json:"scores,omitempty"`
+	Burstiness          float64                   `json:"burstiness,omitempty"`
+	OverallScore        float64                   `json:"overall_score"`
+	Pass                bool                      `json:"pass"`
+	Issues              []QualityIssue            `json:"issues"`
+	GenerationControl   *QualityGenerationControl `json:"generation_control,omitempty"`
+}
+
+type QualityGenerationControl struct {
+	AttemptCount      int      `json:"attempt_count"`
+	MaxAttempts       int      `json:"max_attempts"`
+	State             string   `json:"state"`
+	Paused            bool     `json:"paused"`
+	RecommendedAction string   `json:"recommended_action,omitempty"`
+	LastIssues        []string `json:"last_issues,omitempty"`
 }
 
 type QualityIssue struct {

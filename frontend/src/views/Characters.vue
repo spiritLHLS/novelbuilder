@@ -63,8 +63,11 @@
         <!-- Relationship Graph -->
         <el-card shadow="hover" style="margin-top: 20px;">
           <template #header>
-            <div class="card-header">
-              <span>角色关系图谱</span>
+            <div class="card-header graph-header">
+              <div class="graph-title-group">
+                <span>角色关系图谱</span>
+                <span v-if="maxTimelineChapter > 1" class="graph-subtitle">当前显示到第 {{ timelineChapter }} 章</span>
+              </div>
               <div class="graph-controls">
                 <el-button size="small" @click="graphFit">适应窗口</el-button>
                 <el-button size="small" @click="graphZoomIn">放大</el-button>
@@ -73,6 +76,15 @@
               </div>
             </div>
           </template>
+          <div v-if="maxTimelineChapter > 1" class="graph-timeline">
+            <div class="graph-timeline-labels">
+              <span>开篇</span>
+              <span>第 {{ timelineChapter }} 章</span>
+              <span>第 {{ maxTimelineChapter }} 章</span>
+            </div>
+            <el-slider v-model="timelineChapter" :min="1" :max="maxTimelineChapter" :step="1" show-stops />
+            <div class="graph-timeline-note">关系会按章节首次出现顺序逐步展开，避免整书静态关系一次性挤在一起。</div>
+          </div>
           <div ref="cyContainer" class="cy-container"></div>
         </el-card>
       </el-col>
@@ -172,7 +184,7 @@
 import { ref, onMounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { characterApi } from '@/api'
+import { characterApi, outlineApi, charInteractionApi } from '@/api'
 import cytoscape from 'cytoscape'
 import { renderRichText } from '@/utils/richText'
 
@@ -182,11 +194,15 @@ const cyContainer = ref<HTMLElement | null>(null)
 let cy: any = null
 
 const characters = ref<any[]>([])
+const outlines = ref<any[]>([])
+const interactions = ref<any[]>([])
 const selected = ref<any>(null)
 const editMode = ref(false)
 const showCreateDialog = ref(false)
 const showEditDlg = ref(false)
 const creating = ref(false)
+const timelineChapter = ref(1)
+const maxTimelineChapter = ref(1)
 
 const createForm = ref({ name: '', role: 'supporting', backstory: '', personality_str: '' })
 const editForm = ref<any>({})
@@ -202,12 +218,90 @@ onMounted(fetchChars)
 
 async function fetchChars() {
   try {
-    const res = await characterApi.list(projectId)
-    characters.value = res.data.data || []
+    const [charRes, outlineRes, interactionRes] = await Promise.all([
+      characterApi.list(projectId),
+      outlineApi.list(projectId).catch(() => ({ data: { data: [] } })),
+      charInteractionApi.list(projectId).catch(() => ({ data: { data: [] } })),
+    ])
+    characters.value = charRes.data.data || []
+    outlines.value = outlineRes.data.data || []
+    interactions.value = interactionRes.data.data || []
+    maxTimelineChapter.value = computeTimelineMax()
+    timelineChapter.value = Math.max(1, maxTimelineChapter.value)
     buildGraph()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.error ?? '加载角色列表失败')
   }
+}
+
+function extractOutlineCharacters(outline: any): string[] {
+  const content = outline?.content && typeof outline.content === 'object' ? outline.content : {}
+  if (Array.isArray(content.involved_characters)) {
+    return content.involved_characters.map((item: unknown) => String(item).trim()).filter(Boolean)
+  }
+  if (Array.isArray(content.characters)) {
+    return content.characters.map((item: unknown) => String(item).trim()).filter(Boolean)
+  }
+  if (typeof content.characters === 'string') {
+    return content.characters.split(/[，,、]/).map((item: string) => item.trim()).filter(Boolean)
+  }
+  return []
+}
+
+function computeTimelineMax(): number {
+  let maxChapter = 1
+  outlines.value.forEach((outline: any, index: number) => {
+    const chapterNum = Number(outline?.order_num) || index + 1
+    if (chapterNum > maxChapter) maxChapter = chapterNum
+  })
+  interactions.value.forEach((interaction: any) => {
+    const firstMeet = Number(interaction?.first_meet_chapter) || 0
+    const lastInteract = Number(interaction?.last_interact_chapter) || 0
+    if (firstMeet > maxChapter) maxChapter = firstMeet
+    if (lastInteract > maxChapter) maxChapter = lastInteract
+  })
+  return Math.max(1, maxChapter)
+}
+
+function computeFirstAppearanceMap(): Map<string, number> {
+  const result = new Map<string, number>()
+
+  characters.value.forEach((character: any) => {
+    const firstAppearance = Number(character?.profile?.first_appearance_chapter)
+    if (Number.isFinite(firstAppearance) && firstAppearance > 0) {
+      result.set(character.name, firstAppearance)
+    }
+  })
+
+  outlines.value
+    .slice()
+    .sort((a: any, b: any) => (Number(a?.order_num) || 0) - (Number(b?.order_num) || 0))
+    .forEach((outline: any, index: number) => {
+      const chapterNum = Number(outline?.order_num) || index + 1
+      extractOutlineCharacters(outline).forEach((name) => {
+        const current = result.get(name)
+        if (!current || chapterNum < current) {
+          result.set(name, chapterNum)
+        }
+      })
+    })
+
+  const idToName = new Map(characters.value.map((character: any) => [character.id, character.name]))
+  interactions.value.forEach((interaction: any) => {
+    const firstMeet = Number(interaction?.first_meet_chapter) || 0
+    if (!firstMeet) return
+    const names = [interaction?.char_a_name, interaction?.char_b_name]
+      .map((name: unknown, idx: number) => String(name || idToName.get(idx === 0 ? interaction?.char_a_id : interaction?.char_b_id) || '').trim())
+      .filter(Boolean)
+    names.forEach((name) => {
+      const current = result.get(name)
+      if (!current || firstMeet < current) {
+        result.set(name, firstMeet)
+      }
+    })
+  })
+
+  return result
 }
 
 function selectChar(c: any) {
@@ -306,45 +400,70 @@ async function deleteChar() {
 function buildGraph() {
   nextTick(() => {
     if (!cyContainer.value) return
+    const visibleChapter = Math.max(1, timelineChapter.value || maxTimelineChapter.value || 1)
+    const firstAppearanceMap = computeFirstAppearanceMap()
+    const charById = new Map(characters.value.map((character: any) => [character.id, character]))
+    const charByName = new Map(characters.value.map((character: any) => [character.name, character]))
+
+    const visibleCharacters = characters.value.filter((character: any) => {
+      if (maxTimelineChapter.value <= 1) return true
+      const firstAppearance = firstAppearanceMap.get(character.name) || Number(character?.profile?.first_appearance_chapter) || 1
+      return firstAppearance <= visibleChapter
+    })
+    const visibleIds = new Set(visibleCharacters.map((character: any) => character.id))
+
     const relationMap = new Map<string, { source: string; target: string; labels: Set<string> }>()
 
-    const nodes = characters.value.map(c => {
-      const relationCount = c.profile?.relationships ? Object.keys(c.profile.relationships).length : 0
-      return {
-        data: {
-          id: c.id,
-          label: c.name,
-          role: c.role_type,
-          weight: Math.max(1, relationCount),
-        },
+    interactions.value.forEach((interaction: any) => {
+      const firstMeet = Number(interaction?.first_meet_chapter) || 1
+      if (maxTimelineChapter.value > 1 && firstMeet > visibleChapter) return
+      const source = String(interaction?.char_a_id || '')
+      const target = String(interaction?.char_b_id || '')
+      if (!source || !target || !visibleIds.has(source) || !visibleIds.has(target)) return
+      const key = `${source}:${target}`
+      const entry = relationMap.get(key) || { source, target, labels: new Set<string>() }
+      const relationText = String(interaction?.relationship || '').trim()
+      if (relationText) {
+        entry.labels.add(relationText)
       }
+      relationMap.set(key, entry)
     })
 
-    characters.value.forEach(c => {
-      if (c.profile?.relationships) {
-        Object.entries(c.profile.relationships).forEach(([targetName, rel]) => {
-          const target = characters.value.find(t => t.name === targetName)
-          if (target) {
-            const [source, destination] = [c.id, target.id].sort()
-            const key = `${source}:${destination}`
-            const entry = relationMap.get(key) || {
-              source,
-              target: destination,
-              labels: new Set<string>(),
-            }
-            const relationText = String(rel || '').trim()
-            if (relationText) {
-              if (c.id === source) {
-                entry.labels.add(relationText)
-              } else {
-                entry.labels.add(relationText)
-              }
-            }
-            relationMap.set(key, entry)
-          }
-        })
-      }
+    visibleCharacters.forEach((character: any) => {
+      if (!character.profile?.relationships) return
+      Object.entries(character.profile.relationships).forEach(([targetName, rel]) => {
+        const target = charByName.get(targetName)
+        if (!target || !visibleIds.has(target.id)) return
+        const relationText = String(rel || '').trim()
+        const firstMeet = Math.min(
+          firstAppearanceMap.get(character.name) || Number(character?.profile?.first_appearance_chapter) || 1,
+          firstAppearanceMap.get(target.name) || Number(target?.profile?.first_appearance_chapter) || 1,
+        )
+        if (maxTimelineChapter.value > 1 && firstMeet > visibleChapter) return
+        const [source, destination] = [character.id, target.id].sort()
+        const key = `${source}:${destination}`
+        const entry = relationMap.get(key) || { source, target: destination, labels: new Set<string>() }
+        if (relationText) {
+          entry.labels.add(relationText)
+        }
+        relationMap.set(key, entry)
+      })
     })
+
+    const relationCountById = new Map<string, number>()
+    relationMap.forEach((edge) => {
+      relationCountById.set(edge.source, (relationCountById.get(edge.source) || 0) + 1)
+      relationCountById.set(edge.target, (relationCountById.get(edge.target) || 0) + 1)
+    })
+
+    const nodes = visibleCharacters.map((character: any) => ({
+      data: {
+        id: character.id,
+        label: character.name,
+        role: character.role_type,
+        weight: Math.max(1, relationCountById.get(character.id) || 0),
+      },
+    }))
 
     const edges = Array.from(relationMap.values()).map((edge, index) => ({
       data: {
@@ -505,19 +624,20 @@ function graphZoomOut() {
 }
 function graphRelayout() {
   if (cy) {
+    const visibleNodeCount = cy.nodes().length
     cy.layout({
       name: 'cose',
       animate: true,
       animationDuration: 500,
       fit: true,
-      padding: characters.value.length > 12 ? 90 : 70,
+      padding: visibleNodeCount > 12 ? 90 : 70,
       nodeDimensionsIncludeLabels: true,
-      componentSpacing: characters.value.length > 12 ? 180 : 120,
+      componentSpacing: visibleNodeCount > 12 ? 180 : 120,
       nodeRepulsion: (node: any) => node.connectedEdges().length > 3 ? 26000 : 18000,
       idealEdgeLength: () => cy.edges().length > 14 ? 240 : 190,
       edgeElasticity: () => 140,
       gravity: 0.08,
-      numIter: characters.value.length > 12 ? 1500 : 1000,
+      numIter: visibleNodeCount > 12 ? 1500 : 1000,
       nodeOverlap: 120,
       randomize: true,
       initialTemp: 200,
@@ -527,7 +647,7 @@ function graphRelayout() {
   }
 }
 
-watch(() => characters.value, buildGraph, { deep: true })
+watch([characters, outlines, interactions, timelineChapter], buildGraph, { deep: true })
 </script>
 
 <style scoped>
@@ -535,6 +655,9 @@ watch(() => characters.value, buildGraph, { deep: true })
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
+.graph-header { gap: 16px; align-items: flex-start; }
+.graph-title-group { display: flex; flex-direction: column; gap: 4px; }
+.graph-subtitle { color: var(--nb-text-secondary); font-size: 12px; }
 .char-list-card :deep(.el-card__body) { max-height: 60vh; overflow-y: auto; }
 .char-item { padding: 12px; cursor: pointer; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }
 .char-item:hover { background: rgba(64,158,255,0.1); }
@@ -546,6 +669,9 @@ watch(() => characters.value, buildGraph, { deep: true })
 .text-content { color: var(--nb-text-secondary); line-height: 1.8; white-space: pre-wrap; }
 .rich-text :deep(p) { margin: 0 0 6px; }
 .rel-item { padding: 4px 0; color: var(--nb-text-secondary); }
+.graph-timeline { margin-bottom: 16px; padding: 12px 14px; background: rgba(64, 158, 255, 0.08); border: 1px solid rgba(64, 158, 255, 0.18); border-radius: 10px; }
+.graph-timeline-labels { display: flex; justify-content: space-between; color: var(--nb-text-secondary); font-size: 12px; margin-bottom: 8px; }
+.graph-timeline-note { color: var(--nb-text-secondary); font-size: 12px; line-height: 1.5; margin-top: 8px; }
 .cy-container { width: 100%; height: 600px; background: radial-gradient(circle at top, rgba(57,91,125,0.24), rgba(12,16,24,0.92) 60%); border: 1px solid var(--nb-card-border); border-radius: 8px; }
 .graph-controls { display: flex; gap: 4px; }
 </style>

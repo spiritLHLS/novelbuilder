@@ -34,6 +34,22 @@ logger = logging.getLogger("python-agent")
 # Suppress benign Neo4j schema-discovery warnings (empty DB, missing labels/props)
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
+
+def _parse_allowed_origins() -> list[str]:
+    raw = os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000,http://127.0.0.1:3000",
+    ).strip()
+    if raw == "*":
+        return ["*"]
+
+    origins: list[str] = []
+    for item in raw.split(","):
+        origin = item.strip()
+        if origin and origin not in origins:
+            origins.append(origin)
+    return origins or ["http://localhost:5173", "http://127.0.0.1:5173"]
+
 # ── DB connection pool (for legacy analyze endpoint) ──────────────────────────
 _db_pool = None
 
@@ -80,6 +96,7 @@ def get_qdrant():
 # For production use Redis; this suffices for single-container deployment.
 _agent_sessions: dict[str, dict] = {}
 _SESSION_TTL_SECONDS = 3600  # 1 hour
+_SESSION_CLEANUP_INTERVAL_SECONDS = int(os.getenv("AGENT_SESSION_CLEANUP_INTERVAL_SECONDS", "300"))
 _session_lock = asyncio.Lock()
 
 
@@ -104,9 +121,19 @@ async def _cleanup_expired_sessions() -> None:
         for bid in batch_delete:
             _batch_sessions.pop(bid, None)
 
+
+async def _session_cleanup_loop() -> None:
+    while True:
+        await asyncio.sleep(max(30, _SESSION_CLEANUP_INTERVAL_SECONDS))
+        try:
+            await _cleanup_expired_sessions()
+        except Exception as exc:
+            logger.warning("session cleanup loop failed: %s", repr(exc), exc_info=True)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Agent service starting up...")
+    cleanup_task = asyncio.create_task(_session_cleanup_loop())
     # Warm up Neo4j schema
     try:
         neo4j = get_neo4j()
@@ -116,6 +143,11 @@ async def lifespan(app: FastAPI):
         logger.warning("Neo4j schema init failed (may retry): %s", repr(exc), exc_info=True)
     yield
     logger.info("Agent service shutting down...")
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
     # Close Neo4j driver
     try:
         if _neo4j_client is not None:
@@ -131,7 +163,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="NovelBuilder Agent Service", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_parse_allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -744,34 +776,52 @@ async def graph_sync_project(project_id: str):
 
         # Batch load world constitution rules (single query)
         cur.execute("""
-            SELECT jsonb_array_elements_text(immutable_rules) AS rule
-            FROM world_bible_constitutions WHERE project_id = %s LIMIT 1
+            SELECT CASE
+                     WHEN jsonb_typeof(elem) = 'object' THEN COALESCE(elem->>'rule', '')
+                     ELSE elem #>> '{}'
+                   END AS rule
+            FROM world_bible_constitutions,
+                 jsonb_array_elements(immutable_rules) AS elem
+            WHERE project_id = %s
         """, (project_id,))
         for i, r in enumerate(cur.fetchall()):
             rule_id = f"{project_id}:rule:imm:{i}"
-            await neo4j.upsert_rule(
-                project_id=project_id,
-                rule_id=rule_id,
-                content=r["rule"],
-                immutable=True,
-                priority=max(1, 10 - i),
-            )
-            synced["rules"] += 1
+            try:
+                await neo4j.upsert_rule(
+                    project_id=project_id,
+                    rule_id=rule_id,
+                    content=r["rule"],
+                    immutable=True,
+                    priority=max(1, 10 - i),
+                )
+                synced["rules"] += 1
+            except Exception as exc:
+                logger.warning("graph sync: failed to upsert immutable rule %s: %s", rule_id, exc)
+                synced["errors"].append(f"immutable rule {rule_id}: {exc}")
 
         cur.execute("""
-            SELECT jsonb_array_elements_text(mutable_rules) AS rule
-            FROM world_bible_constitutions WHERE project_id = %s LIMIT 1
+            SELECT CASE
+                     WHEN jsonb_typeof(elem) = 'object' THEN COALESCE(elem->>'rule', '')
+                     ELSE elem #>> '{}'
+                   END AS rule
+            FROM world_bible_constitutions,
+                 jsonb_array_elements(mutable_rules) AS elem
+            WHERE project_id = %s
         """, (project_id,))
         for i, r in enumerate(cur.fetchall()):
             rule_id = f"{project_id}:rule:mut:{i}"
-            await neo4j.upsert_rule(
-                project_id=project_id,
-                rule_id=rule_id,
-                content=r["rule"],
-                immutable=False,
-                priority=max(1, 5 - i),
-            )
-            synced["rules"] += 1
+            try:
+                await neo4j.upsert_rule(
+                    project_id=project_id,
+                    rule_id=rule_id,
+                    content=r["rule"],
+                    immutable=False,
+                    priority=max(1, 5 - i),
+                )
+                synced["rules"] += 1
+            except Exception as exc:
+                logger.warning("graph sync: failed to upsert mutable rule %s: %s", rule_id, exc)
+                synced["errors"].append(f"mutable rule {rule_id}: {exc}")
 
     finally:
         put_db(conn)

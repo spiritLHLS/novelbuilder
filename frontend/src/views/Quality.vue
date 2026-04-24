@@ -113,6 +113,17 @@
         <el-table-column label="反AI" width="80">
           <template #default="{ row }">{{ row.scores?.anti_ai?.toFixed(1) || '-' }}</template>
         </el-table-column>
+        <el-table-column label="重试状态" width="120">
+          <template #default="{ row }">
+            <el-tag v-if="row.generation_control?.paused" type="danger">
+              暂停 {{ row.generation_control.attempt_count }}/{{ row.generation_control.max_attempts }}
+            </el-tag>
+            <el-tag v-else-if="(row.generation_control?.attempt_count || 0) > 1" type="warning">
+              重试 {{ row.generation_control.attempt_count }}/{{ row.generation_control.max_attempts }}
+            </el-tag>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="AI概率" width="100">
           <template #default="{ row }">
             <el-progress :percentage="(row.ai_probability || 0) * 100" :stroke-width="6"
@@ -162,7 +173,12 @@ const allIssues = computed(() => {
   const issues: any[] = []
   chapterReports.value.forEach(r => {
     (r.issues || []).forEach((issue: any) => {
-      issues.push({ ...issue, chapter: r.chapter_number })
+      issues.push({
+        ...issue,
+        chapter: r.chapter_number,
+        description: issue.message || issue.description || '-',
+        role: issue.role || issue.type || '-',
+      })
     })
   })
   return issues
@@ -284,9 +300,9 @@ onMounted(fetchReports)
 async function fetchReports() {
   try {
     const chapRes = await chapterApi.list(projectId)
-    const chapters = (chapRes.data.data || []).sort((a: any, b: any) => a.chapter_number - b.chapter_number)
+    const chapters = (chapRes.data.data || []).sort((a: any, b: any) => a.chapter_num - b.chapter_num)
     chapterReports.value = chapters.map((ch: any) => ({
-      chapter_number: ch.chapter_number,
+      chapter_number: ch.chapter_num,
       title: ch.title,
       overall_score: ch.quality_report?.overall_score,
       scores: ch.quality_report?.scores,
@@ -294,6 +310,7 @@ async function fetchReports() {
       issue_count: ch.quality_report?.issues?.length || 0,
       ai_probability: ch.quality_report?.ai_probability,
       burstiness: ch.quality_report?.burstiness,
+      generation_control: ch.quality_report?.generation_control,
     }))
   } catch { /* empty */ }
 }

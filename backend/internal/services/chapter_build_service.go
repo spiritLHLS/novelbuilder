@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -17,6 +16,8 @@ import (
 )
 
 func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chapterID, content string) {
+	ctx = contextWithLLMSession(ctx, nil, fmt.Sprintf("chapter_state:%s", chapterID))
+
 	// ── 1. Fetch all characters and active foreshadowings in two queries (no N+1) ──
 	type charInfo struct {
 		id   string
@@ -812,27 +813,22 @@ func (s *ChapterService) humanizeContent(ctx context.Context, text string, inten
 		"text":      text,
 		"intensity": intensity,
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sidecarURL+"/humanize", bytes.NewReader(body))
-	if err != nil {
-		return text, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(req)
+	raw, err := doRetriableJSONRequest(ctx, s.httpClient, s.logger, "POST /humanize", func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sidecarURL+"/humanize", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		return text, fmt.Errorf("humanizer unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		return text, fmt.Errorf("humanizer returned %d: %s", resp.StatusCode, string(raw))
 	}
 
 	var result struct {
 		Text string `json:"text"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(raw, &result); err != nil {
 		return text, fmt.Errorf("decode humanizer response: %w", err)
 	}
 	if result.Text == "" {

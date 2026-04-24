@@ -402,9 +402,20 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage, type FormInstance, type UploadFile } from 'element-plus'
-import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, projectApi, batchWriteApi } from '@/api'
+import { ElMessage, type FormInstance } from 'element-plus'
+import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, batchWriteApi } from '@/api'
 import { renderRichText } from '@/utils/richText'
+import {
+  blueprintHasData as hasData,
+  extractBlueprintFieldText,
+  formatBlueprintDate as formatDate,
+  loadBlueprintGenerationDefaults,
+  parseGlobalTimeline,
+  parseMasterOutline,
+  parseRelationGraph,
+  useBlueprintTransfer,
+  type BlueprintGenerationForm,
+} from '@/views/blueprint/blueprintHelpers'
 import { Download, Upload, UploadFilled, Finished } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -451,12 +462,6 @@ const pagedVolumeOutlines = computed(() => {
   return volumeOutlines.value.slice(start, start + outlinePageSize)
 })
 
-// Import/Export state
-const showImportDialog = ref(false)
-const importing = ref(false)
-const importFileList = ref<UploadFile[]>([])
-const importFileContent = ref<any>(null)
-
 // Chapter outlines view dialog
 const showOutlinesDialog = ref(false)
 const viewingVolumeNum = ref<number | null>(null)
@@ -473,7 +478,7 @@ const volumeOutlines = computed(() => {
 const dialogVisible = ref(false)
 const isRegenerate = ref(false)
 const genFormRef = ref<FormInstance>()
-const genForm = ref({ volume_count: 4, chapter_words_min: 2000, chapter_words_max: 3500, idea: '' })
+const genForm = ref<BlueprintGenerationForm>({ volume_count: 4, chapter_words_min: 2000, chapter_words_max: 3500, idea: '' })
 const genFormRules = {
   volume_count: [
     { required: true, message: '请指定卷数', trigger: 'change' },
@@ -490,29 +495,6 @@ function stopPolling() {
   }
 }
 
-/** Load project defaults into the generation form. Called on mount and before opening the dialog. */
-async function loadProjectDefaults() {
-  try {
-    const res = await projectApi.get(projectId)
-    const p = res?.data?.data
-    if (p) {
-      const targetWords = p.target_words || 0
-      const chapterWords = p.chapter_words || 3000
-      let vc = genForm.value.volume_count
-      let wMin = genForm.value.chapter_words_min
-      let wMax = genForm.value.chapter_words_max
-      if (targetWords > 0) {
-        vc = Math.max(4, Math.round(targetWords / 100000))
-      }
-      if (chapterWords > 0) {
-        wMin = Math.round(chapterWords * 2 / 3)
-        wMax = Math.round(chapterWords * 4 / 3)
-      }
-      genForm.value = { volume_count: vc, chapter_words_min: wMin, chapter_words_max: wMax, idea: '' }
-    }
-  } catch { /* keep defaults */ }
-}
-
 /** Direct "one-click" generate from the inline panel (no dialog confirmation needed). */
 async function quickGenerate() {
   const valid = await genFormRef.value?.validate().catch(() => false)
@@ -527,7 +509,7 @@ async function openGenerateDialog(regen: boolean) {
   if (regen && volumes.value.length > 0) {
     genForm.value = { ...genForm.value, volume_count: volumes.value.length, idea: '' }
   } else {
-    await loadProjectDefaults()
+    genForm.value = await loadBlueprintGenerationDefaults(projectId, genForm.value)
   }
   dialogVisible.value = true
 }
@@ -582,131 +564,6 @@ const blueprintStatusLabel = computed(() => {
   }
   return map[currentBlueprint.value?.status] || currentBlueprint.value?.status
 })
-
-function formatDate(d: string) {
-  return d ? new Date(d).toLocaleString('zh-CN') : '-'
-}
-
-/** Returns true only when a blueprint JSONB field has meaningful content. */
-function hasData(val: any): boolean {
-  if (val == null || val === undefined) return false
-  if (typeof val === 'string') return val.trim() !== ''
-  if (Array.isArray(val)) return val.length > 0
-  if (typeof val === 'object') {
-    // 如果有raw_content，尝试解析
-    if (val.raw_content) {
-      try {
-        const parsed = JSON.parse(val.raw_content)
-        return parsed != null && Object.keys(parsed).length > 0
-      } catch {
-        return String(val.raw_content).trim() !== ''
-      }
-    }
-    return Object.keys(val).length > 0
-  }
-  return Boolean(val)
-}
-
-function extractBlueprintFieldText(
-  val: any,
-  field: 'master_outline' | 'relation_graph' | 'global_timeline',
-): string {
-  if (val == null) return ''
-  if (typeof val === 'string') return val
-  if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
-    try {
-      const parsed = JSON.parse(val.raw_content)
-      if (parsed && typeof parsed[field] === 'string') {
-        return parsed[field]
-      }
-      return String(val.raw_content)
-    } catch {
-      return String(val.raw_content)
-    }
-  }
-  return JSON.stringify(val, null, 2)
-}
-
-function parseMasterOutline(val: any): { vol: string; desc: string }[] {
-  if (val == null) return []
-  let text = ''
-  if (typeof val === 'string') {
-    text = val
-  } else if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
-    // raw_content可能是完整的blueprint JSON，尝试解析
-    try {
-      const parsed = JSON.parse(val.raw_content)
-      if (parsed && typeof parsed.master_outline === 'string') {
-        text = parsed.master_outline
-      } else {
-        text = String(val.raw_content)
-      }
-    } catch {
-      text = String(val.raw_content)
-    }
-  } else {
-    return [{ vol: '', desc: JSON.stringify(val, null, 2) }]
-  }
-  return text.split(/。\s*/).filter((s: string) => s.trim()).map((p: string) => {
-    const ci = p.indexOf('：') !== -1 ? p.indexOf('：') : p.indexOf(':')
-    if (ci > 0) return { vol: p.slice(0, ci).trim(), desc: p.slice(ci + 1).trim() }
-    return { vol: '', desc: p.trim() }
-  })
-}
-
-function parseRelationGraph(val: any): { pair: string; desc: string }[] {
-  if (val == null) return []
-  let text = ''
-  if (typeof val === 'string') {
-    text = val
-  } else if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
-    // raw_content可能是完整的blueprint JSON，尝试解析
-    try {
-      const parsed = JSON.parse(val.raw_content)
-      if (parsed && typeof parsed.relation_graph === 'string') {
-        text = parsed.relation_graph
-      } else {
-        text = String(val.raw_content)
-      }
-    } catch {
-      text = String(val.raw_content)
-    }
-  } else {
-    return [{ pair: '', desc: JSON.stringify(val, null, 2) }]
-  }
-  return text.split(/[;；]\s*/).filter((s: string) => s.trim()).map((p: string) => {
-    const ci = p.indexOf('：') !== -1 ? p.indexOf('：') : p.indexOf(':')
-    if (ci > 0) return { pair: p.slice(0, ci).trim(), desc: p.slice(ci + 1).trim() }
-    return { pair: p.trim(), desc: '' }
-  })
-}
-
-function parseGlobalTimeline(val: any): { point: string; event: string }[] {
-  if (val == null) return []
-  let text = ''
-  if (typeof val === 'string') {
-    text = val
-  } else if (typeof val === 'object' && !Array.isArray(val) && val.raw_content) {
-    // raw_content可能是完整的blueprint JSON，尝试解析
-    try {
-      const parsed = JSON.parse(val.raw_content)
-      if (parsed && typeof parsed.global_timeline === 'string') {
-        text = parsed.global_timeline
-      } else {
-        text = String(val.raw_content)
-      }
-    } catch {
-      text = String(val.raw_content)
-    }
-  } else {
-    return [{ point: '', event: JSON.stringify(val, null, 2) }]
-  }
-  return text.split(/[;；]\s*/).filter((s: string) => s.trim()).map((p: string) => {
-    const ci = p.indexOf('：') !== -1 ? p.indexOf('：') : p.indexOf(':')
-    if (ci > 0) return { point: p.slice(0, ci).trim(), event: p.slice(ci + 1).trim() }
-    return { point: p.trim(), event: '' }
-  })
-}
 
 function openBlueprintEditor() {
   if (!currentBlueprint.value) return
@@ -782,7 +639,7 @@ onMounted(async () => {
   await fetchAll()
   // Pre-fill the inline generation form with project defaults (used when no blueprint exists yet).
   if (!currentBlueprint.value) {
-    await loadProjectDefaults()
+    genForm.value = await loadBlueprintGenerationDefaults(projectId, genForm.value)
   }
   // If a generation is already in progress (e.g., after page refresh) resume polling.
   if (currentBlueprint.value?.status === 'generating') {
@@ -795,66 +652,6 @@ onMounted(async () => {
     currentBlueprint.value = null
   }
 })
-
-// ── Import/Export ─────────────────────────────────────────────────────────────
-
-async function exportBlueprint() {
-  try {
-    const res = await blueprintApi.export(projectId)
-    const data = res?.data?.data
-    if (!data) {
-      ElMessage.error('导出失败：无数据')
-      return
-    }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `blueprint-${projectId}-${Date.now()}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-    ElMessage.success('蓝图已导出')
-  } catch {
-    ElMessage.error('导出失败')
-  }
-}
-
-function handleImportFileChange(file: UploadFile) {
-  if (!file.raw) return
-  const reader = new FileReader()
-  reader.onload = (e) => {
-    try {
-      const content = JSON.parse(e.target?.result as string)
-      importFileContent.value = content
-      importFileList.value = [file]
-    } catch {
-      ElMessage.error('JSON文件格式错误')
-      importFileList.value = []
-    }
-  }
-  reader.readAsText(file.raw)
-}
-
-async function confirmImport() {
-  if (!importFileContent.value) {
-    ElMessage.warning('请先选择文件')
-    return
-  }
-  importing.value = true
-  try {
-    await blueprintApi.import(projectId, importFileContent.value)
-    ElMessage.success('蓝图已导入')
-    showImportDialog.value = false
-    importFileList.value = []
-    importFileContent.value = null
-    // Reload data
-    await fetchAll()
-  } catch {
-    ElMessage.error('导入失败')
-  } finally {
-    importing.value = false
-  }
-}
 
 onBeforeUnmount(stopPolling)
 
@@ -915,6 +712,15 @@ async function doGenerate() {
   }
 }
 
+const {
+  showImportDialog,
+  importing,
+  importFileList,
+  exportBlueprint,
+  handleImportFileChange,
+  confirmImport,
+} = useBlueprintTransfer(projectId, fetchAll)
+
 async function submitReview() {
   try {
     await blueprintApi.submitReview(projectId, currentBlueprint.value.id)
@@ -944,7 +750,7 @@ async function approveBlueprint() {
           const response = await batchWriteApi.generateByVolume(projectId, firstVolume.id)
           if (response.data?.batch_id) {
             ElMessage.success({
-              message: `已启动第1卷 ${response.data.total} 章高质量Agent生成，可在"Agent生成"页面查看进度`,
+              message: `已创建第1卷 ${response.data.total} 章生成任务，可在“任务队列”页面查看进度`,
               duration: 8000
             })
           }

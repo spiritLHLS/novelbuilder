@@ -163,6 +163,7 @@ func (h *Handler) AgentRun(c *gin.Context) {
 			req.LLMConfig["rpm_limit"] = profile.RPMLimit
 		}
 	}
+	req.LLMConfig = injectTaskSession(req.LLMConfig, taskSessionID(req.TaskType, projectID, req.ChapterNum, "interactive"))
 
 	sessionID, err := h.sidecar.RunAgent(c.Request.Context(), projectID, req)
 	if err != nil {
@@ -417,6 +418,8 @@ func (h *Handler) AgentBatchRun(c *gin.Context) {
 	if req.OutlineHints == nil {
 		req.OutlineHints = map[string]string{}
 	}
+	batchRange := fmt.Sprintf("%d-%d", req.ChapterNums[0], req.ChapterNums[len(req.ChapterNums)-1])
+	llmCfg = injectTaskSession(llmCfg, taskSessionID("batch_generate_chapter", projectID, nil, batchRange))
 
 	batchReq := models.BatchAgentRunRequest{
 		ChapterNums:  req.ChapterNums,

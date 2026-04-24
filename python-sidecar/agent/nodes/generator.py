@@ -9,7 +9,7 @@ import os
 from typing import Any
 
 from agent.state import AgentState
-from llm_utils import build_llm
+from llm_utils import ainvoke_text
 
 logger = logging.getLogger(__name__)
 
@@ -78,17 +78,25 @@ def _build_prompt(state: AgentState) -> str:
 
 async def generator_node(state: AgentState) -> dict[str, Any]:
     """Call LLM and generate the chapter draft."""
-    llm_cfg = state.get("llm_config", {})
-    llm = build_llm(llm_cfg, default_temperature=0.72, default_max_tokens=4096)
+    llm_cfg = dict(state.get("llm_config", {}))
+    llm_cfg.setdefault("temperature", 0.72)
+    llm_cfg.setdefault("max_tokens", 4096)
 
     prompt = _build_prompt(state)
 
     try:
-        resp = await llm.ainvoke([
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": prompt},
-        ])
-        draft = resp.content.strip()
+        draft, _ = await ainvoke_text(
+            prompt,
+            llm_cfg,
+            system_prompt=_SYSTEM,
+            session_id=llm_cfg.get("session_id") or None,
+            task_name="agent_generate_chapter",
+            extra_metadata={
+                "task_type": state.get("task_type", "generate_chapter"),
+                "chapter_num": state.get("chapter_num") or "",
+            },
+        )
+        draft = draft.strip()
     except Exception as exc:
         logger.error("Generator LLM call failed: %s", repr(exc), exc_info=True)
         return {"error": f"LLM generation failed: {exc}", "draft": ""}
@@ -108,15 +116,22 @@ async def _generate_summary(text: str, cfg: dict) -> str:
     if not text:
         return ""
     # Use a cheaper/faster model for summaries
-    summary_cfg = {**cfg, "model": cfg.get("summary_model", cfg.get("model", "gpt-4o-mini")),
-                   "max_tokens": 256, "temperature": 0.3}
-    llm = build_llm(summary_cfg, default_temperature=0.3, default_max_tokens=256)
+    summary_cfg = {
+        **cfg,
+        "model": cfg.get("summary_model", cfg.get("model", "gpt-4o-mini")),
+        "max_tokens": 256,
+        "temperature": 0.3,
+    }
+    summary_cfg.pop("session_id", None)
     try:
-        resp = await llm.ainvoke([
-            {"role": "system", "content": _SUMMARY_SYSTEM},
-            {"role": "user", "content": text[:2400]},
-        ])
-        return resp.content.strip()
+        summary, _ = await ainvoke_text(
+            text[:2400],
+            summary_cfg,
+            system_prompt=_SUMMARY_SYSTEM,
+            task_name="agent_generate_summary",
+            use_session_history=False,
+        )
+        return summary.strip()
     except Exception as exc:
         logger.warning("Summary generation failed: %s", repr(exc), exc_info=True)
         # Fallback: first 200 chars

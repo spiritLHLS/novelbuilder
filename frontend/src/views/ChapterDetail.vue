@@ -80,6 +80,16 @@
             </div>
           </template>
 
+          <el-alert
+            v-if="qualityGate"
+            :title="qualityGateTitle"
+            :description="qualityGateDescription"
+            :type="isQualityPaused ? 'error' : qualityReport.pass ? 'success' : 'warning'"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 16px;"
+          />
+
           <div v-if="qualityReport?.scores" class="score-grid">
             <div class="score-item" v-for="(score, role) in qualityReport.scores" :key="role">
               <div class="score-label">{{ roleLabel(role as unknown as string) }}</div>
@@ -121,6 +131,36 @@
           </el-timeline>
           <el-empty v-else description="暂无审核记录" :image-size="60" />
         </el-card>
+
+        <el-card shadow="hover" style="margin-top: 16px;">
+          <template #header>
+            <div class="card-header">
+              <span>最近版本</span>
+              <el-tag size="small" type="info">{{ snapshots.length }}</el-tag>
+            </div>
+          </template>
+          <div v-loading="loadingSnapshots">
+            <div v-for="snapshot in snapshots" :key="snapshot.id" class="snapshot-item">
+              <div class="snapshot-main">
+                <div class="snapshot-title-row">
+                  <strong>V{{ snapshot.version }}</strong>
+                  <el-tag size="small" effect="plain">{{ snapshotSourceLabel(snapshot.source) }}</el-tag>
+                  <el-tag v-if="snapshot.quality_report?.overall_score != null" size="small" type="success">
+                    {{ Number(snapshot.quality_report.overall_score).toFixed(1) }} 分
+                  </el-tag>
+                </div>
+                <div class="snapshot-meta">{{ formatDate(snapshot.created_at) }}</div>
+                <div v-if="snapshot.note" class="snapshot-note">{{ snapshot.note }}</div>
+              </div>
+              <div class="snapshot-actions">
+                <el-button size="small" :loading="restoringSnapshotId === snapshot.id" @click="restoreSnapshot(snapshot)">
+                  恢复此版
+                </el-button>
+              </div>
+            </div>
+            <el-empty v-if="!snapshots.length && !loadingSnapshots" description="暂无版本快照" :image-size="50" />
+          </div>
+        </el-card>
       </el-col>
     </el-row>
 
@@ -143,10 +183,13 @@ const chapterId = route.params.chapterId as string
 const chapter = ref<any>(null)
 const qualityReport = ref<any>(null)
 const reviews = ref<any[]>([])
+const snapshots = ref<any[]>([])
 const checking = ref(false)
 const isEditing = ref(false)
 const saving = ref(false)
 const copying = ref(false)
+const loadingSnapshots = ref(false)
+const restoringSnapshotId = ref('')
 const editTitle = ref('')
 const editContent = ref('')
 
@@ -166,6 +209,32 @@ const statusLabel = computed(() => {
 
 const renderedContent = computed(() => {
   return renderRichText(chapter.value?.content || '')
+})
+
+const qualityGate = computed(() => qualityReport.value?.generation_control || null)
+
+const isQualityPaused = computed(() => Boolean(qualityGate.value?.paused))
+
+const qualityGateTitle = computed(() => {
+  if (!qualityGate.value) return ''
+  if (qualityGate.value.paused) {
+    return `自动重试已暂停（${qualityGate.value.attempt_count}/${qualityGate.value.max_attempts}）`
+  }
+  if ((qualityGate.value.attempt_count || 0) > 1) {
+    return `本章已自动重试 ${qualityGate.value.attempt_count}/${qualityGate.value.max_attempts} 次`
+  }
+  return qualityReport.value?.pass ? '当前版本已通过质量门禁' : '当前版本未通过质量门禁'
+})
+
+const qualityGateDescription = computed(() => {
+  if (!qualityGate.value) return ''
+  if (qualityGate.value.paused) {
+    return '最近几版已保留在下方，恢复其中一个版本后可以继续手动修改，再重新执行质量检查。'
+  }
+  if (Array.isArray(qualityGate.value.last_issues) && qualityGate.value.last_issues.length) {
+    return qualityGate.value.last_issues.join('；')
+  }
+  return qualityGate.value.recommended_action || ''
 })
 
 function formatDate(d: string) {
@@ -200,7 +269,21 @@ async function loadChapter() {
   }
 }
 
-onMounted(loadChapter)
+async function loadSnapshots() {
+  loadingSnapshots.value = true
+  try {
+    const res = await chapterApi.listSnapshots(projectId, chapterId)
+    snapshots.value = res.data.data || []
+  } catch {
+    snapshots.value = []
+  } finally {
+    loadingSnapshots.value = false
+  }
+}
+
+onMounted(async () => {
+  await Promise.all([loadChapter(), loadSnapshots()])
+})
 
 function goBack() {
   router.push({ name: 'chapters', params: { projectId } })
@@ -255,6 +338,7 @@ async function runQualityCheck() {
   try {
     const res = await qualityApi.runCheck(projectId, chapterId)
     qualityReport.value = res.data.data
+    if (chapter.value) chapter.value.quality_report = res.data.data
     ElMessage.success('质量检查完成')
   } catch {
     ElMessage.error('质量检查失败')
@@ -290,12 +374,46 @@ async function saveEdit() {
     editTitle.value = chapter.value.title || ''
     editContent.value = chapter.value.content || ''
     isEditing.value = false
+    await loadSnapshots()
     ElMessage.success('章节已保存')
   } catch (e: any) {
     const msg = e.response?.data?.message || e.response?.data?.error || '保存失败'
     ElMessage.error(msg)
   } finally {
     saving.value = false
+  }
+}
+
+function snapshotSourceLabel(source: string) {
+  const labels: Record<string, string> = {
+    generated: '初次生成',
+    regenerated: '自动重写',
+    before_regenerate: '重写前',
+    before_manual_edit: '手工修改前',
+    before_restore: '恢复前',
+    quality_paused: '暂停快照',
+    after_auto_revise: '自动修订后',
+    before_auto_revise: '自动修订前',
+  }
+  return labels[source] || source || '版本'
+}
+
+async function restoreSnapshot(snapshot: any) {
+  restoringSnapshotId.value = snapshot.id
+  try {
+    const res = await chapterApi.restoreSnapshot(projectId, chapterId, snapshot.id)
+    chapter.value = res.data.data
+    qualityReport.value = chapter.value?.quality_report || null
+    editTitle.value = chapter.value?.title || ''
+    editContent.value = chapter.value?.content || ''
+    isEditing.value = false
+    await loadSnapshots()
+    ElMessage.success('已恢复到所选版本')
+  } catch (e: any) {
+    const msg = e.response?.data?.message || e.response?.data?.error || '恢复版本失败'
+    ElMessage.error(msg)
+  } finally {
+    restoringSnapshotId.value = ''
   }
 }
 
@@ -354,4 +472,11 @@ async function deleteChapter() {
 .issue-item { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; color: var(--nb-text-secondary); font-size: 13px; }
 .review-item { display: flex; align-items: center; gap: 8px; }
 .review-comment { color: #888; font-size: 13px; margin-top: 4px; }
+.snapshot-item { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--nb-divider); }
+.snapshot-item:last-child { border-bottom: none; }
+.snapshot-main { min-width: 0; }
+.snapshot-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.snapshot-meta { color: var(--nb-text-secondary); font-size: 12px; margin-top: 4px; }
+.snapshot-note { color: var(--nb-text-secondary); font-size: 13px; margin-top: 6px; line-height: 1.5; }
+.snapshot-actions { display: flex; align-items: center; }
 </style>

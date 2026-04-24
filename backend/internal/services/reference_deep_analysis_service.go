@@ -62,6 +62,113 @@ type AnalysisJob struct {
 	UpdatedAt               time.Time       `json:"updated_at"`
 }
 
+type constitutionRuleEntry struct {
+	Rule   string `json:"rule"`
+	Reason string `json:"reason"`
+}
+
+func rawJSONToStringSlice(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil
+	}
+	items := make([]string, 0)
+	appendValue := func(value string) {
+		text := strings.TrimSpace(value)
+		if text != "" {
+			items = append(items, text)
+		}
+	}
+	switch v := decoded.(type) {
+	case []interface{}:
+		for _, item := range v {
+			appendValue(fmt.Sprint(item))
+		}
+	case string:
+		normalized := strings.NewReplacer("；", ";", "，", ",", "、", ",").Replace(v)
+		for _, part := range strings.FieldsFunc(normalized, func(r rune) bool { return r == ';' || r == ',' || r == '\n' }) {
+			appendValue(part)
+		}
+	}
+	return items
+}
+
+func mergeConstitutionRuleJSON(existingRaw, incomingRaw json.RawMessage) json.RawMessage {
+	merged := make([]constitutionRuleEntry, 0)
+	indexByRule := map[string]int{}
+	appendRule := func(rule, reason string) {
+		normalizedRule := strings.TrimSpace(rule)
+		if normalizedRule == "" {
+			return
+		}
+		normalizedReason := strings.TrimSpace(reason)
+		key := strings.ToLower(normalizedRule)
+		if idx, ok := indexByRule[key]; ok {
+			if merged[idx].Reason == "" && normalizedReason != "" {
+				merged[idx].Reason = normalizedReason
+			}
+			return
+		}
+		indexByRule[key] = len(merged)
+		merged = append(merged, constitutionRuleEntry{Rule: normalizedRule, Reason: normalizedReason})
+	}
+	mergeRaw := func(raw json.RawMessage) {
+		if len(raw) == 0 {
+			return
+		}
+		var decoded []interface{}
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return
+		}
+		for _, item := range decoded {
+			switch typed := item.(type) {
+			case map[string]interface{}:
+				appendRule(fmt.Sprint(typed["rule"]), fmt.Sprint(typed["reason"]))
+			case string:
+				appendRule(typed, "")
+			default:
+				appendRule(fmt.Sprint(typed), "")
+			}
+		}
+	}
+	mergeRaw(existingRaw)
+	mergeRaw(incomingRaw)
+	if len(merged) == 0 {
+		return json.RawMessage(`[]`)
+	}
+	out, _ := json.Marshal(merged)
+	return out
+}
+
+func mergeStringListJSON(existingRaw, incomingRaw json.RawMessage) json.RawMessage {
+	merged := make([]string, 0)
+	seen := map[string]bool{}
+	appendList := func(items []string) {
+		for _, item := range items {
+			text := strings.TrimSpace(item)
+			if text == "" {
+				continue
+			}
+			key := strings.ToLower(text)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			merged = append(merged, text)
+		}
+	}
+	appendList(rawJSONToStringSlice(existingRaw))
+	appendList(rawJSONToStringSlice(incomingRaw))
+	if len(merged) == 0 {
+		return json.RawMessage(`[]`)
+	}
+	out, _ := json.Marshal(merged)
+	return out
+}
+
 // ── Deep Analysis Service ─────────────────────────────────────────────────────
 
 type ReferenceDeepAnalysisService struct {
@@ -287,104 +394,292 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 		return fmt.Errorf("job %s is not completed (status: %s)", jobID, job.Status)
 	}
 
-	// Import characters — batch insert to avoid N+1 queries.
-	if len(job.ExtractedCharacters) > 2 {
-		var chars []map[string]interface{}
-		if json.Unmarshal(job.ExtractedCharacters, &chars) == nil && len(chars) > 0 {
-			b := &pgx.Batch{}
-			for _, ch := range chars {
-				name, _ := ch["name"].(string)
-				if name == "" {
+	toStringSlice := func(raw any) []string {
+		items := make([]string, 0)
+		switch v := raw.(type) {
+		case []interface{}:
+			for _, item := range v {
+				text := strings.TrimSpace(fmt.Sprint(item))
+				if text != "" {
+					items = append(items, text)
+				}
+			}
+		case []string:
+			for _, item := range v {
+				text := strings.TrimSpace(item)
+				if text != "" {
+					items = append(items, text)
+				}
+			}
+		case string:
+			normalized := strings.NewReplacer("；", ";", "，", ",", "、", ",").Replace(v)
+			for _, part := range strings.FieldsFunc(normalized, func(r rune) bool { return r == ';' || r == ',' || r == '\n' }) {
+				text := strings.TrimSpace(part)
+				if text != "" {
+					items = append(items, text)
+				}
+			}
+		}
+		return items
+	}
+
+	parseConstitutions := func(raw any) (json.RawMessage, json.RawMessage) {
+		immutable := make([]constitutionRuleEntry, 0)
+		mutable := make([]constitutionRuleEntry, 0)
+		seen := map[string]bool{}
+		if rules, ok := raw.([]interface{}); ok {
+			for _, item := range rules {
+				ruleMap, ok := item.(map[string]interface{})
+				if !ok {
 					continue
 				}
-				roleType, _ := ch["role"].(string)
-				if roleType == "" {
-					roleType = "other"
+				rule := strings.TrimSpace(fmt.Sprint(ruleMap["rule"]))
+				if rule == "" {
+					continue
 				}
-				desc, _ := ch["description"].(string)
-				motivation, _ := ch["motivation"].(string)
-				growthArc, _ := ch["growth_arc"].(string)
-				traits, _ := ch["traits"].([]interface{})
-				var traitStrs []string
-				for _, t := range traits {
-					if ts, ok := t.(string); ok {
-						traitStrs = append(traitStrs, ts)
-					}
+				ruleType := strings.ToLower(strings.TrimSpace(fmt.Sprint(ruleMap["type"])))
+				if ruleType != "mutable" {
+					ruleType = "immutable"
 				}
-				// Convert relationships array [{name, description}] → map {name: description}
-				relMap := map[string]string{}
-				if relList, ok := ch["relationships"].([]interface{}); ok {
-					for _, r := range relList {
-						if rm, ok := r.(map[string]interface{}); ok {
-							rName, _ := rm["name"].(string)
-							rDesc, _ := rm["description"].(string)
-							if rName != "" {
-								relMap[rName] = rDesc
-							}
-						}
-					}
+				key := ruleType + ":" + strings.ToLower(rule)
+				if seen[key] {
+					continue
 				}
-				profileData := map[string]interface{}{
-					"backstory":          desc,
-					"personality_traits": traitStrs,
-					"motivation":         motivation,
-					"growth_arc":         growthArc,
-					"relationships":      relMap,
-					"source_ref_id":      job.RefID,
-					"imported_from":      "reference_analysis",
+				seen[key] = true
+				entry := constitutionRuleEntry{
+					Rule:   rule,
+					Reason: strings.TrimSpace(fmt.Sprint(ruleMap["reason"])),
 				}
-				profileJSON, _ := json.Marshal(profileData)
-				b.Queue(
-					`INSERT INTO characters (project_id, name, role_type, profile)
-					 VALUES ($1, $2, $3, $4)
-					 ON CONFLICT (project_id, name) DO UPDATE
-					 SET role_type = EXCLUDED.role_type,
-					     profile   = characters.profile || EXCLUDED.profile,
-					     updated_at = NOW()`,
-					projectID, name, normalizeRole(roleType), profileJSON)
+				if ruleType == "mutable" {
+					mutable = append(mutable, entry)
+				} else {
+					immutable = append(immutable, entry)
+				}
 			}
-			if b.Len() > 0 {
-				br := s.db.SendBatch(ctx, b)
-				for i := 0; i < b.Len(); i++ {
-					if _, dbErr := br.Exec(); dbErr != nil {
-						s.logger.Warn("import character batch failed", zap.Int("idx", i), zap.Error(dbErr))
+		}
+		immutableJSON, _ := json.Marshal(immutable)
+		mutableJSON, _ := json.Marshal(mutable)
+		return immutableJSON, mutableJSON
+	}
+
+	var outlineNodes []map[string]interface{}
+	firstAppearanceByName := map[string]int{}
+	if len(job.ExtractedOutline) > 2 && json.Unmarshal(job.ExtractedOutline, &outlineNodes) == nil {
+		chapterOrder := 0
+		for _, node := range outlineNodes {
+			level, _ := node["level"].(string)
+			if level == "meso" {
+				chapterOrder++
+			}
+			if chapterOrder == 0 {
+				continue
+			}
+			for _, name := range toStringSlice(node["involved_characters"]) {
+				if existing, ok := firstAppearanceByName[name]; !ok || chapterOrder < existing {
+					firstAppearanceByName[name] = chapterOrder
+				}
+			}
+		}
+		if len(firstAppearanceByName) == 0 {
+			order := 0
+			for _, node := range outlineNodes {
+				order++
+				for _, name := range toStringSlice(node["involved_characters"]) {
+					if existing, ok := firstAppearanceByName[name]; !ok || order < existing {
+						firstAppearanceByName[name] = order
 					}
 				}
-				br.Close()
 			}
 		}
 	}
 
-	// Import world bible (merge into existing or create)
+	var chars []map[string]interface{}
+	if len(job.ExtractedCharacters) > 2 {
+		_ = json.Unmarshal(job.ExtractedCharacters, &chars)
+	}
+
+	if len(chars) > 0 {
+		b := &pgx.Batch{}
+		for _, ch := range chars {
+			name, _ := ch["name"].(string)
+			if name == "" {
+				continue
+			}
+			roleType, _ := ch["role"].(string)
+			if roleType == "" {
+				roleType = "other"
+			}
+			desc, _ := ch["description"].(string)
+			motivation, _ := ch["motivation"].(string)
+			growthArc, _ := ch["growth_arc"].(string)
+			traitStrs := toStringSlice(ch["traits"])
+			relMap := map[string]string{}
+			if relList, ok := ch["relationships"].([]interface{}); ok {
+				for _, relItem := range relList {
+					if rel, ok := relItem.(map[string]interface{}); ok {
+						targetName := strings.TrimSpace(fmt.Sprint(rel["name"]))
+						relText := strings.TrimSpace(fmt.Sprint(rel["description"]))
+						if targetName != "" {
+							relMap[targetName] = relText
+						}
+					}
+				}
+			}
+			profileData := map[string]interface{}{
+				"backstory":                desc,
+				"personality_traits":       traitStrs,
+				"motivation":               motivation,
+				"growth_arc":               growthArc,
+				"relationships":            relMap,
+				"first_appearance_chapter": firstAppearanceByName[name],
+				"source_ref_id":            job.RefID,
+				"imported_from":            "reference_analysis",
+			}
+			profileJSON, _ := json.Marshal(profileData)
+			b.Queue(
+				`INSERT INTO characters (project_id, name, role_type, profile)
+				 VALUES ($1, $2, $3, $4)
+				 ON CONFLICT (project_id, name) DO UPDATE
+				 SET role_type = EXCLUDED.role_type,
+				     profile = characters.profile || EXCLUDED.profile,
+				     updated_at = NOW()`,
+				projectID, name, normalizeRole(roleType), profileJSON)
+		}
+		if b.Len() > 0 {
+			br := s.db.SendBatch(ctx, b)
+			for i := 0; i < b.Len(); i++ {
+				if _, dbErr := br.Exec(); dbErr != nil {
+					s.logger.Warn("import character batch failed", zap.Int("idx", i), zap.Error(dbErr))
+				}
+			}
+			if closeErr := br.Close(); closeErr != nil {
+				s.logger.Warn("character batch close failed", zap.Error(closeErr))
+			}
+		}
+	}
+
+	if len(chars) > 0 {
+		charRows, listErr := s.characters.List(ctx, projectID)
+		if listErr != nil {
+			s.logger.Warn("list characters after reference import failed", zap.Error(listErr))
+		} else {
+			nameToID := make(map[string]string, len(charRows))
+			for _, ch := range charRows {
+				nameToID[strings.TrimSpace(ch.Name)] = ch.ID
+			}
+
+			type edgeSeed struct {
+				charA string
+				charB string
+				rel   string
+				first *int
+			}
+			relationSeeds := map[string]edgeSeed{}
+			for _, ch := range chars {
+				sourceName, _ := ch["name"].(string)
+				sourceID := nameToID[strings.TrimSpace(sourceName)]
+				if sourceID == "" {
+					continue
+				}
+				rels, _ := ch["relationships"].([]interface{})
+				for _, relItem := range rels {
+					relMap, ok := relItem.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					targetName := strings.TrimSpace(fmt.Sprint(relMap["name"]))
+					relText := strings.TrimSpace(fmt.Sprint(relMap["description"]))
+					targetID := nameToID[targetName]
+					if targetID == "" || targetID == sourceID {
+						continue
+					}
+					charA, charB := sourceID, targetID
+					if charA > charB {
+						charA, charB = charB, charA
+					}
+					key := charA + ":" + charB
+					firstChapter := 1
+					if sourceFirst, ok := firstAppearanceByName[sourceName]; ok && sourceFirst > 0 {
+						firstChapter = sourceFirst
+					}
+					if targetFirst, ok := firstAppearanceByName[targetName]; ok && targetFirst > 0 && targetFirst < firstChapter {
+						firstChapter = targetFirst
+					}
+					seed := relationSeeds[key]
+					if seed.charA == "" {
+						seed = edgeSeed{charA: charA, charB: charB, rel: relText, first: &firstChapter}
+					} else {
+						if relText != "" && !strings.Contains(seed.rel, relText) {
+							if seed.rel == "" {
+								seed.rel = relText
+							} else {
+								seed.rel = seed.rel + " / " + relText
+							}
+						}
+						if seed.first == nil || firstChapter < *seed.first {
+							seed.first = &firstChapter
+						}
+					}
+					relationSeeds[key] = seed
+				}
+			}
+
+			if len(relationSeeds) > 0 {
+				b := &pgx.Batch{}
+				emptyInfo := json.RawMessage(`[]`)
+				for _, seed := range relationSeeds {
+					b.Queue(
+						`INSERT INTO character_interactions
+						    (project_id, char_a_id, char_b_id, first_meet_chapter, relationship, info_known_by_a, info_known_by_b, notes)
+						 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+						 ON CONFLICT (project_id, char_a_id, char_b_id) DO UPDATE SET
+						   first_meet_chapter = COALESCE(LEAST(character_interactions.first_meet_chapter, EXCLUDED.first_meet_chapter), character_interactions.first_meet_chapter, EXCLUDED.first_meet_chapter),
+						   relationship = CASE
+						       WHEN character_interactions.relationship = '' THEN EXCLUDED.relationship
+						       WHEN EXCLUDED.relationship = '' OR position(EXCLUDED.relationship in character_interactions.relationship) > 0 THEN character_interactions.relationship
+						       ELSE character_interactions.relationship || ' / ' || EXCLUDED.relationship
+						   END,
+						   notes = CASE WHEN character_interactions.notes = '' THEN EXCLUDED.notes ELSE character_interactions.notes END,
+						   updated_at = NOW()`,
+						projectID, seed.charA, seed.charB, seed.first, seed.rel, emptyInfo, emptyInfo, "reference_analysis")
+				}
+				br := s.db.SendBatch(ctx, b)
+				for i := 0; i < b.Len(); i++ {
+					if _, dbErr := br.Exec(); dbErr != nil {
+						s.logger.Warn("import character interaction batch failed", zap.Int("idx", i), zap.Error(dbErr))
+					}
+				}
+				if closeErr := br.Close(); closeErr != nil {
+					s.logger.Warn("character interaction batch close failed", zap.Error(closeErr))
+				}
+			}
+		}
+	}
+
 	if len(job.ExtractedWorld) > 2 {
 		var worldData map[string]interface{}
 		if json.Unmarshal(job.ExtractedWorld, &worldData) == nil {
-			// Map Python sidecar keys to the keys the frontend expects
 			setting, _ := worldData["setting"].(string)
 			timePeriod, _ := worldData["time_period"].(string)
-			locations, _ := worldData["locations"].([]interface{})
-			systems, _ := worldData["systems"].([]interface{})
-			var locStrs, sysStrs []string
-			for _, l := range locations {
-				if ls, ok := l.(string); ok {
-					locStrs = append(locStrs, ls)
-				}
-			}
-			for _, sys := range systems {
-				if ss, ok := sys.(string); ok {
-					sysStrs = append(sysStrs, ss)
-				}
-			}
+			socialStructure, _ := worldData["social_structure"].(string)
+			coreConflict, _ := worldData["core_conflict"].(string)
+			locStrs := toStringSlice(worldData["locations"])
+			sysStrs := toStringSlice(worldData["systems"])
+			factionStrs := toStringSlice(worldData["factions"])
+			forbiddenAnchors := toStringSlice(worldData["forbidden_anchors"])
+
 			mappedWorld := map[string]interface{}{
-				"world_view":     setting,
-				"era_background": timePeriod,
-				"geography":      strings.Join(locStrs, "、"),
-				"power_system":   strings.Join(sysStrs, "、"),
-				"source_ref_id":  job.RefID,
-				"imported_from":  "reference_analysis",
+				"world_view":       setting,
+				"era_background":   timePeriod,
+				"geography":        strings.Join(locStrs, "、"),
+				"social_structure": socialStructure,
+				"power_system":     strings.Join(sysStrs, "、"),
+				"core_conflict":    coreConflict,
+				"factions":         factionStrs,
+				"source_ref_id":    job.RefID,
+				"imported_from":    "reference_analysis",
 			}
 			worldJSON, _ := json.Marshal(mappedWorld)
-			// Try update first; if no row create one
 			tag, dbErr := s.db.Exec(ctx,
 				`UPDATE world_bibles SET content = COALESCE(content, '{}') || $1::jsonb, version = version + 1
 				 WHERE project_id = $2`,
@@ -399,73 +694,79 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 					s.logger.Warn("world bible insert failed", zap.String("project_id", projectID), zap.Error(dbErr2))
 				}
 			}
-		}
-	}
 
-	// Import outline nodes — batch insert to avoid N+1 queries.
-	if len(job.ExtractedOutline) > 2 {
-		var outlineNodes []map[string]interface{}
-		if json.Unmarshal(job.ExtractedOutline, &outlineNodes) == nil && len(outlineNodes) > 0 {
-			b := &pgx.Batch{}
-			orderNum := 0
-			for _, node := range outlineNodes {
-				title, _ := node["title"].(string)
-				if title == "" {
-					continue
+			immutableRules, mutableRules := parseConstitutions(worldData["constitutions"])
+			forbiddenJSON, _ := json.Marshal(forbiddenAnchors)
+			if len(immutableRules) > 2 || len(mutableRules) > 2 || len(forbiddenAnchors) > 0 {
+				mergedImmutable := immutableRules
+				mergedMutable := mutableRules
+				mergedForbidden := forbiddenJSON
+				if existingConst, getErr := s.worldBible.GetConstitution(ctx, projectID); getErr != nil {
+					s.logger.Warn("load existing world constitution failed", zap.String("project_id", projectID), zap.Error(getErr))
+				} else if existingConst != nil {
+					mergedImmutable = mergeConstitutionRuleJSON(existingConst.ImmutableRules, immutableRules)
+					mergedMutable = mergeConstitutionRuleJSON(existingConst.MutableRules, mutableRules)
+					mergedForbidden = mergeStringListJSON(existingConst.ForbiddenAnchors, forbiddenJSON)
 				}
-				orderNum++
-				summary, _ := node["summary"].(string)
-				levelStr := "meso"
-				if ls, ok := node["level"].(string); ok && ls != "" {
-					valid := map[string]bool{"macro": true, "meso": true, "micro": true}
-					if valid[ls] {
-						levelStr = ls
-					}
-				} else if lf, ok := node["level"].(float64); ok {
-					switch int(lf) {
-					case 1:
-						levelStr = "macro"
-					case 3:
-						levelStr = "micro"
-					default:
-						levelStr = "meso"
-					}
+				if _, constErr := s.worldBible.UpdateConstitution(ctx, projectID, mergedImmutable, mergedMutable, mergedForbidden); constErr != nil {
+					s.logger.Warn("world constitution import failed", zap.String("project_id", projectID), zap.Error(constErr))
 				}
-				// Extract involved_characters array
-				var involvedChars []string
-				if icRaw, ok := node["involved_characters"].([]interface{}); ok {
-					for _, ic := range icRaw {
-						if ics, ok := ic.(string); ok && ics != "" {
-							involvedChars = append(involvedChars, ics)
-						}
-					}
-				}
-				contentData := map[string]interface{}{
-					"content":             summary,
-					"key_events":          summary,
-					"involved_characters": involvedChars,
-					"source":              "reference_analysis",
-					"ref_id":              job.RefID,
-				}
-				contentJSON, _ := json.Marshal(contentData)
-				b.Queue(
-					`INSERT INTO outlines (project_id, level, order_num, title, content)
-					 VALUES ($1, $2, $3, $4, $5)`,
-					projectID, levelStr, orderNum, title, contentJSON)
-			}
-			if b.Len() > 0 {
-				br := s.db.SendBatch(ctx, b)
-				for i := 0; i < b.Len(); i++ {
-					if _, dbErr := br.Exec(); dbErr != nil {
-						s.logger.Warn("import outline batch failed", zap.Int("idx", i), zap.Error(dbErr))
-					}
-				}
-				br.Close()
 			}
 		}
 	}
 
-	// Import glossary terms — batch insert to avoid N+1 queries.
+	if len(outlineNodes) > 0 {
+		b := &pgx.Batch{}
+		orderNum := 0
+		for _, node := range outlineNodes {
+			title, _ := node["title"].(string)
+			if title == "" {
+				continue
+			}
+			orderNum++
+			summary, _ := node["summary"].(string)
+			levelStr := "meso"
+			if ls, ok := node["level"].(string); ok && ls != "" {
+				valid := map[string]bool{"macro": true, "meso": true, "micro": true}
+				if valid[ls] {
+					levelStr = ls
+				}
+			} else if lf, ok := node["level"].(float64); ok {
+				switch int(lf) {
+				case 1:
+					levelStr = "macro"
+				case 3:
+					levelStr = "micro"
+				default:
+					levelStr = "meso"
+				}
+			}
+			contentData := map[string]interface{}{
+				"content":             summary,
+				"key_events":          summary,
+				"involved_characters": toStringSlice(node["involved_characters"]),
+				"source":              "reference_analysis",
+				"ref_id":              job.RefID,
+			}
+			contentJSON, _ := json.Marshal(contentData)
+			b.Queue(
+				`INSERT INTO outlines (project_id, level, order_num, title, content)
+				 VALUES ($1, $2, $3, $4, $5)`,
+				projectID, levelStr, orderNum, title, contentJSON)
+		}
+		if b.Len() > 0 {
+			br := s.db.SendBatch(ctx, b)
+			for i := 0; i < b.Len(); i++ {
+				if _, dbErr := br.Exec(); dbErr != nil {
+					s.logger.Warn("import outline batch failed", zap.Int("idx", i), zap.Error(dbErr))
+				}
+			}
+			if closeErr := br.Close(); closeErr != nil {
+				s.logger.Warn("outline batch close failed", zap.Error(closeErr))
+			}
+		}
+	}
+
 	if len(job.ExtractedGlossary) > 2 {
 		var terms []map[string]interface{}
 		if json.Unmarshal(job.ExtractedGlossary, &terms) == nil && len(terms) > 0 {
@@ -493,12 +794,13 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 						s.logger.Warn("import glossary batch failed", zap.Int("idx", i), zap.Error(dbErr))
 					}
 				}
-				br.Close()
+				if closeErr := br.Close(); closeErr != nil {
+					s.logger.Warn("glossary batch close failed", zap.Error(closeErr))
+				}
 			}
 		}
 	}
 
-	// Import foreshadowings — batch insert to avoid N+1 queries.
 	if len(job.ExtractedForeshadowings) > 2 {
 		var foreshadowings []map[string]interface{}
 		if json.Unmarshal(job.ExtractedForeshadowings, &foreshadowings) == nil && len(foreshadowings) > 0 {
@@ -512,17 +814,10 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 				if pf, ok := f["priority"].(float64); ok {
 					priority = int(pf)
 				}
-				relChars, _ := f["related_characters"].([]interface{})
-				var tags []string
-				for _, rc := range relChars {
-					if rs, ok := rc.(string); ok {
-						tags = append(tags, rs)
-					}
-				}
 				b.Queue(
 					`INSERT INTO foreshadowings (project_id, content, embed_method, priority, tags, status)
 					 VALUES ($1, $2, 'reference_import', $3, $4, 'planned')`,
-					projectID, content, priority, tags)
+					projectID, content, priority, toStringSlice(f["related_characters"]))
 			}
 			if b.Len() > 0 {
 				br := s.db.SendBatch(ctx, b)
@@ -531,13 +826,13 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 						s.logger.Warn("import foreshadowing batch failed", zap.Int("idx", i), zap.Error(dbErr))
 					}
 				}
-				br.Close()
+				if closeErr := br.Close(); closeErr != nil {
+					s.logger.Warn("foreshadowing batch close failed", zap.Error(closeErr))
+				}
 			}
 		}
 	}
 
-	// Mark the reference material as completed so the RAG rebuild can find it.
-	// Note: reference_materials has no updated_at column, so omit it here.
 	if _, dbErr := s.db.Exec(ctx,
 		`UPDATE reference_materials SET status = 'completed' WHERE id = $1`,
 		job.RefID); dbErr != nil {
@@ -585,8 +880,15 @@ func (s *ReferenceDeepAnalysisService) runAnalysisTask(ctx context.Context, task
 	// Get full text (file or chapters)
 	text, err := s.getFullText(ctx, refID)
 	if err != nil || text == "" {
-		s.failJob(ctx, jobID, "no content to analyze: "+err.Error())
-		return fmt.Errorf("no content: %w", err)
+		reason := "no content to analyze"
+		if err != nil {
+			reason = "no content to analyze: " + err.Error()
+		}
+		s.failJob(ctx, jobID, reason)
+		if err != nil {
+			return fmt.Errorf("no content: %w", err)
+		}
+		return fmt.Errorf("no content to analyze")
 	}
 
 	// Compute dynamic chunk size based on the model's context window so we

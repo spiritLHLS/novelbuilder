@@ -116,6 +116,9 @@ export const chapterApi = {
   get: (_projectId: string, id: string) => api.get(`/chapters/${id}`),
   update: (_projectId: string, id: string, data: any) => api.put(`/chapters/${id}`, data),
   delete: (_projectId: string, id: string) => api.delete(`/chapters/${id}`),
+  listSnapshots: (_projectId: string, id: string) => api.get(`/chapters/${id}/snapshots`),
+  restoreSnapshot: (_projectId: string, id: string, snapshotId: string) =>
+    api.post(`/chapters/${id}/restore`, { snapshot_id: snapshotId }),
   generate: (projectId: string, data: any) =>
     api.post(`/projects/${projectId}/chapters/generate`, data),
   continueGenerate: (projectId: string) =>

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -46,29 +45,22 @@ type embedResponse struct {
 // Returns nil, nil on sidecar unavailability for graceful degradation.
 func (r *RAGService) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	body, _ := json.Marshal(embedRequest{Text: text})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		r.sidecarURL+"/embed", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := r.httpClient.Do(req)
+	raw, err := doRetriableJSONRequest(ctx, r.httpClient, r.logger, "POST /embed", func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			r.sidecarURL+"/embed", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		r.logger.Warn("embedding sidecar unavailable", zap.Error(err))
 		return nil, nil
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		r.logger.Warn("embed returned non-200",
-			zap.Int("status", resp.StatusCode), zap.String("body", string(raw)))
-		return nil, nil
-	}
 
 	var er embedResponse
-	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+	if err := json.Unmarshal(raw, &er); err != nil {
 		return nil, err
 	}
 	return er.Embedding, nil
@@ -77,21 +69,17 @@ func (r *RAGService) GetEmbedding(ctx context.Context, text string) ([]float32, 
 // sidecarPost is a helper for calling sidecar JSON endpoints.
 func (r *RAGService) sidecarPost(ctx context.Context, path string, body interface{}) (json.RawMessage, error) {
 	data, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		r.sidecarURL+path, bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := r.httpClient.Do(req)
+	raw, err := doRetriableJSONRequest(ctx, r.httpClient, r.logger, "POST "+path, func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			r.sidecarURL+path, bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("sidecar %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("sidecar %s returned %d: %s", path, resp.StatusCode, string(raw))
 	}
 	return raw, nil
 }
@@ -227,22 +215,19 @@ type CollectionStat struct {
 
 // GetProjectStats returns per-collection point counts from Qdrant.
 func (r *RAGService) GetProjectStats(ctx context.Context, projectID string) ([]CollectionStat, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		r.sidecarURL+"/vector/status/"+projectID, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := r.httpClient.Do(req)
+	raw, err := doRetriableJSONRequest(ctx, r.httpClient, r.logger, "GET /vector/status", func(ctx context.Context) (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodGet,
+			r.sidecarURL+"/vector/status/"+projectID, nil)
+	})
 	if err != nil {
 		r.logger.Warn("vector status sidecar unavailable", zap.Error(err))
 		return nil, nil
 	}
-	defer resp.Body.Close()
 
 	var result struct {
 		Collections []CollectionStat `json:"collections"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, err
 	}
 	return result.Collections, nil

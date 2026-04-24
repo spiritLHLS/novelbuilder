@@ -14,6 +14,7 @@ import (
 
 	anthropic "github.com/liushuangls/go-anthropic/v2"
 	"github.com/novelbuilder/backend/internal/models"
+	"github.com/redis/go-redis/v9"
 	openai "github.com/sashabaranov/go-openai"
 	"go.uber.org/zap"
 )
@@ -29,6 +30,7 @@ type ProfileResolver interface {
 // and is managed through the frontend Settings → AI 模型配置 page.
 type AIGateway struct {
 	profiles ProfileResolver
+	sessions *redis.Client
 	logger   *zap.Logger
 }
 
@@ -40,6 +42,7 @@ type ChatMessage struct {
 type ChatRequest struct {
 	Task        string        `json:"task"`
 	TaskType    string        `json:"task_type"`
+	SessionID   string        `json:"session_id"`
 	Messages    []ChatMessage `json:"messages"`
 	MaxTokens   int           `json:"max_tokens"`
 	ModelName   string        `json:"model_name"`
@@ -79,6 +82,45 @@ var (
 type rpmBucket struct {
 	mu         sync.Mutex
 	timestamps []time.Time
+}
+
+type chatSessionState struct {
+	Summary  string        `json:"summary,omitempty"`
+	Messages []ChatMessage `json:"messages,omitempty"`
+}
+
+type sessionContextKey string
+
+const (
+	chatSessionTTL          = 24 * time.Hour
+	chatSessionMaxMessages  = 8
+	chatSessionKeepRecent   = 4
+	chatSessionMaxRunes     = 12000
+	chatSessionSummaryRunes = 4000
+	chatSessionExcerptRunes = 240
+	sessionIDContextKey     = sessionContextKey("ai_gateway_session_id")
+)
+
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resolved := normalizeSessionID(sessionID)
+	if resolved == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionIDContextKey, resolved)
+}
+
+func SessionIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, ok := ctx.Value(sessionIDContextKey).(string)
+	if !ok {
+		return ""
+	}
+	return normalizeSessionID(value)
 }
 
 // rpmWait blocks until a request slot is available within the rpm limit.
@@ -127,8 +169,8 @@ func rpmWait(key string, limit int, logger *zap.Logger) {
 	}
 }
 
-func NewAIGateway(profiles ProfileResolver, logger *zap.Logger) *AIGateway {
-	return &AIGateway{profiles: profiles, logger: logger}
+func NewAIGateway(profiles ProfileResolver, sessions *redis.Client, logger *zap.Logger) *AIGateway {
+	return &AIGateway{profiles: profiles, sessions: sessions, logger: logger}
 }
 
 // normalizeAPIStyle converts legacy style names to path-based values.
@@ -232,22 +274,37 @@ func (gw *AIGateway) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, 
 	if err != nil {
 		return nil, err
 	}
+	sessionID := normalizeSessionID(req.SessionID)
+	if sessionID == "" {
+		sessionID = SessionIDFromContext(ctx)
+	}
+	preparedMessages := gw.prepareSessionMessages(ctx, sessionID, req.Messages)
 	gw.logger.Info("AI Chat request",
 		zap.String("profile", resolved.ProfileName),
 		zap.String("model", resolved.ModelID),
 		zap.String("api_style", resolved.APIStyle),
 		zap.String("task", req.Task),
-		zap.Int("messages", len(req.Messages)))
+		zap.String("session_id", sessionID),
+		zap.Int("messages", len(preparedMessages)))
 
+	response, err := gw.dispatchChat(ctx, resolved, preparedMessages)
+	if err != nil {
+		return nil, err
+	}
+	gw.persistSessionMessages(sessionID, req.Messages, response.Content)
+	return response, nil
+}
+
+func (gw *AIGateway) dispatchChat(ctx context.Context, resolved resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
 	switch apiProtocol(resolved.APIStyle, resolved.Provider) {
 	case "openai":
-		return gw.chatOpenAI(ctx, resolved, req.Messages)
+		return gw.chatOpenAI(ctx, resolved, msgs)
 	case "anthropic":
-		return gw.chatAnthropic(ctx, resolved, req.Messages)
+		return gw.chatAnthropic(ctx, resolved, msgs)
 	case "responses":
-		return gw.chatResponses(ctx, resolved, req.Messages)
+		return gw.chatResponses(ctx, resolved, msgs)
 	case "gemini":
-		return gw.chatGemini(ctx, resolved, req.Messages)
+		return gw.chatGemini(ctx, resolved, msgs)
 	}
 	return nil, fmt.Errorf("unsupported api_style: %q (provider: %s)", resolved.APIStyle, resolved.Provider)
 }
@@ -330,17 +387,214 @@ func (gw *AIGateway) ChatWithConfig(ctx context.Context, req ChatRequest, cfg ma
 		return gw.Chat(ctx, req)
 	}
 	resolved := resolvedFromCfg(cfg, req)
-	switch apiProtocol(resolved.APIStyle, resolved.Provider) {
-	case "openai":
-		return gw.chatOpenAI(ctx, resolved, req.Messages)
-	case "anthropic":
-		return gw.chatAnthropic(ctx, resolved, req.Messages)
-	case "responses":
-		return gw.chatResponses(ctx, resolved, req.Messages)
-	case "gemini":
-		return gw.chatGemini(ctx, resolved, req.Messages)
+	sessionID := normalizeSessionID(sessionIDFromConfig(cfg))
+	if sessionID == "" {
+		sessionID = normalizeSessionID(req.SessionID)
 	}
-	return nil, fmt.Errorf("unsupported api_style: %q (provider: %s)", resolved.APIStyle, resolved.Provider)
+	if sessionID == "" {
+		sessionID = SessionIDFromContext(ctx)
+	}
+	preparedMessages := gw.prepareSessionMessages(ctx, sessionID, req.Messages)
+	response, err := gw.dispatchChat(ctx, resolved, preparedMessages)
+	if err != nil {
+		return nil, err
+	}
+	gw.persistSessionMessages(sessionID, req.Messages, response.Content)
+	return response, nil
+}
+
+func normalizeSessionID(sessionID string) string {
+	trimmed := strings.TrimSpace(sessionID)
+	if trimmed == "" || trimmed == "<nil>" {
+		return ""
+	}
+	return trimmed
+}
+
+func sessionIDFromConfig(cfg map[string]interface{}) string {
+	if cfg == nil {
+		return ""
+	}
+	return normalizeSessionID(fmt.Sprint(cfg["session_id"]))
+}
+
+func (gw *AIGateway) prepareSessionMessages(ctx context.Context, sessionID string, current []ChatMessage) []ChatMessage {
+	if gw.sessions == nil || sessionID == "" {
+		return current
+	}
+
+	state, err := gw.loadSessionState(ctx, sessionID)
+	if err != nil {
+		gw.logger.Debug("failed to load chat session state",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+		return current
+	}
+	if state == nil {
+		return current
+	}
+
+	gw.compactSessionState(state)
+	if len(state.Messages) == 0 && strings.TrimSpace(state.Summary) == "" {
+		return current
+	}
+
+	var systemMessages []ChatMessage
+	var otherMessages []ChatMessage
+	for _, msg := range current {
+		if msg.Role == "system" {
+			systemMessages = append(systemMessages, msg)
+			continue
+		}
+		otherMessages = append(otherMessages, msg)
+	}
+
+	prepared := append([]ChatMessage{}, systemMessages...)
+	if summary := strings.TrimSpace(state.Summary); summary != "" {
+		prepared = append(prepared, ChatMessage{
+			Role:    "system",
+			Content: "以下是当前同一任务 session 的压缩历史摘要，请保持连续性并避免重复展开已完成内容：\n" + summary,
+		})
+	}
+	prepared = append(prepared, state.Messages...)
+	prepared = append(prepared, otherMessages...)
+	return prepared
+}
+
+func (gw *AIGateway) persistSessionMessages(sessionID string, current []ChatMessage, assistantReply string) {
+	if gw.sessions == nil || sessionID == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	key := gw.chatSessionKey(sessionID)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		err := gw.sessions.Watch(ctx, func(tx *redis.Tx) error {
+			state := &chatSessionState{}
+			raw, err := tx.Get(ctx, key).Result()
+			switch {
+			case errors.Is(err, redis.Nil):
+				// no prior state
+			case err != nil:
+				return err
+			default:
+				if err := json.Unmarshal([]byte(raw), state); err != nil {
+					return err
+				}
+			}
+
+			for _, msg := range current {
+				if msg.Role == "system" {
+					continue
+				}
+				state.Messages = append(state.Messages, ChatMessage{Role: msg.Role, Content: msg.Content})
+			}
+			if reply := strings.TrimSpace(assistantReply); reply != "" {
+				state.Messages = append(state.Messages, ChatMessage{Role: "assistant", Content: reply})
+			}
+
+			gw.compactSessionState(state)
+			payload, err := json.Marshal(state)
+			if err != nil {
+				return err
+			}
+
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, key, payload, chatSessionTTL)
+				return nil
+			})
+			return err
+		}, key)
+		if err == nil {
+			return
+		}
+		lastErr = err
+		if err != redis.TxFailedErr {
+			break
+		}
+	}
+
+	gw.logger.Debug("failed to save chat session state",
+		zap.String("session_id", sessionID),
+		zap.Error(lastErr))
+}
+
+func (gw *AIGateway) loadSessionState(ctx context.Context, sessionID string) (*chatSessionState, error) {
+	raw, err := gw.sessions.Get(ctx, gw.chatSessionKey(sessionID)).Result()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var state chatSessionState
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+func (gw *AIGateway) saveSessionState(ctx context.Context, sessionID string, state *chatSessionState) error {
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return gw.sessions.Set(ctx, gw.chatSessionKey(sessionID), payload, chatSessionTTL).Err()
+}
+
+func (gw *AIGateway) chatSessionKey(sessionID string) string {
+	return "ai_gateway_session:" + sessionID
+}
+
+func (gw *AIGateway) compactSessionState(state *chatSessionState) {
+	for len(state.Messages) > chatSessionMaxMessages || totalMessageRunes(state.Messages)+len([]rune(state.Summary)) > chatSessionMaxRunes {
+		if len(state.Messages) <= chatSessionKeepRecent {
+			break
+		}
+		archiveCount := len(state.Messages) - chatSessionKeepRecent
+		archived := append([]ChatMessage(nil), state.Messages[:archiveCount]...)
+		state.Messages = append([]ChatMessage(nil), state.Messages[archiveCount:]...)
+		state.Summary = extendSessionSummary(state.Summary, archived)
+	}
+	if len([]rune(state.Summary)) > chatSessionSummaryRunes {
+		runes := []rune(state.Summary)
+		state.Summary = string(runes[len(runes)-chatSessionSummaryRunes:])
+	}
+}
+
+func extendSessionSummary(existing string, archived []ChatMessage) string {
+	var builder strings.Builder
+	if summary := strings.TrimSpace(existing); summary != "" {
+		builder.WriteString(summary)
+		builder.WriteString("\n")
+	}
+	for _, msg := range archived {
+		builder.WriteString(msg.Role)
+		builder.WriteString(": ")
+		builder.WriteString(compactMessageContent(msg.Content))
+		builder.WriteString("\n")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func compactMessageContent(content string) string {
+	compact := strings.Join(strings.Fields(content), " ")
+	runes := []rune(compact)
+	if len(runes) > chatSessionExcerptRunes {
+		return string(runes[:chatSessionExcerptRunes]) + "..."
+	}
+	return compact
+}
+
+func totalMessageRunes(messages []ChatMessage) int {
+	total := 0
+	for _, msg := range messages {
+		total += len([]rune(msg.Content))
+	}
+	return total
 }
 
 // ── OpenAI / Chat Completions ──────────────────────────────────────────────

@@ -154,6 +154,7 @@ const canGenerate = ref(true)
 const showGenerateDialog = ref(false)
 const generating = ref(false)
 const copyingChapterId = ref<string | null>(null)
+const regenerateTarget = ref<any | null>(null)
 
 const genForm = ref({
   chapter_num: 1, chapter_words_min: 2000, chapter_words_max: 3500, context_hint: '',
@@ -257,11 +258,11 @@ async function startBatchGenerate() {
       const volRes = await batchWriteApi.generateByVolume(projectId, batchVolumeId.value)
       const vol = volumes.value.find((v: any) => v.id === batchVolumeId.value)
       const total = volRes.data?.total ?? (vol ? vol.chapter_end - vol.chapter_start + 1 : '?')
-      ElMessage.success(`第${vol?.volume_num}卷共 ${total} 章高质量Agent生成已启动`)
+      ElMessage.success(`第${vol?.volume_num}卷共 ${total} 章生成任务已创建，可在“任务队列”页面查看进度`)
     } else {
       const cntRes = await batchWriteApi.generate(projectId, batchCount.value)
       const started = cntRes.data?.total ?? batchCount.value
-      ElMessage.success(`${started} 章高质量Agent生成已启动`)
+      ElMessage.success(`${started} 章生成任务已创建，可在“任务队列”页面查看进度`)
     }
     showBatchDialog.value = false
   } catch (e: any) {
@@ -273,12 +274,14 @@ async function startBatchGenerate() {
 
 function showGenerate() {
   const maxNum = chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0)
+  regenerateTarget.value = null
   genForm.value.chapter_num = maxNum + 1
   genForm.value.context_hint = ''
   showGenerateDialog.value = true
 }
 
 function regenerateChapter(ch: any) {
+  regenerateTarget.value = ch
   genForm.value.chapter_num = ch.chapter_num
   genForm.value.context_hint = ''
   showGenerateDialog.value = true
@@ -298,14 +301,26 @@ async function confirmAs正文(ch: any) {
 async function startGenerate() {
   generating.value = true
   try {
-    await chapterApi.generate(projectId, {
+    const payload = {
       chapter_num: genForm.value.chapter_num,
       chapter_words_min: genForm.value.chapter_words_min,
       chapter_words_max: genForm.value.chapter_words_max,
       context_hint: genForm.value.context_hint,
-    })
+    }
+    if (regenerateTarget.value?.id) {
+      await chapterApi.regenerate(projectId, regenerateTarget.value.id, payload)
+    } else {
+      await chapterApi.generate(projectId, payload)
+    }
     showGenerateDialog.value = false
-    ElMessage({ message: '章节高质量Agent生成已启动，可在"Agent生成"页面查看进度', type: 'success', duration: 5000 })
+    ElMessage({
+      message: regenerateTarget.value?.id
+        ? '章节重生成任务已创建，可在“任务队列”页面查看进度'
+        : '章节生成任务已创建，可在“任务队列”页面查看进度',
+      type: 'success',
+      duration: 5000,
+    })
+    regenerateTarget.value = null
     await fetchChapters()
   } catch (e: any) {
     const msg = e.response?.data?.message || e.response?.data?.error || '生成失败'

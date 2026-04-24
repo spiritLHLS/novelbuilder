@@ -34,6 +34,19 @@ func maskAPIKey(key string) string {
 	return key[:4] + "****" + key[len(key)-4:]
 }
 
+func validateLLMProfileValues(maxTokens int, temperature float64, rpmLimit int) error {
+	if rpmLimit < 0 {
+		return errors.New("rpm_limit must be >= 0")
+	}
+	if maxTokens > 0 && maxTokens < 100 {
+		return errors.New("max_tokens must be at least 100")
+	}
+	if temperature < 0 || temperature > 2 {
+		return errors.New("temperature must be between 0 and 2")
+	}
+	return nil
+}
+
 func (s *LLMProfileService) List(ctx context.Context) ([]models.LLMProfile, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit,
@@ -144,6 +157,9 @@ func (s *LLMProfileService) Create(ctx context.Context, req models.CreateLLMProf
 	}
 	if req.Temperature == 0 {
 		req.Temperature = 0.7
+	}
+	if err := validateLLMProfileValues(req.MaxTokens, req.Temperature, req.RPMLimit); err != nil {
+		return nil, err
 	}
 
 	id := uuid.New().String()
@@ -269,6 +285,9 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 	}
 	if req.IsDefault != nil {
 		existing.IsDefault = *req.IsDefault
+	}
+	if err := validateLLMProfileValues(existing.MaxTokens, existing.Temperature, existing.RPMLimit); err != nil {
+		return nil, err
 	}
 
 	// If becoming default, clear others

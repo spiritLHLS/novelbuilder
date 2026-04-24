@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -47,42 +46,26 @@ func (s *SidecarService) post(ctx context.Context, path string, body interface{}
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+path, bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.client.Do(req)
+	raw, err := doRetriableJSONRequest(ctx, s.client, s.logger, "POST "+path, func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+path, bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("sidecar POST %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("sidecar %s returned %d: %s", path, resp.StatusCode, string(raw))
 	}
 	return raw, nil
 }
 
 func (s *SidecarService) get(ctx context.Context, path string) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := s.client.Do(req)
+	raw, err := doRetriableJSONRequest(ctx, s.client, s.logger, "GET "+path, func(ctx context.Context) (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+path, nil)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("sidecar GET %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("sidecar %s returned %d: %s", path, resp.StatusCode, string(raw))
 	}
 	return raw, nil
 }

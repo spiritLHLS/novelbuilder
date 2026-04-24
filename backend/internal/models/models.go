@@ -263,6 +263,19 @@ type GenerateChapterRequest struct {
 	LLMConfig map[string]interface{} `json:"llm_config,omitempty"`
 }
 
+type ChapterGenerateTaskPayload struct {
+	Request GenerateChapterRequest `json:"request"`
+}
+
+type ChapterRegenerateTaskPayload struct {
+	ChapterID string                 `json:"chapter_id"`
+	Request   GenerateChapterRequest `json:"request"`
+}
+
+type GenerateNextChapterTaskPayload struct {
+	Request GenerateChapterRequest `json:"request"`
+}
+
 type UpdateChapterContentRequest struct {
 	Title   string `json:"title"`
 	Content string `json:"content" binding:"required"`

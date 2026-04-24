@@ -11,7 +11,7 @@ from typing import Any
 
 from json_repair import repair_json
 from agent.state import AgentState, PlanStep
-from llm_utils import build_llm
+from llm_utils import invoke_text_sync
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +52,9 @@ def planner_node(state: AgentState) -> dict[str, Any]:
     chapter_num = state.get("chapter_num")
     outline_hint = state.get("outline_hint", "")
 
-    llm_cfg = state.get("llm_config", {})
-    llm = build_llm(llm_cfg, default_temperature=0.3, default_max_tokens=512)
+    llm_cfg = dict(state.get("llm_config", {}))
+    llm_cfg.setdefault("temperature", 0.3)
+    llm_cfg.setdefault("max_tokens", 512)
 
     task_desc = f"任务类型: {task_type}\n用户提示: {user_prompt}"
     if chapter_num is not None:
@@ -62,11 +63,16 @@ def planner_node(state: AgentState) -> dict[str, Any]:
         task_desc += f"\n章节梗概: {outline_hint}"
 
     try:
-        resp = llm.invoke([
-            {"role": "system", "content": _PLAN_SYSTEM},
-            {"role": "user", "content": task_desc},
-        ])
-        raw = resp.content.strip()
+        raw, _ = invoke_text_sync(
+            task_desc,
+            llm_cfg,
+            system_prompt=_PLAN_SYSTEM,
+            session_id=llm_cfg.get("session_id") or None,
+            task_name=f"planner:{task_type}",
+            extra_metadata={"task_type": task_type, "chapter_num": chapter_num or ""},
+            use_session_history=False,
+        )
+        raw = raw.strip()
         # strip markdown code blocks if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]

@@ -36,6 +36,11 @@
           <code>{{ row.task_type }}</code>
         </template>
       </el-table-column>
+      <el-table-column label="任务内容" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">
+          {{ taskSummary(row) }}
+        </template>
+      </el-table-column>
       <el-table-column label="状态" prop="status" width="110">
         <template #default="{ row }">
           <el-tag :type="statusTagType(row.status)" size="small">
@@ -157,6 +162,37 @@ const statusTagType = (s: string): '' | 'success' | 'warning' | 'danger' | 'info
 function formatTime(iso: string) {
   if (!iso) return '—'
   return new Date(iso).toLocaleString('zh-CN', { hour12: false })
+}
+
+function taskSummary(task: Task) {
+  const payload = task.payload || {}
+  const request = payload.request || {}
+
+  switch (task.task_type) {
+    case 'chapter_generate': {
+      const chapterNum = Number(request.chapter_num) || 0
+      return chapterNum > 0 ? `生成第${chapterNum}章` : '章节生成'
+    }
+    case 'chapter_regenerate': {
+      const chapterNum = Number(request.chapter_num) || 0
+      return chapterNum > 0 ? `重生成第${chapterNum}章` : '章节重生成'
+    }
+    case 'generate_next_chapter':
+      return '继续生成下一章'
+    case 'generate_chapter_outlines': {
+      const volumeNum = Number(payload.volume_num) || 0
+      const startChapter = Number(payload.start_chapter) || 0
+      if (volumeNum > 0 && startChapter > 0) {
+        return `第${volumeNum}卷章节大纲（从第${startChapter}章开始）`
+      }
+      if (volumeNum > 0) {
+        return `第${volumeNum}卷章节大纲`
+      }
+      return '章节大纲生成'
+    }
+    default:
+      return '—'
+  }
 }
 
 async function loadTasks() {

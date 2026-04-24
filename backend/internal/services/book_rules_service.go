@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -89,6 +89,13 @@ func (s *BookRulesService) GenerateFromBrief(
 	req models.CreativeBriefRequest,
 	llmCfg map[string]interface{},
 ) (*models.CreativeBriefResult, error) {
+	ctx = contextWithLLMSession(ctx, llmCfg, fmt.Sprintf("creative_brief:%s", projectID))
+	llmCfg = ensureContextSessionConfig(ctx, llmCfg, fmt.Sprintf("creative_brief:%s", projectID))
+	if sessionID := gateway.SessionIDFromContext(ctx); sessionID != "" {
+		s.logger.Debug("creative brief session attached",
+			zap.String("project_id", projectID),
+			zap.String("session_id", sessionID))
+	}
 	body := map[string]interface{}{
 		"brief_text": req.BriefText,
 		"genre":      req.Genre,
@@ -96,21 +103,17 @@ func (s *BookRulesService) GenerateFromBrief(
 	}
 	data, _ := json.Marshal(body)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		s.sidecarURL+"/creative-brief", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(httpReq)
+	raw, err := doRetriableJSONRequest(ctx, s.httpClient, s.logger, "POST /creative-brief", func(ctx context.Context) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			s.sidecarURL+"/creative-brief", bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		return httpReq, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("creative-brief sidecar: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("creative-brief sidecar %d: %s", resp.StatusCode, string(raw))
 	}
 
 	var result models.CreativeBriefResult
@@ -129,6 +132,8 @@ func (s *BookRulesService) AntiDetectRewrite(
 	rules *models.BookRules,
 	llmCfg map[string]interface{},
 ) (*models.AntiDetectResult, error) {
+	ctx = contextWithLLMSession(ctx, llmCfg, fmt.Sprintf("anti_detect_rewrite:%s", chapterID))
+	llmCfg = ensureContextSessionConfig(ctx, llmCfg, fmt.Sprintf("anti_detect_rewrite:%s", chapterID))
 	var antiAI []string
 	var banned []string
 	if rules != nil {
@@ -158,21 +163,17 @@ func (s *BookRulesService) AntiDetectRewrite(
 	}
 	data, _ := json.Marshal(body)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		s.sidecarURL+"/anti-detect/rewrite", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(httpReq)
+	raw, err := doRetriableJSONRequest(ctx, s.httpClient, s.logger, "POST /anti-detect/rewrite", func(ctx context.Context) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			s.sidecarURL+"/anti-detect/rewrite", bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		return httpReq, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("anti-detect sidecar: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("anti-detect sidecar %d: %s", resp.StatusCode, string(raw))
 	}
 
 	var result models.AntiDetectResult
@@ -193,6 +194,8 @@ func (s *BookRulesService) NarrativeRevise(
 	auditReport *models.AuditReport,
 	llmCfg map[string]interface{},
 ) (*models.AntiDetectResult, error) {
+	ctx = contextWithLLMSession(ctx, llmCfg, fmt.Sprintf("narrative_revise:%s", chapterID))
+	llmCfg = ensureContextSessionConfig(ctx, llmCfg, fmt.Sprintf("narrative_revise:%s", chapterID))
 	// Collect failing dimension names and top issues from the audit report.
 	var failingDims []string
 	if auditReport != nil {
@@ -220,21 +223,17 @@ func (s *BookRulesService) NarrativeRevise(
 	}
 	data, _ := json.Marshal(body)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		s.sidecarURL+"/narrative-revise", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(httpReq)
+	raw, err := doRetriableJSONRequest(ctx, s.httpClient, s.logger, "POST /narrative-revise", func(ctx context.Context) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			s.sidecarURL+"/narrative-revise", bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		return httpReq, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("narrative-revise sidecar: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("narrative-revise sidecar %d: %s", resp.StatusCode, string(raw))
 	}
 
 	var result models.AntiDetectResult

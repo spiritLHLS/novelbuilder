@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from json_repair import repair_json
-from llm_utils import build_llm
+from llm_utils import ainvoke_text, build_invoke_config
 
 logger = logging.getLogger("python-agent")
 
@@ -81,6 +81,30 @@ def _get_analyzers():
 
 
 router = APIRouter()
+
+
+def _prepare_llm_call(
+    llm_config: dict,
+    *,
+    task_name: str,
+    stable_key: str | None = None,
+    extra_metadata: dict | None = None,
+) -> tuple[dict, dict]:
+    """Clone llm_config, attach a stable session_id, and build a shared invoke config."""
+    cfg = dict(llm_config or {})
+    session_id = str(cfg.get("session_id") or "").strip()
+    if not session_id:
+        if stable_key:
+            session_id = f"{task_name}:{stable_key}"
+        else:
+            session_id = f"{task_name}:{uuid.uuid4()}"
+        cfg["session_id"] = session_id
+    return cfg, build_invoke_config(
+        cfg,
+        session_id=session_id,
+        task_name=task_name,
+        extra_metadata=extra_metadata,
+    )
 
 # 33-DIMENSION CHAPTER AUDIT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -258,7 +282,14 @@ async def audit_chapter(req: AuditChapterRequest):
         try:
             from langchain.schema import SystemMessage, HumanMessage
 
-            llm = build_llm(req.llm_config, default_temperature=0.2, default_max_tokens=3000)
+            llm_cfg, _ = _prepare_llm_call(
+                req.llm_config,
+                task_name="audit_chapter",
+                stable_key=req.chapter_id,
+                extra_metadata={"project_id": req.project_id, "chapter_num": req.chapter_num},
+            )
+            llm_cfg.setdefault("temperature", 0.2)
+            llm_cfg.setdefault("max_tokens", 3000)
 
             context_str = ""
             if req.context.get("outline_hint"):
@@ -278,12 +309,15 @@ async def audit_chapter(req: AuditChapterRequest):
                 f"【章节正文（第{req.chapter_num}章）】\n{req.chapter_text[:6000]}"
             )
 
-            response = await llm.ainvoke([
-                SystemMessage(content=_AUDIT_SYSTEM),
-                HumanMessage(content=human_content),
-            ])
-
-            raw = response.content.strip()
+            raw, _ = await ainvoke_text(
+                human_content,
+                llm_cfg,
+                system_prompt=_AUDIT_SYSTEM,
+                session_id=llm_cfg.get("session_id") or None,
+                task_name="audit_chapter",
+                extra_metadata={"project_id": req.project_id, "chapter_num": req.chapter_num},
+            )
+            raw = raw.strip()
             # Strip markdown code fences if present
             if raw.startswith("```"):
                 raw = re.sub(r"^```[a-z]*\n?", "", raw)
@@ -418,14 +452,24 @@ async def anti_detect_rewrite(req: AntiDetectRequest):
             + wordlist_note + patterns_note
         )
 
-        llm = build_llm(req.llm_config, default_temperature=0.85, default_max_tokens=8192)
+        llm_cfg, _ = _prepare_llm_call(
+            req.llm_config,
+            task_name="anti_detect_rewrite",
+            stable_key=req.chapter_id,
+            extra_metadata={"chapter_id": req.chapter_id, "intensity": req.intensity},
+        )
+        llm_cfg.setdefault("temperature", 0.85)
+        llm_cfg.setdefault("max_tokens", 8192)
 
-        response = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=f"请改写以下章节文本：\n\n{req.text[:8000]}"),
-        ])
-
-        raw = response.content.strip()
+        raw, _ = await ainvoke_text(
+            f"请改写以下章节文本：\n\n{req.text[:8000]}",
+            llm_cfg,
+            system_prompt=system_prompt,
+            session_id=llm_cfg.get("session_id") or None,
+            task_name="anti_detect_rewrite",
+            extra_metadata={"chapter_id": req.chapter_id, "intensity": req.intensity},
+        )
+        raw = raw.strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-z]*\n?", "", raw)
             raw = re.sub(r"\n?```$", "", raw)
@@ -493,7 +537,14 @@ async def narrative_revise(req: NarrativeReviseRequest):
         if req.top_issues:
             issues_note = "\n《具体问题》:\n" + "\n".join(f"- {issue}" for issue in req.top_issues[:10])
 
-        llm = build_llm(req.llm_config, default_temperature=0.5, default_max_tokens=8192)
+        llm_cfg, _ = _prepare_llm_call(
+            req.llm_config,
+            task_name="narrative_revise",
+            stable_key=req.chapter_id,
+            extra_metadata={"chapter_id": req.chapter_id, "issue_count": len(req.top_issues)},
+        )
+        llm_cfg.setdefault("temperature", 0.5)
+        llm_cfg.setdefault("max_tokens", 8192)
 
         user_content = (
             f"请根据以下审核问题修改章节内容："
@@ -501,12 +552,16 @@ async def narrative_revise(req: NarrativeReviseRequest):
             f"\n\n《章节内容》:\n{req.chapter_text[:8000]}"
         )
 
-        response = await llm.ainvoke([
-            SystemMessage(content=_NARRATIVE_REVISE_SYSTEM),
-            HumanMessage(content=user_content),
-        ])
+        raw, _ = await ainvoke_text(
+            user_content,
+            llm_cfg,
+            system_prompt=_NARRATIVE_REVISE_SYSTEM,
+            session_id=llm_cfg.get("session_id") or None,
+            task_name="narrative_revise",
+            extra_metadata={"chapter_id": req.chapter_id, "issue_count": len(req.top_issues)},
+        )
 
-        data = _repair_json(response.content)
+        data = _repair_json(raw)
         rewritten = data.get("rewritten_text") or req.chapter_text
         changes = data.get("changes_made", [])
         if not isinstance(changes, list):
@@ -565,15 +620,24 @@ async def generate_creative_brief(req: CreativeBriefRequest):
     try:
         from langchain.schema import SystemMessage, HumanMessage
 
-        llm = build_llm(req.llm_config, default_temperature=0.7, default_max_tokens=8192)
+        llm_cfg, _ = _prepare_llm_call(
+            req.llm_config,
+            task_name="creative_brief",
+            extra_metadata={"genre": req.genre},
+        )
+        llm_cfg.setdefault("temperature", 0.7)
+        llm_cfg.setdefault("max_tokens", 8192)
 
         human_content = f"【题材】{req.genre}\n\n【创作简报】\n{req.brief_text[:6000]}"
-        response = await llm.ainvoke([
-            SystemMessage(content=_BRIEF_SYSTEM),
-            HumanMessage(content=human_content),
-        ])
-
-        raw = response.content.strip()
+        raw, _ = await ainvoke_text(
+            human_content,
+            llm_cfg,
+            system_prompt=_BRIEF_SYSTEM,
+            session_id=llm_cfg.get("session_id") or None,
+            task_name="creative_brief",
+            extra_metadata={"genre": req.genre},
+        )
+        raw = raw.strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-z]*\n?", "", raw)
             raw = re.sub(r"\n?```$", "", raw)
@@ -646,12 +710,23 @@ async def import_chapters_analyze(req: ImportChaptersRequest):
 "foreshadowings":[{"content":"","embed_method":"explicit|implicit","priority":5}],
 "glossary":[{"term":"","definition":"","category":"place|item|concept|power"}]}
 profile.traits为逗号分隔的字符串。只提取明确出现的元素，不要推测。"""
-            llm = build_llm(req.llm_config, default_temperature=0.2, default_max_tokens=4096)
-            response = await llm.ainvoke([
-                SystemMessage(content=_RE_SYSTEM),
-                HumanMessage(content=f"分析以下章节：\n\n{sample_text}"),
-            ])
-            reverse_engineered = _repair_json(response.content)
+            llm_cfg, _ = _prepare_llm_call(
+                req.llm_config,
+                task_name="import_chapters_reverse_engineer",
+                stable_key=req.import_id,
+                extra_metadata={"project_id": req.project_id, "fanfic_mode": req.fanfic_mode or ""},
+            )
+            llm_cfg.setdefault("temperature", 0.2)
+            llm_cfg.setdefault("max_tokens", 4096)
+            raw, _ = await ainvoke_text(
+                f"分析以下章节：\n\n{sample_text}",
+                llm_cfg,
+                system_prompt=_RE_SYSTEM,
+                session_id=llm_cfg.get("session_id") or None,
+                task_name="import_chapters_reverse_engineer",
+                extra_metadata={"project_id": req.project_id, "fanfic_mode": req.fanfic_mode or ""},
+            )
+            reverse_engineered = _repair_json(raw)
         except Exception as exc:
             logger.warning("reverse engineering LLM call failed: %s", repr(exc), exc_info=True)
 

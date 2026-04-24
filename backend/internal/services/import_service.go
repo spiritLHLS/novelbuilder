@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -333,26 +332,18 @@ func (s *ImportService) Process(ctx context.Context, importID string, llmCfg map
 	}
 	data, _ := json.Marshal(sidecarBody)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		s.sidecarURL+"/import-chapters/analyze", bytes.NewReader(data))
-	if err != nil {
-		s.markFailed(importID, err.Error())
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(httpReq)
+	raw, err := doRetriableJSONRequest(ctx, s.httpClient, s.logger, "POST /import-chapters/analyze", func(ctx context.Context) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			s.sidecarURL+"/import-chapters/analyze", bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		return httpReq, nil
+	})
 	if err != nil {
 		s.markFailed(importID, err.Error())
 		return fmt.Errorf("sidecar: %w", err)
-	}
-	defer resp.Body.Close()
-
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		msg := fmt.Sprintf("sidecar %d: %s", resp.StatusCode, string(raw))
-		s.markFailed(importID, msg)
-		return fmt.Errorf("%s", msg)
 	}
 
 	var result struct {

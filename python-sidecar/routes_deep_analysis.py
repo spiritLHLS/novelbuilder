@@ -36,8 +36,6 @@ import asyncio
 import json
 import logging
 import os
-import re
-import time
 from typing import Optional
 
 import httpx
@@ -45,6 +43,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from json_repair import repair_json, is_response_complete
+from llm_utils import ainvoke_text
 
 logger = logging.getLogger("python-agent")
 
@@ -64,6 +63,7 @@ class LLMConfig(BaseModel):
     api_style: str = "chat_completions"  # or "responses" (OpenAI Responses API)
     timeout: int = 600          # seconds; thinking/reasoning models can take several minutes
     json_mode: bool = True      # add response_format={type:json_object}; disable for reasoning models
+    session_id: str = ""       # stable task/session identifier propagated from the caller when available
 
 class ChunkAnalyzeRequest(BaseModel):
     job_id: str
@@ -76,7 +76,7 @@ class ChunkAnalyzeRequest(BaseModel):
 
 class ChunkData(BaseModel):
     characters: list     # [{name, role, description, traits: []}]
-    world: dict          # {setting, time_period, locations: [], systems: []}
+    world: dict          # {setting, time_period, locations: [], systems: [], social_structure, core_conflict, factions, constitutions, forbidden_anchors}
     outline: list        # [{level, title, summary}]  level is "macro"/"meso"/"micro"
     glossary: list = []  # [{term, definition, category}]
     foreshadowings: list = []  # [{content, related_characters: [], priority}]
@@ -87,47 +87,32 @@ class MergeRequest(BaseModel):
     chunks: list[ChunkData]
     llm_config: Optional[LLMConfig] = None
 
-# ── Per-profile sliding-window rate limiter ────────────────────────────────────
 
-# Maps (base_url, model) → {"lock": asyncio.Lock, "timestamps": list[float]}
-_rpm_state: dict[str, dict] = {}
+def _child_session_id(session_id: str, suffix: str) -> str:
+    base = str(session_id or "").strip()
+    child = str(suffix or "").strip()
+    if not base or not child:
+        return base
+    return f"{base}:{child}"
 
 
-async def _rate_limit(cfg: LLMConfig) -> None:
-    """Enforce cfg.rpm_limit requests/minute using a 60-second sliding window.
-    A lock serialises window inspection so only one coroutine enters the
-    critical section at a time, preventing burst over-runs."""
-    if cfg.rpm_limit <= 0:
-        return
-    key = f"{cfg.base_url}|{cfg.model}"
-    if key not in _rpm_state:
-        _rpm_state[key] = {"lock": asyncio.Lock(), "timestamps": []}
-    state = _rpm_state[key]
-
-    async with state["lock"]:
-        while True:
-            now = time.monotonic()
-            cutoff = now - 60.0
-            state["timestamps"] = [t for t in state["timestamps"] if t >= cutoff]
-
-            if len(state["timestamps"]) < cfg.rpm_limit:
-                state["timestamps"].append(now)
-                return
-
-            # Must wait until the oldest request falls outside the 60-second window.
-            wait_secs = state["timestamps"][0] + 60.0 - now + 0.05
-            logger.debug("RPM limit %d reached, waiting %.1fs", cfg.rpm_limit, wait_secs)
-            await asyncio.sleep(max(wait_secs, 0.05))
-
+def _cfg_with_child_session(cfg: LLMConfig, suffix: str) -> LLMConfig:
+    session_id = _child_session_id(cfg.session_id, suffix)
+    if session_id == cfg.session_id:
+        return cfg
+    return cfg.model_copy(update={"session_id": session_id})
 
 # ── LLM helper (async, with built-in retry) ───────────────────────────────────
 
-async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6, _meta: dict | None = None) -> dict:
+async def _llm_extract(
+    prompt: str,
+    cfg: LLMConfig,
+    max_retries: int = 6,
+    _meta: dict | None = None,
+    request_label: str = "reference_deep_analysis",
+) -> dict:
     """
-    Call an OpenAI-compatible endpoint and return parsed JSON.
-    Supports two API styles:
-      - "chat_completions": POST {base_url}/chat/completions  (default)
-      - "responses":        POST {base_url}/responses          (OpenAI Responses API)
+        Call the shared llm_utils routing layer and return parsed JSON.
     Retries up to max_retries times with exponential back-off on transient errors
     (429, 500, 502, 503, 504).  Returns {} on exhaustion.
 
@@ -135,207 +120,130 @@ async def _llm_extract(prompt: str, cfg: LLMConfig, max_retries: int = 6, _meta:
       _meta["truncated"] = True  when finish_reason=length (output cut short).
       _meta["partial"]   = <parsed dict/list>  the repaired partial result.
     """
-    api_key = cfg.api_key or os.getenv("OPENAI_API_KEY", "")
+    cfg_dict = cfg.model_dump()
+    api_key = cfg_dict.get("api_key") or os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         logger.error("LLM extraction failed: no API key configured (set api_key in llm_config or OPENAI_API_KEY env var)")
         return {}
-    base_url = cfg.base_url.rstrip("/")
-    # Normalize: strip trailing /chat/completions that some provider UIs include in the URL.
-    base_url = re.sub(r"/chat/completions$", "", base_url, flags=re.IGNORECASE)
-    # Also strip /responses for the responses style.
-    base_url = re.sub(r"/responses$", "", base_url, flags=re.IGNORECASE)
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
 
     system_msg = "你是一位专业的中文小说分析专家，擅长提取人物、世界观和情节大纲。请严格以JSON格式输出结果，不要添加任何额外说明。"
-    use_responses_api = cfg.api_style == "responses"
-
-    if use_responses_api:
-        # OpenAI Responses API format: POST /responses
-        endpoint = f"{base_url}/responses"
-        payload: dict = {
-            "model": cfg.model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": system_msg}],
-                },
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": prompt}],
-                },
-            ],
-            "store": False,
-        }
-        if not cfg.omit_max_tokens:
-            payload["max_output_tokens"] = cfg.max_tokens
-    else:
-        # Standard chat/completions format
-        endpoint = f"{base_url}/chat/completions"
-        payload = {
-            "model": cfg.model,
-            "messages": [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": prompt},
-            ],
-        }
-        if not cfg.omit_max_tokens:
-            payload["max_tokens"] = cfg.max_tokens
-        if not cfg.omit_temperature:
-            payload["temperature"] = cfg.temperature
-        if cfg.json_mode:
-            payload["response_format"] = {"type": "json_object"}
 
     delay = 10.0
-    http_timeout = httpx.Timeout(connect=30.0, read=float(cfg.timeout), write=30.0, pool=30.0)
-    async with httpx.AsyncClient(timeout=http_timeout) as client:
-        for attempt in range(1, max_retries + 1):
-            try:
-                await _rate_limit(cfg)
-                resp = await client.post(endpoint, headers=headers, json=payload)
-                if resp.status_code in (429, 500, 502, 503, 504):
-                    try:
-                        body_snippet = resp.text[:400]
-                    except Exception:
-                        body_snippet = "<unreadable>"
-                    logger.warning(
-                        "LLM HTTP %d attempt %d/%d, backing off %.1fs | body: %s",
-                        resp.status_code, attempt, max_retries, delay, body_snippet,
-                    )
-                    await asyncio.sleep(delay + (0.5 * attempt))
-                    delay = min(delay * 2, 60.0)
-                    continue
-                if resp.status_code in (400, 401, 403):
-                    try:
-                        body_snippet = resp.text[:400]
-                    except Exception:
-                        body_snippet = "<unreadable>"
-                    # Special case: some models (e.g. o-series) reject max_tokens and
-                    # require max_completion_tokens. Rebuild payload and retry once.
-                    if (
-                        resp.status_code == 400
-                        and not use_responses_api
-                        and "max_tokens" in payload
-                        and "max_tokens" in body_snippet
-                        and "max_completion_tokens" in body_snippet
-                    ):
-                        logger.warning(
-                            "LLM HTTP 400: max_tokens unsupported, retrying with max_completion_tokens (attempt %d/%d)",
-                            attempt, max_retries,
-                        )
-                        payload = {k: v for k, v in payload.items() if k != "max_tokens"}
-                        payload["max_completion_tokens"] = cfg.max_tokens
-                        continue
-                    label = {400: "Bad Request (check model name)", 401: "Unauthorized (invalid API key)", 403: "Forbidden (API key rejected by gateway)"}
-                    logger.error(
-                        "LLM HTTP %d %s \u2014 will not retry | body: %s",
-                        resp.status_code, label.get(resp.status_code, ""), body_snippet,
-                    )
-                    break
-                resp.raise_for_status()
-                resp_text = resp.text
-                data = json.loads(resp_text)
-                # Extract text from response depending on API style
-                if use_responses_api:
-                    # Responses API: data["output"][0]["content"][0]["text"]
-                    raw = data["output"][0]["content"][0]["text"]
-                    finish_reason = data.get("status", "unknown")
-                else:
-                    message = data["choices"][0]["message"]
-                    raw = message.get("content") or ""
-                    finish_reason = data["choices"][0].get("finish_reason", "unknown")
-                    # Some providers surface thinking content separately; log it for tracing.
-                    thinking = message.get("reasoning_content") or message.get("thinking") or ""
-                    if thinking:
-                        logger.debug(
-                            "LLM thinking tokens on attempt %d/%d: %d chars (first 200): %.200s",
-                            attempt, max_retries, len(thinking), thinking,
-                        )
-
-                logger.info(
-                    "LLM raw response attempt %d/%d | finish_reason=%s | len=%d | first 500: %.500s",
-                    attempt, max_retries, finish_reason, len(raw), raw,
+    for attempt in range(1, max_retries + 1):
+        try:
+            raw, response_meta = await ainvoke_text(
+                prompt,
+                cfg_dict,
+                system_prompt=system_msg,
+                session_id=cfg_dict.get("session_id") or None,
+                task_name=request_label,
+                extra_metadata={
+                    "session_id": cfg_dict.get("session_id") or None,
+                },
+            )
+            finish_reason = str(
+                response_meta.get("finish_reason")
+                or response_meta.get("status")
+                or response_meta.get("stop_reason")
+                or "unknown"
+            )
+            thinking = str(response_meta.get("reasoning_content") or "")
+            if thinking:
+                logger.debug(
+                    "LLM thinking tokens on attempt %d/%d: %d chars (first 200): %.200s",
+                    attempt, max_retries, len(thinking), thinking,
                 )
 
-                # Retry immediately on empty content (content filter, null, etc.)
-                if not raw.strip():
-                    logger.warning(
-                        "LLM returned empty content on attempt %d/%d (finish_reason=%s), retrying in %.1fs",
-                        attempt, max_retries, finish_reason, delay,
-                    )
-                    if attempt < max_retries:
-                        await asyncio.sleep(delay)
-                        delay = min(delay * 2, 60.0)
-                        continue
-                    break
+            logger.info(
+                "LLM raw response attempt %d/%d | finish_reason=%s | len=%d | first 500: %.500s",
+                attempt, max_retries, finish_reason, len(raw), raw,
+            )
 
-                # finish_reason="length" means the model hit token limit → truncated output.
-                # Signal the caller via _meta so it can split the input and retry.
-                # Also attempt json_repair on the partial response as a fallback.
-                if finish_reason == "length":
-                    logger.warning(
-                        "LLM finish_reason=length (truncated) on attempt %d/%d, "
-                        "trying json_repair on partial response (len=%d)",
-                        attempt, max_retries, len(raw),
-                    )
+            if not raw.strip():
+                logger.warning(
+                    "LLM returned empty content on attempt %d/%d (finish_reason=%s), retrying in %.1fs",
+                    attempt, max_retries, finish_reason, delay,
+                )
+                if attempt < max_retries:
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 60.0)
+                    continue
+                break
+
+            if finish_reason == "length":
+                logger.warning(
+                    "LLM finish_reason=length (truncated) on attempt %d/%d, "
+                    "trying json_repair on partial response (len=%d)",
+                    attempt, max_retries, len(raw),
+                )
+                if _meta is not None:
+                    _meta["truncated"] = True
+                try:
+                    partial = _parse_json(raw)
                     if _meta is not None:
-                        _meta["truncated"] = True
-                    try:
-                        partial = _parse_json(raw)
-                        if _meta is not None:
-                            _meta["partial"] = partial
-                        return partial
-                    except Exception:
-                        pass
-                    if attempt < max_retries:
-                        logger.warning("json_repair failed, retrying attempt %d/%d", attempt, max_retries)
-                        await asyncio.sleep(delay)
-                        delay = min(delay * 1.5, 30.0)
-                        continue
-
-                # Heuristic completeness check (catches truncation not flagged by finish_reason)
-                is_complete, issues = is_response_complete(raw)
-                if not is_complete and attempt < max_retries:
-                    logger.warning(
-                        "LLM response heuristically incomplete on attempt %d/%d: %s. Retrying...",
-                        attempt, max_retries, issues,
-                    )
-                    reduced_tokens = max(int(cfg.max_tokens * 0.75), 2048)
-                    if use_responses_api:
-                        payload["max_output_tokens"] = reduced_tokens
-                    else:
-                        payload["max_tokens"] = reduced_tokens
+                        _meta["partial"] = partial
+                    return partial
+                except Exception:
+                    pass
+                if attempt < max_retries:
+                    logger.warning("json_repair failed, retrying attempt %d/%d", attempt, max_retries)
                     await asyncio.sleep(delay)
                     delay = min(delay * 1.5, 30.0)
                     continue
 
-                return _parse_json(raw)
-            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            is_complete, issues = is_response_complete(raw)
+            if not is_complete and attempt < max_retries:
                 logger.warning(
-                    "LLM network error attempt %d/%d: %s | cause: %s",
-                    attempt, max_retries,
-                    repr(exc),
-                    repr(exc.__cause__) if exc.__cause__ else "none",
+                    "LLM response heuristically incomplete on attempt %d/%d: %s. Retrying...",
+                    attempt, max_retries, issues,
                 )
-                if attempt == max_retries:
-                    break
+                if not cfg_dict.get("omit_max_tokens", False):
+                    cfg_dict["max_tokens"] = max(int(int(cfg_dict.get("max_tokens", cfg.max_tokens)) * 0.75), 2048)
                 await asyncio.sleep(delay)
-                delay = min(delay * 2, 60.0)
-            except json.JSONDecodeError as exc:
-                raw_snippet = locals().get("resp_text", "<not captured>")[:500]
+                delay = min(delay * 1.5, 30.0)
+                continue
+
+            return _parse_json(raw)
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code if exc.response is not None else 0
+            body_snippet = exc.response.text[:400] if exc.response is not None else "<unreadable>"
+            if status_code in (429, 500, 502, 503, 504):
                 logger.warning(
-                    "LLM empty/invalid JSON attempt %d/%d: %s | raw_response: %s",
-                    attempt, max_retries, repr(exc), raw_snippet,
+                    "LLM HTTP %d attempt %d/%d, backing off %.1fs | body: %s",
+                    status_code, attempt, max_retries, delay, body_snippet,
                 )
-                if attempt == max_retries:
-                    break
-                await asyncio.sleep(delay)
+                await asyncio.sleep(delay + (0.5 * attempt))
                 delay = min(delay * 2, 60.0)
-            except Exception as exc:
-                logger.error("LLM unexpected error attempt %d/%d: %s", attempt, max_retries, repr(exc), exc_info=True)
+                continue
+            label = {400: "Bad Request (check model name)", 401: "Unauthorized (invalid API key)", 403: "Forbidden (API key rejected by gateway)"}
+            logger.error(
+                "LLM HTTP %d %s — will not retry | body: %s",
+                status_code, label.get(status_code, ""), body_snippet,
+            )
+            break
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            logger.warning(
+                "LLM network error attempt %d/%d: %s | cause: %s",
+                attempt, max_retries,
+                repr(exc),
+                repr(exc.__cause__) if exc.__cause__ else "none",
+            )
+            if attempt == max_retries:
                 break
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60.0)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "LLM empty/invalid JSON attempt %d/%d: %s | raw_response: %.500s",
+                attempt, max_retries, repr(exc), locals().get("raw", "<not captured>"),
+            )
+            if attempt == max_retries:
+                break
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60.0)
+        except Exception as exc:
+            logger.error("LLM unexpected error attempt %d/%d: %s", attempt, max_retries, repr(exc), exc_info=True)
+            break
     logger.error("LLM extraction exhausted after %d attempts", max_retries)
     return {}
 
@@ -383,6 +291,22 @@ _CHUNK_PROMPT = """请从以下小说片段中提取结构化信息，严格按�
   "world_time_period": "时代背景（20字以内）",
   "world_locations": "地点1；地点2；地点3",
   "world_systems": "体系1；体系2",
+    "world_social_structure": "社会结构/秩序（50字以内）",
+    "world_core_conflict": "世界层面的核心冲突（50字以内）",
+    "world_factions": "势力1；势力2；势力3",
+    "world_constitutions": [
+        {
+            "type": "immutable",
+            "rule": "不可变规则（30字以内）",
+            "reason": "规则存在原因（20字以内）"
+        },
+        {
+            "type": "mutable",
+            "rule": "可变规则（30字以内）",
+            "reason": "规则存在原因（20字以内）"
+        }
+    ],
+    "forbidden_anchors": ["绝不能出现的设定/禁忌1", "绝不能出现的设定/禁忌2"],
   "outline": [
     {{
       "level": "macro",
@@ -423,12 +347,14 @@ _CHUNK_PROMPT = """请从以下小说片段中提取结构化信息，严格按�
 1. 只提取本片段中明确出现的信息，不要推测
 2. 每个字段严格控制在括号内的字数限制，确保JSON能够完整输出
 3. traits为逗号分隔的字符串，relationships为"角色：关系"用分号分隔的字符串
-4. world_locations和world_systems均为分号分隔的字符串
-5. outline：macro为卷/大情节，meso为章节级，micro为场景级，每级不超过10条
-6. outline.characters和foreshadowings.characters均为逗号分隔的字符串，不使用数组
-7. glossary：提取最重要的专有名词，不超过20条
-8. foreshadowings：提取最重要的伏笔，不超过10条
-9. 严格返回JSON，不要任何其他文字，确保所有括号/引号完整闭合
+4. world_locations、world_systems、world_factions均为分号分隔的字符串
+5. world_constitutions只保留最重要的世界规则，最多8条，type只能是immutable或mutable
+6. forbidden_anchors只提取文本中明确出现且确实被视为禁忌/铁律的元素，最多8条
+7. outline：macro为卷/大情节，meso为章节级，micro为场景级，每级不超过10条
+8. outline.characters和foreshadowings.characters均为逗号分隔的字符串，不使用数组
+9. glossary：提取最重要的专有名词，不超过20条
+10. foreshadowings：提取最重要的伏笔，不超过10条
+11. 严格返回JSON，不要任何其他文字，确保所有括号/引号完整闭合
 
 {prior_context_section}小说片段（第{chunk_index}/{total_chunks}段）：
 {text}
@@ -452,10 +378,39 @@ def _split_delimited(s: str, sep: str = ",") -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+def _ensure_string_list(value: object, sep: str = ",") -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return _split_delimited(value, sep)
+    return []
+
+
+def _normalize_constitutions(value: object) -> list[dict]:
+    items = value if isinstance(value, list) else []
+    normalized: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_type = str(item.get("type", "immutable")).strip().lower()
+        rule_type = "mutable" if raw_type == "mutable" else "immutable"
+        rule = str(item.get("rule", "")).strip()
+        reason = str(item.get("reason", "")).strip()
+        key = (rule_type, rule.lower())
+        if not rule or key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"type": rule_type, "rule": rule, "reason": reason})
+    return normalized
+
+
 @router.post("/deep-analyze/chunk")
 async def analyze_chunk(req: ChunkAnalyzeRequest):
     """Analyze a single chunk of text and return extracted entities."""
     cfg = req.llm_config or LLMConfig()
+    if not cfg.session_id:
+        cfg = cfg.model_copy(update={"session_id": req.job_id})
 
     # Build prior context hint so the LLM skips already-known entities.
     prior_ctx = req.prior_context or {}
@@ -485,7 +440,7 @@ async def analyze_chunk(req: ChunkAnalyzeRequest):
     )
 
     logger.info("deep-analyze chunk %d/%d job=%s", req.chunk_index + 1, req.total_chunks, req.job_id)
-    result = await _llm_extract(prompt, cfg)
+    result = await _llm_extract(prompt, cfg, request_label="reference_deep_analysis_chunk")
 
     # Convert flat LLM output to the structured format expected by downstream consumers.
     chars = result.get("characters", [])
@@ -521,6 +476,11 @@ async def analyze_chunk(req: ChunkAnalyzeRequest):
         "time_period": result.get("world_time_period", ""),
         "locations": _split_delimited(result.get("world_locations", ""), ";"),
         "systems": _split_delimited(result.get("world_systems", ""), ";"),
+        "social_structure": result.get("world_social_structure", ""),
+        "core_conflict": result.get("world_core_conflict", ""),
+        "factions": _split_delimited(result.get("world_factions", ""), ";"),
+        "constitutions": _normalize_constitutions(result.get("world_constitutions", [])),
+        "forbidden_anchors": _ensure_string_list(result.get("forbidden_anchors", []), ";"),
     }
 
     # Convert outline.characters string to involved_characters list
@@ -666,18 +626,23 @@ async def _merge_world_chunked(all_worlds: list, cfg: LLMConfig) -> dict:
     """Merge world data from all chunks without any hard truncation.
 
     Strategy:
-    - locations and systems: Python set-union (no LLM, no truncation).
+    - locations, systems, factions, forbidden_anchors: Python set-union (no LLM, no truncation).
     - setting text: batch into ≤12 000-byte chunks and LLM-summarize each,
       then do one final summary pass for multi-batch novels.
-    - time_period: pick the longest/most-informative value.
+    - time_period / social_structure / core_conflict: pick the longest/most-informative value.
     """
     if not all_worlds:
         return {}
 
     loc_set: set[str] = set()
     sys_set: set[str] = set()
+    faction_set: set[str] = set()
+    forbidden_set: set[str] = set()
     settings: list[str] = []
     time_candidates: list[str] = []
+    social_candidates: list[str] = []
+    conflict_candidates: list[str] = []
+    constitution_map: dict[tuple[str, str], dict] = {}
 
     for w in all_worlds:
         if not isinstance(w, dict):
@@ -688,15 +653,33 @@ async def _merge_world_chunked(all_worlds: list, cfg: LLMConfig) -> dict:
         t = (w.get("time_period") or "").strip()
         if t:
             time_candidates.append(t)
+        social = (w.get("social_structure") or "").strip()
+        if social:
+            social_candidates.append(social)
+        conflict = (w.get("core_conflict") or "").strip()
+        if conflict:
+            conflict_candidates.append(conflict)
         for loc in (w.get("locations") or []):
             if isinstance(loc, str) and loc.strip():
                 loc_set.add(loc.strip())
         for sys_ in (w.get("systems") or []):
             if isinstance(sys_, str) and sys_.strip():
                 sys_set.add(sys_.strip())
+        for faction in (w.get("factions") or []):
+            if isinstance(faction, str) and faction.strip():
+                faction_set.add(faction.strip())
+        for forbidden in (w.get("forbidden_anchors") or []):
+            if isinstance(forbidden, str) and forbidden.strip():
+                forbidden_set.add(forbidden.strip())
+        for item in _normalize_constitutions(w.get("constitutions", [])):
+            key = (item["type"], item["rule"].lower())
+            if key not in constitution_map or len(item.get("reason", "")) > len(constitution_map[key].get("reason", "")):
+                constitution_map[key] = item
 
-    # Pick the most informative time_period (longest non-empty string).
+    # Pick the most informative scalar fields (longest non-empty string).
     time_period = max(time_candidates, key=len) if time_candidates else ""
+    social_structure = max(social_candidates, key=len) if social_candidates else ""
+    core_conflict = max(conflict_candidates, key=len) if conflict_candidates else ""
 
     # Deduplicate settings text by 30-char prefix to remove near-duplicate short entries.
     unique_settings: list[str] = []
@@ -754,6 +737,11 @@ async def _merge_world_chunked(all_worlds: list, cfg: LLMConfig) -> dict:
         "time_period": time_period,
         "locations": sorted(loc_set),
         "systems": sorted(sys_set),
+        "social_structure": social_structure,
+        "core_conflict": core_conflict,
+        "factions": sorted(faction_set),
+        "constitutions": sorted(constitution_map.values(), key=lambda item: (0 if item.get("type") == "immutable" else 1, item.get("rule", ""))),
+        "forbidden_anchors": sorted(forbidden_set),
     }
 
 
@@ -795,9 +783,11 @@ async def _llm_merge_chars_batch(batch: list, cfg: LLMConfig, depth: int = 0) ->
         depth, len(batch),
     )
     mid = len(batch) // 2
+    left_cfg = _cfg_with_child_session(cfg, f"d{depth + 1}-left")
+    right_cfg = _cfg_with_child_session(cfg, f"d{depth + 1}-right")
     left, right = await asyncio.gather(
-        _llm_merge_chars_batch(batch[:mid], cfg, depth + 1),
-        _llm_merge_chars_batch(batch[mid:], cfg, depth + 1),
+        _llm_merge_chars_batch(batch[:mid], left_cfg, depth + 1),
+        _llm_merge_chars_batch(batch[mid:], right_cfg, depth + 1),
     )
 
     # Python-level name-dedup on the combined halves before the final pass.
@@ -827,8 +817,9 @@ async def _llm_merge_chars_batch(batch: list, cfg: LLMConfig, depth: int = 0) ->
     SAFE_FINAL_BYTES = 6_000
     if len(final_data) <= SAFE_FINAL_BYTES:
         final_meta: dict = {}
+        final_cfg = _cfg_with_child_session(cfg, f"d{depth}-final")
         final_result = await _llm_extract(
-            _MERGE_CHARACTERS_PROMPT.format(data=final_data), cfg, _meta=final_meta,
+            _MERGE_CHARACTERS_PROMPT.format(data=final_data), final_cfg, _meta=final_meta,
         )
         if not final_meta.get("truncated"):
             final_merged = final_result if isinstance(final_result, list) else final_result.get("characters", combined)
@@ -909,7 +900,8 @@ async def _merge_characters_chunked(all_chars: list, cfg: LLMConfig) -> list:
     batch_results: list[dict] = []
     for i, batch in enumerate(batches):
         logger.info("merge_characters: LLM batch %d/%d (%d entries)", i + 1, len(batches), len(batch))
-        merged = await _llm_merge_chars_batch(batch, cfg)
+        batch_cfg = _cfg_with_child_session(cfg, f"batch-{i + 1}")
+        merged = await _llm_merge_chars_batch(batch, batch_cfg)
         batch_results.extend(merged)
 
     if len(batches) == 1:
@@ -921,7 +913,8 @@ async def _merge_characters_chunked(all_chars: list, cfg: LLMConfig) -> list:
         "merge_characters: final merge pass over %d entries from %d batches",
         len(batch_results), len(batches),
     )
-    return _sort_by_importance(await _llm_merge_chars_batch(batch_results, cfg))
+    final_cfg = _cfg_with_child_session(cfg, "final")
+    return _sort_by_importance(await _llm_merge_chars_batch(batch_results, final_cfg))
 
 
 def _dedup_outline(nodes: list) -> list:
@@ -988,11 +981,14 @@ async def merge_chunks(req: MergeRequest):
             base_url=req.llm_config.base_url,
             model=req.llm_config.model,
             max_tokens=req.llm_config.max_tokens,
-            temperature=0.3,  # lower for merge/dedup task
+            temperature=req.llm_config.temperature,
             rpm_limit=req.llm_config.rpm_limit,
             omit_max_tokens=req.llm_config.omit_max_tokens,
             omit_temperature=req.llm_config.omit_temperature,
             api_style=req.llm_config.api_style,
+            timeout=req.llm_config.timeout,
+            json_mode=req.llm_config.json_mode,
+            session_id=req.llm_config.session_id or req.job_id,
         )
     else:
         cfg = LLMConfig(
@@ -1001,6 +997,7 @@ async def merge_chunks(req: MergeRequest):
             model=os.getenv("OPENAI_MODEL", "gpt-4o"),
             max_tokens=4096,
             temperature=0.3,
+            session_id=req.job_id,
         )
 
     # Characters: multi-pass chunked merge (handles 300w+ novels with 100s of
@@ -1008,9 +1005,11 @@ async def merge_chunks(req: MergeRequest):
     # World: also multi-pass — locations/systems via Python set-union, settings via
     # batched LLM summarization — no hard byte cap anywhere.
     logger.info("merge: %d raw character entries, %d world entries", len(all_chars), len(all_worlds))
+    chars_cfg = _cfg_with_child_session(cfg, "merge-characters")
+    world_cfg = _cfg_with_child_session(cfg, "merge-world")
     final_chars_raw, world_result = await asyncio.gather(
-        _merge_characters_chunked(all_chars, cfg),
-        _merge_world_chunked(all_worlds, cfg),
+        _merge_characters_chunked(all_chars, chars_cfg),
+        _merge_world_chunked(all_worlds, world_cfg),
     )
     logger.info("merge: %d characters after chunked merge", len(final_chars_raw) if isinstance(final_chars_raw, list) else 0)
     # Convert flat merge output (traits/relationships as strings) back to structured lists

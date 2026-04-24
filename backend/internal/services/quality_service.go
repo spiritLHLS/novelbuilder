@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -31,6 +32,8 @@ func NewQualityService(db *pgxpool.Pool, ai *gateway.AIGateway, logger *zap.Logg
 }
 
 func (s *QualityService) RunFullCheck(ctx context.Context, chapterID string) (*models.QualityReport, error) {
+	ctx = contextWithLLMSession(ctx, nil, fmt.Sprintf("quality_check:%s", chapterID))
+
 	// Get chapter content
 	var content, projectID string
 	err := s.db.QueryRow(ctx,
@@ -63,27 +66,44 @@ func (s *QualityService) RunFullCheck(ctx context.Context, chapterID string) (*m
 	aiIssues, aiScore := s.reviewAsAntiAIExpert(ctx, content)
 	report.Issues = append(report.Issues, aiIssues...)
 	report.AIScoreEstimate = aiScore
+	report.AIProbability = clampProbability(aiScore / 100.0)
+	report.EstimatedBurstiness = estimateBurstiness(content)
+	report.Burstiness = report.EstimatedBurstiness
+	report.EstimatedPerplexity = estimatePerplexity(content)
 
-	// Calculate overall score
+	report.Scores = map[string]float64{
+		"editor":         scoreIssues(editorIssues),
+		"reader":         scoreIssues(readerIssues),
+		"logic_reviewer": scoreIssues(logicIssues),
+		"anti_ai":        clampScore(10.0 - (aiScore / 12.5)),
+	}
+
+	// Calculate overall score on a 10-point scale so it matches the frontend thresholds.
 	criticalCount := 0
+	warningCount := 0
 	for _, issue := range report.Issues {
 		if issue.Severity == "critical" {
 			criticalCount++
+		} else if issue.Severity == "warning" {
+			warningCount++
 		}
 	}
-	report.OverallScore = float64(100 - criticalCount*15 - len(report.Issues)*5)
-	if report.OverallScore < 0 {
-		report.OverallScore = 0
-	}
-	report.Pass = report.OverallScore >= 60 && report.AIScoreEstimate <= 40
+	avgRoleScore := (report.Scores["editor"] + report.Scores["reader"] + report.Scores["logic_reviewer"] + report.Scores["anti_ai"]) / 4.0
+	report.OverallScore = clampScore(avgRoleScore - float64(criticalCount)*0.4 - float64(warningCount)*0.1)
+	report.Pass = report.OverallScore >= 7.0 && report.AIProbability <= 0.4 && criticalCount == 0
 
-	// Save report to chapter
-	reportJSON, _ := json.Marshal(report)
+	return report, s.SaveReport(ctx, chapterID, report)
+}
+
+func (s *QualityService) SaveReport(ctx context.Context, chapterID string, report *models.QualityReport) error {
+	reportJSON, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.Exec(ctx,
 		`UPDATE chapters SET quality_report = $1 WHERE id = $2`,
 		reportJSON, chapterID)
-
-	return report, err
+	return err
 }
 
 func (s *QualityService) reviewAsEditor(ctx context.Context, content string) ([]models.QualityIssue, error) {
@@ -367,4 +387,90 @@ func parseIssues(content string) []models.QualityIssue {
 		return nil
 	}
 	return issues
+}
+
+func scoreIssues(issues []models.QualityIssue) float64 {
+	score := 10.0
+	for _, issue := range issues {
+		switch issue.Severity {
+		case "critical":
+			score -= 2.5
+		case "warning":
+			score -= 1.0
+		default:
+			score -= 0.25
+		}
+	}
+	return clampScore(score)
+}
+
+func clampScore(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 10 {
+		return 10
+	}
+	return math.Round(v*10) / 10
+}
+
+func clampProbability(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func estimatePerplexity(content string) float64 {
+	words := regexp.MustCompile(`[\p{Han}]+|[a-zA-Z]+`).FindAllString(strings.ToLower(content), -1)
+	if len(words) == 0 {
+		return 0
+	}
+	unique := make(map[string]struct{}, len(words))
+	for _, word := range words {
+		unique[word] = struct{}{}
+	}
+	diversity := float64(len(unique)) / float64(len(words))
+	return math.Round(diversity*1000) / 10
+}
+
+func estimateBurstiness(content string) float64 {
+	parts := strings.FieldsFunc(content, func(r rune) bool {
+		switch r {
+		case '。', '！', '？', '；', '!', '?', ';', '\n':
+			return true
+		default:
+			return false
+		}
+	})
+	lengths := make([]float64, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		lengths = append(lengths, float64(len([]rune(part))))
+	}
+	if len(lengths) < 2 {
+		return 0
+	}
+	mean := 0.0
+	for _, v := range lengths {
+		mean += v
+	}
+	mean /= float64(len(lengths))
+	if mean == 0 {
+		return 0
+	}
+	variance := 0.0
+	for _, v := range lengths {
+		delta := v - mean
+		variance += delta * delta
+	}
+	variance /= float64(len(lengths))
+	stddev := math.Sqrt(variance)
+	return math.Round((stddev/mean)*1000) / 1000
 }
