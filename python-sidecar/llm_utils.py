@@ -139,7 +139,7 @@ def _apply_rpm_limit(llm, key: str, rpm_limit: int):
         return _orig_invoke(input, config=config, **kwargs)
 
     async def _ainvoke(input, config=None, **kwargs):
-        await _rate_limit_async(key, rpm_limit)
+        await asyncio.wait_for(_rate_limit_async(key, rpm_limit), timeout=61.0)
         return await _orig_ainvoke(input, config=config, **kwargs)
 
     llm.invoke = _invoke

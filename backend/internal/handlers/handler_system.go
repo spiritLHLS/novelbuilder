@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -129,9 +130,69 @@ func (h *Handler) ListLLMProfiles(c *gin.Context) {
 	c.JSON(200, gin.H{"data": profiles})
 }
 
+func validateCreateLLMProfileRequest(req models.CreateLLMProfileRequest) error {
+	if strings.TrimSpace(req.Name) == "" {
+		return errors.New("name is required")
+	}
+	if strings.TrimSpace(req.Provider) == "" {
+		return errors.New("provider is required")
+	}
+	if strings.TrimSpace(req.BaseURL) == "" {
+		return errors.New("base_url is required")
+	}
+	if strings.TrimSpace(req.APIKey) == "" {
+		return errors.New("api_key is required")
+	}
+	if strings.TrimSpace(req.ModelName) == "" {
+		return errors.New("model_name is required")
+	}
+	if req.MaxTokens != 0 && req.MaxTokens < 100 {
+		return fmt.Errorf("max_tokens must be at least 100 when provided")
+	}
+	if req.Temperature < 0 || req.Temperature > 2 {
+		return fmt.Errorf("temperature must be between 0 and 2")
+	}
+	if req.RPMLimit < 0 {
+		return fmt.Errorf("rpm_limit must be 0 or greater")
+	}
+	return nil
+}
+
+func validateUpdateLLMProfileRequest(req models.UpdateLLMProfileRequest) error {
+	if req.Name != "" && strings.TrimSpace(req.Name) == "" {
+		return errors.New("name cannot be blank")
+	}
+	if req.Provider != "" && strings.TrimSpace(req.Provider) == "" {
+		return errors.New("provider cannot be blank")
+	}
+	if req.BaseURL != "" && strings.TrimSpace(req.BaseURL) == "" {
+		return errors.New("base_url cannot be blank")
+	}
+	if req.APIKey != "" && strings.TrimSpace(req.APIKey) == "" {
+		return errors.New("api_key cannot be blank")
+	}
+	if req.ModelName != "" && strings.TrimSpace(req.ModelName) == "" {
+		return errors.New("model_name cannot be blank")
+	}
+	if req.MaxTokens != 0 && req.MaxTokens < 100 {
+		return fmt.Errorf("max_tokens must be at least 100 when provided")
+	}
+	if req.Temperature != nil && (*req.Temperature < 0 || *req.Temperature > 2) {
+		return fmt.Errorf("temperature must be between 0 and 2")
+	}
+	if req.RPMLimit != nil && *req.RPMLimit < 0 {
+		return fmt.Errorf("rpm_limit must be 0 or greater")
+	}
+	return nil
+}
+
 func (h *Handler) CreateLLMProfile(c *gin.Context) {
 	var req models.CreateLLMProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateCreateLLMProfileRequest(req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
@@ -159,6 +220,10 @@ func (h *Handler) GetLLMProfile(c *gin.Context) {
 func (h *Handler) UpdateLLMProfile(c *gin.Context) {
 	var req models.UpdateLLMProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateUpdateLLMProfileRequest(req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}

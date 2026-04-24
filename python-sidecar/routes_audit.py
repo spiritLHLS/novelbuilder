@@ -106,6 +106,45 @@ def _prepare_llm_call(
         extra_metadata=extra_metadata,
     )
 
+
+def _coerce_positive_int(value: object, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _llm_input_char_budget(
+    llm_cfg: dict,
+    *,
+    default_max_tokens: int,
+    min_chars: int,
+    max_chars: int,
+) -> int:
+    max_tokens = _coerce_positive_int((llm_cfg or {}).get("max_tokens"), default_max_tokens)
+    estimated = int(max_tokens * 1.8)
+    return max(min_chars, min(max_chars, estimated))
+
+
+def _truncate_for_llm(
+    text: str,
+    llm_cfg: dict,
+    *,
+    default_max_tokens: int,
+    min_chars: int,
+    max_chars: int,
+    overhead_chars: int = 0,
+) -> str:
+    budget = _llm_input_char_budget(
+        llm_cfg,
+        default_max_tokens=default_max_tokens,
+        min_chars=min_chars,
+        max_chars=max_chars,
+    )
+    allowed = max(min_chars // 2, budget - max(overhead_chars, 0))
+    return text[:allowed]
+
 # 33-DIMENSION CHAPTER AUDIT
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -304,9 +343,18 @@ async def audit_chapter(req: AuditChapterRequest):
             if req.context.get("foreshadowings"):
                 context_str += f"\n【待回收伏笔】{str(req.context['foreshadowings'])[:300]}"
 
+            chapter_excerpt = _truncate_for_llm(
+                req.chapter_text,
+                llm_cfg,
+                default_max_tokens=3000,
+                min_chars=2200,
+                max_chars=6000,
+                overhead_chars=len(context_str) + 64,
+            )
+
             human_content = (
                 f"{context_str}\n\n"
-                f"【章节正文（第{req.chapter_num}章）】\n{req.chapter_text[:6000]}"
+                f"【章节正文（第{req.chapter_num}章）】\n{chapter_excerpt}"
             )
 
             raw, _ = await ainvoke_text(
@@ -461,8 +509,17 @@ async def anti_detect_rewrite(req: AntiDetectRequest):
         llm_cfg.setdefault("temperature", 0.85)
         llm_cfg.setdefault("max_tokens", 8192)
 
+        rewrite_excerpt = _truncate_for_llm(
+            req.text,
+            llm_cfg,
+            default_max_tokens=8192,
+            min_chars=3000,
+            max_chars=8000,
+            overhead_chars=32,
+        )
+
         raw, _ = await ainvoke_text(
-            f"请改写以下章节文本：\n\n{req.text[:8000]}",
+            f"请改写以下章节文本：\n\n{rewrite_excerpt}",
             llm_cfg,
             system_prompt=system_prompt,
             session_id=llm_cfg.get("session_id") or None,
@@ -546,10 +603,19 @@ async def narrative_revise(req: NarrativeReviseRequest):
         llm_cfg.setdefault("temperature", 0.5)
         llm_cfg.setdefault("max_tokens", 8192)
 
+        chapter_excerpt = _truncate_for_llm(
+            req.chapter_text,
+            llm_cfg,
+            default_max_tokens=8192,
+            min_chars=3000,
+            max_chars=8000,
+            overhead_chars=len(dims_note) + len(issues_note) + 64,
+        )
+
         user_content = (
             f"请根据以下审核问题修改章节内容："
             f"{dims_note}{issues_note}"
-            f"\n\n《章节内容》:\n{req.chapter_text[:8000]}"
+            f"\n\n《章节内容》:\n{chapter_excerpt}"
         )
 
         raw, _ = await ainvoke_text(
@@ -628,7 +694,16 @@ async def generate_creative_brief(req: CreativeBriefRequest):
         llm_cfg.setdefault("temperature", 0.7)
         llm_cfg.setdefault("max_tokens", 8192)
 
-        human_content = f"【题材】{req.genre}\n\n【创作简报】\n{req.brief_text[:6000]}"
+        brief_excerpt = _truncate_for_llm(
+            req.brief_text,
+            llm_cfg,
+            default_max_tokens=8192,
+            min_chars=2500,
+            max_chars=6000,
+            overhead_chars=len(req.genre) + 16,
+        )
+
+        human_content = f"【题材】{req.genre}\n\n【创作简报】\n{brief_excerpt}"
         raw, _ = await ainvoke_text(
             human_content,
             llm_cfg,
