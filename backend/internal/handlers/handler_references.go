@@ -135,6 +135,26 @@ func (h *Handler) DeleteReference(c *gin.Context) {
 	c.JSON(204, nil)
 }
 
+// ListReferenceNovelSites proxies the searchable site catalog from the Python sidecar.
+func (h *Handler) ListReferenceNovelSites(c *gin.Context) {
+	sidecarURL := h.sidecar.BaseURL()
+
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, sidecarURL+"/novels/sites", nil)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to build request"})
+		return
+	}
+
+	resp, err := analyzeHTTPClient.Do(httpReq)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "site catalog service unavailable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	c.Data(resp.StatusCode, "application/json", raw)
+}
+
 // SearchReferenceNovels proxies keyword search to the Python sidecar's /novels/search endpoint.
 func (h *Handler) SearchReferenceNovels(c *gin.Context) {
 	var body struct {
@@ -169,6 +189,35 @@ func (h *Handler) SearchReferenceNovels(c *gin.Context) {
 	resp, err := analyzeHTTPClient.Do(httpReq)
 	if err != nil {
 		c.JSON(502, gin.H{"error": "search service unavailable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	c.Data(resp.StatusCode, "application/json", raw)
+}
+
+// ResolveReferenceNovelURL resolves a pasted book URL into a site/book_id pair.
+func (h *Handler) ResolveReferenceNovelURL(c *gin.Context) {
+	var body struct {
+		URL string `json:"url" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	sidecarURL := h.sidecar.BaseURL()
+	reqBody, _ := json.Marshal(map[string]string{"url": body.URL})
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, sidecarURL+"/novels/resolve-url", bytes.NewReader(reqBody))
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to build request"})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := analyzeHTTPClient.Do(httpReq)
+	if err != nil {
+		c.JSON(502, gin.H{"error": "URL resolve service unavailable: " + err.Error()})
 		return
 	}
 	defer resp.Body.Close()

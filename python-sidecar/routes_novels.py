@@ -7,6 +7,9 @@ import os
 import re
 import tempfile
 import uuid
+from importlib.resources import as_file
+from pathlib import Path
+from typing import Any
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -31,6 +34,10 @@ class NovelBookInfoReq(BaseModel):
     site: str
     book_id: str
 
+
+class NovelResolveURLReq(BaseModel):
+    url: str
+
 class NovelFetchImportReq(BaseModel):
     site: str
     book_id: str
@@ -39,17 +46,85 @@ class NovelFetchImportReq(BaseModel):
     chapter_ids: list[str]
 
 
-def _make_nd_cfg(tmpdir: str, workers: int = 3):
-    from novel_downloader.schemas import ClientConfig
-    return ClientConfig(
-        request_interval=float(os.getenv("ND_REQUEST_INTERVAL", "1.0")),
-        cache_dir=tmpdir,
-        raw_data_dir=tmpdir,
-        output_dir=tmpdir,
-        cache_book_info=False,
-        cache_chapter=False,
-        workers=workers,
-    )
+def _parse_bool_env(name: str) -> bool | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("Ignoring invalid boolean environment value: %s=%r", name, raw)
+    return None
+
+
+def _load_nd_config_data(tmpdir: str, workers: int | None = None) -> dict[str, Any]:
+    from novel_downloader.infra.config import load_config
+    from novel_downloader.infra.paths import DEFAULT_CONFIG_FILE
+
+    explicit_path = os.getenv("ND_SETTINGS_PATH", "").strip()
+    try:
+        if explicit_path:
+            config_data = load_config(Path(explicit_path))
+        else:
+            try:
+                config_data = load_config()
+            except FileNotFoundError:
+                with as_file(DEFAULT_CONFIG_FILE) as bundled_path:
+                    config_data = load_config(bundled_path)
+    except Exception as exc:
+        logger.exception("Failed to load novel-downloader settings")
+        raise HTTPException(status_code=500, detail=f"Invalid novel-downloader config: {exc}")
+
+    config_data = dict(config_data)
+    general = dict(config_data.get("general") or {})
+    general["raw_data_dir"] = tmpdir
+    general["cache_dir"] = tmpdir
+    general["output_dir"] = tmpdir
+
+    if workers is not None:
+        general["workers"] = workers
+
+    scalar_env_overrides: dict[str, tuple[str, type]] = {
+        "request_interval": ("ND_REQUEST_INTERVAL", float),
+        "retry_times": ("ND_RETRY_TIMES", int),
+        "backoff_factor": ("ND_BACKOFF_FACTOR", float),
+        "timeout": ("ND_TIMEOUT", float),
+        "backend": ("ND_BACKEND", str),
+        "impersonate": ("ND_IMPERSONATE", str),
+    }
+    for key, (env_name, caster) in scalar_env_overrides.items():
+        raw = os.getenv(env_name, "").strip()
+        if not raw:
+            continue
+        try:
+            general[key] = caster(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid environment override: %s=%r", env_name, raw)
+
+    bool_env_overrides = {
+        "fetch_inaccessible": "ND_FETCH_INACCESSIBLE",
+        "cache_book_info": "ND_CACHE_BOOK_INFO",
+        "cache_chapter": "ND_CACHE_CHAPTER",
+        "http2": "ND_HTTP2",
+    }
+    for key, env_name in bool_env_overrides.items():
+        value = _parse_bool_env(env_name)
+        if value is not None:
+            general[key] = value
+
+    config_data["general"] = general
+    return config_data
+
+
+def _make_nd_client(site: str, tmpdir: str, workers: int = 3):
+    from novel_downloader.infra.config import ConfigAdapter
+    from novel_downloader.plugins import registrar
+
+    config_data = _load_nd_config_data(tmpdir, workers=workers)
+    adapter = ConfigAdapter(config=config_data)
+    return registrar.get_client(site, adapter.get_client_config(site))
 
 
 @router.post("/novels/search")
@@ -177,20 +252,102 @@ async def novels_search_stream(req: NovelSearchStreamReq):
 
 @router.get("/novels/sites")
 async def novels_list_sites():
-    """Return the list of site keys that have a registered searcher."""
+    """Return the safe-by-default searchable sites plus Legado support metadata."""
     try:
+        import aiohttp
         from novel_downloader.plugins.registry import registrar
+        from novel_downloader.plugins.sites.legado.manager import book_source_manager
     except ImportError:
         raise HTTPException(
             status_code=503,
             detail="novel-downloader not installed; run: pip install novel-downloader",
         )
     classes = registrar.get_searcher_classes(None, load_all_if_none=True)
-    sites = []
-    for cls in classes:
-        key = getattr(cls, "site_key", None) or cls.__module__.split(".")[-2]
-        sites.append(key)
-    return {"sites": sites, "count": len(sites)}
+    sites: list[str] = []
+    async with aiohttp.ClientSession() as session:
+        for cls in classes:
+            try:
+                if cls(session).nsfw:
+                    continue
+            except Exception:
+                logger.debug("Failed to inspect searcher %s", cls, exc_info=True)
+                continue
+            key = getattr(cls, "site_key", None) or cls.__module__.split(".")[-2]
+            sites.append(key)
+
+    if not book_source_manager.sources:
+        try:
+            book_source_manager.load_builtin_sources()
+        except Exception:
+            logger.exception("Failed to load builtin Legado sources")
+
+    unique_sites = sorted(dict.fromkeys(sites))
+    return {
+        "sites": unique_sites,
+        "count": len(unique_sites),
+        "search_site_count": len(unique_sites),
+        "legado_source_count": len(book_source_manager.sources),
+        "supports_url_resolution": True,
+    }
+
+
+@router.post("/novels/resolve-url")
+async def novels_resolve_url(req: NovelResolveURLReq):
+    """Resolve a supported book URL into a site/book_id pair usable by novel-downloader."""
+    try:
+        from novel_downloader.infra.book_url_resolver import resolve_book_url
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="novel-downloader not installed; run: pip install novel-downloader",
+        )
+
+    raw_url = req.url.strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="url is required")
+
+    try:
+        resolved = resolve_book_url(raw_url)
+    except Exception as exc:
+        logger.exception("Novel URL resolve failed")
+        raise HTTPException(status_code=502, detail=f"Failed to resolve novel URL: {exc}")
+
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Unsupported or unrecognized novel URL")
+
+    site = str(resolved.get("site_key") or "")
+    book_id = resolved.get("book_id")
+    chapter_id = resolved.get("chapter_id")
+    if not book_id:
+        raise HTTPException(
+            status_code=400,
+            detail="The URL points to a chapter or unsupported entry; please paste the book detail URL instead",
+        )
+
+    source_kind = "direct"
+    source_name = ""
+    source_url = ""
+    if site == "legado":
+        try:
+            from novel_downloader.plugins.sites.legado.manager import book_source_manager
+
+            source = book_source_manager.get_source_for_url(raw_url)
+            source_kind = "legado"
+            if source is not None:
+                source_name = str(getattr(source, "book_source_name", "") or "")
+                source_url = str(getattr(source, "book_source_url", "") or "")
+        except Exception:
+            logger.debug("Failed to inspect resolved Legado source", exc_info=True)
+
+    return {
+        "url": raw_url,
+        "site": site,
+        "book_id": str(book_id),
+        "chapter_id": str(chapter_id or ""),
+        "source_kind": source_kind,
+        "source_name": source_name,
+        "source_url": source_url,
+    }
 
 
 @router.post("/novels/book-info")
@@ -198,7 +355,6 @@ async def novels_book_info(req: NovelBookInfoReq):
     """Fetch book metadata and full chapter catalogue for a site/book_id pair."""
     try:
         import tempfile
-        from novel_downloader.plugins import registrar
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -206,8 +362,7 @@ async def novels_book_info(req: NovelBookInfoReq):
         )
     try:
         with tempfile.TemporaryDirectory(prefix="nb_info_") as tmpdir:
-            cfg = _make_nd_cfg(tmpdir)
-            client = registrar.get_client(req.site, cfg)
+            client = _make_nd_client(req.site, tmpdir)
             async with client:
                 info = dict(await client.get_book_info(req.book_id))
     except Exception as exc:
@@ -258,7 +413,6 @@ async def novels_fetch_import(req: NovelFetchImportReq):
     try:
         import asyncio
         import tempfile
-        from novel_downloader.plugins import registrar
     except ImportError:
         raise HTTPException(
             status_code=503,
@@ -290,8 +444,7 @@ async def novels_fetch_import(req: NovelFetchImportReq):
 
         try:
             with tempfile.TemporaryDirectory(prefix="nb_fetch_") as tmpdir:
-                cfg = _make_nd_cfg(tmpdir, workers=CONCURRENCY)
-                client = registrar.get_client(req.site, cfg)
+                client = _make_nd_client(req.site, tmpdir, workers=CONCURRENCY)
 
                 async with client:
                     async def fetch_one(idx: int, chap_id: str) -> None:

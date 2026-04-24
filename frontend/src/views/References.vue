@@ -178,6 +178,60 @@
           </template>
         </el-input>
         <div class="step-hint">支持笔趣阁、起点、晋江等多站点聚合搜索</div>
+
+        <div class="site-settings-card">
+          <div class="site-settings-header">
+            <div>
+              <div class="site-settings-title">搜索书源</div>
+              <div class="site-settings-meta" v-if="siteCatalog">
+                默认已启用全部 {{ siteCatalog.count }} 个可搜索站点
+                <span v-if="siteCatalog.legado_source_count">，另有 {{ siteCatalog.legado_source_count }} 个阅读书源支持下方 URL 直导</span>
+              </div>
+              <div class="site-settings-meta" v-else>
+                未加载到书源清单时，将回退到后端默认站点集合
+              </div>
+            </div>
+            <div class="site-settings-actions">
+              <el-button link :disabled="siteCatalogLoading || !siteCatalog?.sites?.length" @click="resetSearchSiteSelection">全选</el-button>
+              <el-button link :disabled="siteCatalogLoading || !selectedSearchSites.length" @click="selectedSearchSites = []">清空</el-button>
+            </div>
+          </div>
+
+          <el-skeleton :loading="siteCatalogLoading" animated :rows="2">
+            <template #default>
+              <el-select
+                v-model="selectedSearchSites"
+                multiple
+                filterable
+                clearable
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="选择搜索站点（默认全选）"
+                style="width: 100%"
+              >
+                <el-option v-for="site in siteCatalog?.sites ?? []" :key="site" :label="site" :value="site" />
+              </el-select>
+              <div class="site-settings-footer">
+                <span v-if="siteCatalog">已选 {{ selectedSearchSites.length }} / {{ siteCatalog.count }} 个搜索站点</span>
+                <span v-if="siteCatalog?.legado_source_count">阅读书源不参与聚合搜索，但支持 URL 解析导入</span>
+              </div>
+            </template>
+          </el-skeleton>
+        </div>
+
+        <el-divider>或直接粘贴书籍 URL</el-divider>
+
+        <el-input
+          v-model="directBookURL"
+          placeholder="粘贴书籍详情页 URL，支持 novel-downloader 内置站点与阅读书源"
+          clearable
+          @keydown.enter="resolveBookURLImport"
+        >
+          <template #append>
+            <el-button :loading="urlResolving" @click="resolveBookURLImport">解析 URL</el-button>
+          </template>
+        </el-input>
+        <div class="step-hint">URL 导入会先解析站点与 book_id，再进入章节选择。</div>
       </div>
 
       <!-- STEP 2: results -->
@@ -229,6 +283,14 @@
           <span>正在获取章节列表…</span>
         </div>
         <template v-else-if="bookInfo">
+          <div v-if="resolvedSourceMeta" class="source-url-info">
+            <el-tag size="small" :type="resolvedSourceMeta.source_kind === 'legado' ? 'warning' : 'success'">
+              {{ resolvedSourceMeta.source_kind === 'legado' ? '阅读书源 URL' : '书籍 URL' }}
+            </el-tag>
+            <span v-if="resolvedSourceMeta.source_name">{{ resolvedSourceMeta.source_name }}</span>
+            <a :href="resolvedSourceMeta.url" target="_blank" rel="noreferrer noopener">{{ resolvedSourceMeta.url }}</a>
+          </div>
+
           <!-- Book header -->
           <div class="book-header">
             <img v-if="bookInfo.cover_url" :src="bookInfo.cover_url" class="book-cover" alt="封面" />
@@ -480,7 +542,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, Search, Loading, Lock, Delete, DocumentCopy, Download } from '@element-plus/icons-vue'
 import { referenceApi, streamSearchNovels } from '@/api'
-import type { NovelSearchResult, FetchBookInfo, FetchChapterInfo, ReferenceChapter } from '@/api'
+import type { NovelSearchResult, FetchBookInfo, FetchChapterInfo, ReferenceChapter, NovelSiteCatalog, ResolvedNovelURL } from '@/api'
 import { useDownloadStore } from '@/stores/download'
 import { useReferenceDeepAnalysis } from '@/views/references/useReferenceDeepAnalysis'
 
@@ -616,6 +678,12 @@ const searchLoading = ref(false)
 const searchResults = ref<NovelSearchResult[]>([])
 const searchPage = ref(0)
 const searchStreamStatus = ref('')
+const siteCatalogLoading = ref(false)
+const siteCatalog = ref<NovelSiteCatalog | null>(null)
+const selectedSearchSites = ref<string[]>([])
+const directBookURL = ref('')
+const urlResolving = ref(false)
+const resolvedSourceMeta = ref<ResolvedNovelURL | null>(null)
 let _searchAbort: AbortController | null = null
 
 const totalPages = computed(() => Math.ceil(searchResults.value.length / PAGE_SIZE))
@@ -654,24 +722,75 @@ function openFetchDialog() {
   if (_searchAbort) { _searchAbort.abort(); _searchAbort = null }
   fetchStep.value = 'search'
   searchKeyword.value = ''
+  searchLoading.value = false
   searchResults.value = []
   searchStreamStatus.value = ''
   bookInfo.value = null
   selectedBook.value = null
   fetchGenre.value = ''
+  directBookURL.value = ''
+  resolvedSourceMeta.value = null
   showFetchDialog.value = true
+  void ensureNovelSiteCatalog(true)
 }
 
 function handleFetchDialogClose(done: () => void) {
+  if (_searchAbort) {
+    _searchAbort.abort()
+    _searchAbort = null
+  }
   done()
+}
+
+function resetSearchSiteSelection() {
+  selectedSearchSites.value = [...(siteCatalog.value?.sites ?? [])]
+}
+
+async function ensureNovelSiteCatalog(resetSelection = false) {
+  if (siteCatalogLoading.value) return
+  if (siteCatalog.value && !resetSelection) return
+  siteCatalogLoading.value = true
+  try {
+    const res = await referenceApi.listNovelSites(projectId)
+    const data = res.data as NovelSiteCatalog
+    siteCatalog.value = data
+    const available = data.sites ?? []
+    if (resetSelection || selectedSearchSites.value.length === 0) {
+      selectedSearchSites.value = [...available]
+    } else {
+      const allowed = new Set(available)
+      selectedSearchSites.value = selectedSearchSites.value.filter(site => allowed.has(site))
+      if (selectedSearchSites.value.length === 0) {
+        selectedSearchSites.value = [...available]
+      }
+    }
+  } catch (e: any) {
+    siteCatalog.value = null
+    selectedSearchSites.value = []
+    ElMessage.warning(e?.response?.data?.error || '加载书源列表失败，将使用后端默认站点集合')
+  } finally {
+    siteCatalogLoading.value = false
+  }
+}
+
+function selectedSearchSitesPayload(): string[] | null {
+  const available = siteCatalog.value?.sites ?? []
+  if (available.length === 0) return null
+  if (selectedSearchSites.value.length === available.length) return null
+  return [...selectedSearchSites.value]
 }
 
 async function doSearch() {
   const kw = searchKeyword.value.trim()
   if (!kw) return
+  if (siteCatalog.value && selectedSearchSites.value.length === 0) {
+    ElMessage.warning('请至少选择一个搜索站点')
+    return
+  }
   if (_searchAbort) _searchAbort.abort()
   _searchAbort = new AbortController()
   const signal = _searchAbort.signal
+  const sites = selectedSearchSitesPayload()
   searchLoading.value = true
   searchResults.value = []
   searchPage.value = 0
@@ -679,7 +798,7 @@ async function doSearch() {
   fetchStep.value = 'results'
   let siteCount = 0
   try {
-    for await (const event of streamSearchNovels(projectId, kw, { signal })) {
+    for await (const event of streamSearchNovels(projectId, kw, { signal, sites })) {
       if (event.type === 'batch') {
         searchResults.value.push(...event.results)
         siteCount++
@@ -693,7 +812,7 @@ async function doSearch() {
   } catch (e: any) {
     if (signal.aborted) return
     try {
-      const res = await referenceApi.searchNovels(projectId, kw)
+      const res = await referenceApi.searchNovels(projectId, kw, sites)
       searchResults.value = (res.data as any).results ?? []
       searchStreamStatus.value = `共 ${searchResults.value.length} 条结果`
     } catch (e2: any) {
@@ -705,6 +824,7 @@ async function doSearch() {
 }
 
 async function selectBook(book: NovelSearchResult) {
+  resolvedSourceMeta.value = null
   selectedBook.value = book
   bookInfo.value = null
   bookInfoLoading.value = true
@@ -718,6 +838,33 @@ async function selectBook(book: NovelSearchResult) {
     ElMessage.error(e?.response?.data?.error || '获取章节列表失败')
   } finally {
     bookInfoLoading.value = false
+  }
+}
+
+async function resolveBookURLImport() {
+  const rawURL = directBookURL.value.trim()
+  if (!rawURL) return
+  urlResolving.value = true
+  try {
+    const res = await referenceApi.resolveNovelURL(projectId, rawURL)
+    const resolved = res.data as ResolvedNovelURL
+    resolvedSourceMeta.value = resolved
+    await selectBook({
+      site: resolved.site,
+      book_id: resolved.book_id,
+      book_url: resolved.url,
+      cover_url: '',
+      title: resolved.source_name || 'URL 导入',
+      author: '',
+      latest_chapter: '',
+      update_date: '',
+      word_count: '',
+    })
+    resolvedSourceMeta.value = resolved
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '解析书籍 URL 失败')
+  } finally {
+    urlResolving.value = false
   }
 }
 
@@ -896,6 +1043,31 @@ async function deleteReference(id: string) {
 /* Fetch dialog steps */
 .fetch-step { min-height: 120px; }
 .step-hint { margin-top: 8px; font-size: 12px; color: var(--nb-text-secondary); }
+.site-settings-card {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--nb-card-border, #333);
+  background: var(--nb-card-bg, #1e1e1e);
+}
+.site-settings-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.site-settings-title { font-size: 14px; font-weight: 600; color: #e0e0e0; }
+.site-settings-meta { margin-top: 4px; font-size: 12px; color: var(--nb-text-secondary); line-height: 1.5; }
+.site-settings-actions { display: flex; align-items: center; gap: 10px; }
+.site-settings-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--nb-text-secondary);
+}
 
 /* Results */
 .results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }

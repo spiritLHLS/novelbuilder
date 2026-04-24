@@ -171,8 +171,11 @@ export const referenceApi = {
     }),
   importFromURL: (projectId: string, data: { url: string; title: string; author: string; genre: string }) =>
     api.post(`/projects/${projectId}/references/import-url`, data),
+  listNovelSites: (projectId: string) => api.get(`/projects/${projectId}/references/sites`),
   searchNovels: (projectId: string, keyword: string, sites?: string[] | null, perSiteLimit = 10) =>
     api.post(`/projects/${projectId}/references/search`, { keyword, sites: sites ?? null, limit: 0, per_site_limit: perSiteLimit }),
+  resolveNovelURL: (projectId: string, url: string) =>
+    api.post(`/projects/${projectId}/references/resolve-url`, { url }),
   getBookInfo: (projectId: string, site: string, bookId: string) =>
     api.post(`/projects/${projectId}/references/book-info`, { site, book_id: bookId }),
   /** Start a background download; returns {ref_id, status, fetch_total} immediately. */
@@ -224,6 +227,24 @@ export interface NovelSearchResult {
   latest_chapter: string
   update_date: string
   word_count: string
+}
+
+export interface NovelSiteCatalog {
+  sites: string[]
+  count: number
+  search_site_count?: number
+  legado_source_count?: number
+  supports_url_resolution?: boolean
+}
+
+export interface ResolvedNovelURL {
+  url: string
+  site: string
+  book_id: string
+  chapter_id: string
+  source_kind: string
+  source_name: string
+  source_url: string
 }
 
 export interface FetchChapterInfo {
