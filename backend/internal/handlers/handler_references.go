@@ -439,7 +439,14 @@ func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, 
 			zap.Error(err),
 		)
 		h.references.MarkFetchFailed(ctx, refID, "stream read error: "+err.Error()) //nolint
+		return
 	}
+
+	h.logger.Error("runBackgroundDownload: stream ended without terminal event",
+		zap.String("ref_id", refID),
+		zap.String("title", title),
+	)
+	h.references.MarkFetchFailed(ctx, refID, "download stream ended unexpectedly before completion") //nolint
 }
 
 // ResumeReferenceDownload restarts a failed or interrupted download for the remaining chapters.
