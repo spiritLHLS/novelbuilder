@@ -165,9 +165,11 @@ func (h *Handler) RunAuditRevisePipeline(ctx context.Context, chapterID string, 
 
 	rounds := make([]gin.H, 0, maxRounds)
 	rules, _ := h.bookRules.Get(pipelineCtx, chapter.ProjectID)
+	// Build audit context once — characters, book rules, foreshadowings, and other static
+	// data do not change between audit-revise rounds, so a single fetch is correct.
+	auditContext := h.buildAuditContext(pipelineCtx, chapter)
 	var latest *models.AuditReport
 	for i := 1; i <= maxRounds; i++ {
-		auditContext := h.buildAuditContext(pipelineCtx, chapter)
 		report, aErr := h.audit.RunAudit(pipelineCtx, chapter, chapter.ProjectID, auditorCfg, auditContext)
 		if aErr != nil {
 			return nil, aErr

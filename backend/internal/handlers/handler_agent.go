@@ -3,8 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/models"
@@ -195,7 +197,14 @@ func (h *Handler) AgentSessionStream(c *gin.Context) {
 		return
 	}
 
-	client := &http.Client{}
+	// Use a transport with a dial timeout so a non-responsive sidecar doesn't hang
+	// indefinitely.  No overall client timeout is set because SSE streams are long-lived;
+	// the request context (cancelled on client disconnect) handles termination.
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		c.JSON(502, gin.H{"error": "sidecar stream unavailable"})

@@ -9,7 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/novelbuilder/backend/internal/models"
-	"github.com/novelbuilder/backend/internal/services"
 	"github.com/novelbuilder/backend/internal/workflow"
 	"go.uber.org/zap"
 )
@@ -121,8 +120,8 @@ func (h *Handler) ContinueGenerate(c *gin.Context) {
 		idempotencyKey = uuid.New().String()
 	}
 
-	exists, body, err := h.workflow.CheckIdempotency(c.Request.Context(), idempotencyKey, "chapters/continue")
-	if err == nil && exists {
+	// Return cached response to prevent duplicate task enqueuing.
+	if exists, body, err := h.workflow.CheckIdempotency(c.Request.Context(), idempotencyKey, "chapters/continue"); err == nil && exists {
 		c.Data(200, "application/json", body)
 		return
 	}
@@ -145,47 +144,31 @@ func (h *Handler) ContinueGenerate(c *gin.Context) {
 		return
 	}
 
-	lastNum, err := h.chapters.MaxChapterNum(c.Request.Context(), projectID)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "failed to determine next chapter number"})
-		return
-	}
-	nextNum := lastNum + 1
-
 	var req models.GenerateChapterRequest
 	c.ShouldBindJSON(&req)
+	req.LLMConfig = nil // resolved at task execution time
 
-	if writerCfg, wErr := h.resolveAgentLLMConfig(c.Request.Context(), "writer", projectID); wErr == nil {
-		req.LLMConfig = injectTaskSession(writerCfg, taskSessionID("continue_generate", projectID, &nextNum, "sync"))
-	}
-
-	ch, report, genErr := services.GenerateChapterWithQualityRetries(c.Request.Context(), h.chapters, h.quality, projectID, nextNum, req)
-	if genErr != nil {
-		c.JSON(500, gin.H{"error": genErr.Error()})
+	payload, _ := json.Marshal(models.GenerateNextChapterTaskPayload{Request: req})
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+		ProjectID:   projectID,
+		TaskType:    "generate_next_chapter",
+		Payload:     payload,
+		Priority:    5,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		h.logger.Error("failed to enqueue continue generate",
+			zap.String("project_id", projectID),
+			zap.Error(err))
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 
-	nextAction := "chapter_review"
-	qualityGate := gin.H{}
-	if report != nil && report.GenerationControl != nil {
-		qualityGate = gin.H{
-			"passed":             report.Pass,
-			"overall_score":      report.OverallScore,
-			"attempt_count":      report.GenerationControl.AttemptCount,
-			"max_attempts":       report.GenerationControl.MaxAttempts,
-			"paused":             report.GenerationControl.Paused,
-			"recommended_action": report.GenerationControl.RecommendedAction,
-			"last_issues":        report.GenerationControl.LastIssues,
-		}
-		if report.GenerationControl.Paused {
-			nextAction = "manual_revision_required"
-		}
-	}
-	response := gin.H{"data": ch, "next_action": nextAction, "quality_gate": qualityGate}
+	response := gin.H{"status": "queued", "task_id": task.ID, "message": "章节生成任务已创建，请在任务队列查看进度"}
 	respBody, _ := json.Marshal(response)
-	h.workflow.SaveIdempotency(c.Request.Context(), idempotencyKey, "chapters/continue", "", 200, respBody)
+	h.workflow.SaveIdempotency(c.Request.Context(), idempotencyKey, "chapters/continue", "", 202, respBody)
 
-	c.JSON(201, response)
+	c.JSON(202, response)
 }
 
 func (h *Handler) GetChapter(c *gin.Context) {

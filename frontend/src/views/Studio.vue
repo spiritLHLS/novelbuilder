@@ -174,10 +174,8 @@ function goTo(page: string) {
 
 async function continueWrite() {
   try {
-    const res = await chapterApi.continueGenerate(projectId)
-    ElMessage.success('章节生成完成')
-    recentChapters.value.unshift(res.data.data)
-    stats.value.chapters++
+    await chapterApi.continueGenerate(projectId)
+    ElMessage.success('章节生成任务已创建，请在任务队列查看进度')
   } catch (e: any) {
     const code = e.response?.data?.code
     const msg = e.response?.data?.message || e.response?.data?.error || '生成失败'

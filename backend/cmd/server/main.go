@@ -363,7 +363,9 @@ func main() {
 			ImportID string `json:"import_id"`
 		}
 		if len(task.Payload) > 0 {
-			_ = json.Unmarshal(task.Payload, &payload)
+			if err := json.Unmarshal(task.Payload, &payload); err != nil {
+				return fmt.Errorf("chapter_import_process: parse payload: %w", err)
+			}
 		}
 		if payload.ImportID == "" {
 			return fmt.Errorf("chapter_import_process: missing import_id")
@@ -394,7 +396,9 @@ func main() {
 			StartChapter int `json:"start_chapter"` // 0=continue from last, >0=regenerate from specific chapter
 		}
 		if len(task.Payload) > 0 {
-			_ = json.Unmarshal(task.Payload, &payload)
+			if err := json.Unmarshal(task.Payload, &payload); err != nil {
+				return fmt.Errorf("generate_chapter_outlines: parse payload: %w", err)
+			}
 		}
 		if payload.VolumeNum <= 0 {
 			return fmt.Errorf("generate_chapter_outlines: invalid volume_num")

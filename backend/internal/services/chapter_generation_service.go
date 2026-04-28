@@ -16,6 +16,85 @@ import (
 	"go.uber.org/zap"
 )
 
+// buildChapterUserPrompt constructs the user-facing generation prompt shared by
+// generateChapter and regenerateChapter.  outlineEvents should be the pre-formatted
+// list of outline events (e.g. "  1. 事件A\n  2. 事件B").
+func buildChapterUserPrompt(chapterNum int, req models.GenerateChapterRequest, outlineEvents string, wordsMin, wordsMax int) string {
+	prompt := fmt.Sprintf(`请生成第 %d 章的完整内容。
+
+生成参数：
+- 叙事视角：%s
+- POV角色：%s
+- 目标节奏：%s
+- 结尾钩子类型：%s
+- 结尾钩子强度：%d
+- 张力水平：%.1f
+
+⚠️ 【本章必须完成的大纲事件 — 不可遗漏、不可自行添加】
+%s
+以上事件是本章的全部剧情内容，正文必须逐一展开上述每个事件对应的场景，禁止自行发明大纲以外的新事件、新冲突、新角色登场。
+
+硬性要求：
+1. ⚠️ 字数硬上限：正文不得超过 %d 字。当写作接近 %d 字时立即执行断章收尾；字数不足 %d 字时通过对话和动作细节充实。超出上限是严重错误。
+2. 本章只展开上方大纲列出的事件（最多3件），事件展开优先用**对话和动作**推进（不要大段景物描写）
+3. 从上一章结尾处自然承接，禁止复述前文，延续前一章的语言风格和叙述节奏
+4. 严格锁定指定POV视角，不写该角色感知不到的信息
+5. **强制断章要求**：章节必须在场景动作、对话或悬念的高点处戛然而止
+   - 禁止任何收尾：不写总结段、展望段、升华段、情绪收束段
+   - 禁止预告句式：【他知道XXX】【未来XXX】【更大的XXX即将到来】
+   - 最后一段不超过2句话，必须是未完成的动作/对话/悬念
+   - 参考网文断章：在读者最想知道下文时立即断开
+6. 遵守系统提示中的全部反AI文风规则（禁用微微/缓缓/淡淡等）
+7. **角色能力严格遵循时间线**：
+   - 角色只能使用系统提示【角色状态】中已明确记载的能力/装备/身份
+   - 禁止给角色突然出现未记录的新能力、新武器、新师承、新身份
+   - 如本章大纲要求角色获得某项资源，必须写完整获得过程（至少200字场景）
+   - 一章最多1次实力提升，禁止连续突破或批量获得资源
+8. **角色和道具出场约束**：
+   - 正文中出现的有名有姓的角色必须来自系统提示中的【角色状态】列表或本章大纲事件
+   - 任何武器/法宝/道具首次出场必须有明确来源（大纲事件获得/战利品/NPC赠予/购买/祖传）
+   - 禁止凭空出现没有来源的角色或道具`,
+		chapterNum,
+		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
+		req.EndHookType, req.EndHookStrength, req.TensionLevel,
+		outlineEvents,
+		wordsMax, wordsMax, wordsMin)
+	if req.ContextHint != "" {
+		prompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
+	}
+	prompt += "\n\n请直接输出章节正文，不要包含章节号、标题、元数据或任何标记。"
+	return prompt
+}
+
+// loadOutlineEvents fetches and formats the chapter outline events for the given chapter number.
+func (s *ChapterService) loadOutlineEvents(ctx context.Context, projectID string, chapterNum int) string {
+	var outlineJSON json.RawMessage
+	if s.db.QueryRow(ctx,
+		`SELECT content FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num = $2`,
+		projectID, chapterNum).Scan(&outlineJSON) != nil {
+		return ""
+	}
+	var outlineData map[string]interface{}
+	if json.Unmarshal(outlineJSON, &outlineData) != nil {
+		return ""
+	}
+	events, ok := outlineData["events"].([]interface{})
+	if !ok || len(events) == 0 {
+		return ""
+	}
+	maxEvents := 3
+	if len(events) < maxEvents {
+		maxEvents = len(events)
+	}
+	var eventLines []string
+	for i := 0; i < maxEvents; i++ {
+		if es, ok := events[i].(string); ok {
+			eventLines = append(eventLines, fmt.Sprintf("  %d. %s", i+1, es))
+		}
+	}
+	return strings.Join(eventLines, "\n")
+}
+
 func (s *ChapterService) generateChapter(ctx context.Context, projectID string, chapterNum int, req models.GenerateChapterRequest) (*models.Chapter, error) {
 	ctx = contextWithLLMSession(ctx, req.LLMConfig, fmt.Sprintf("chapter_generation:%s:%d", projectID, chapterNum))
 
@@ -66,74 +145,8 @@ func (s *ChapterService) generateChapter(ctx context.Context, projectID string, 
 	// Build system prompt using HEAD/MIDDLE/TAIL (Lost-in-Middle) layout
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
 
-	// Build user prompt for chapter generation
-	var outlineEventsForPrompt string
-	var outlineJSON json.RawMessage
-	if s.db.QueryRow(ctx,
-		`SELECT content FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num = $2`,
-		projectID, chapterNum).Scan(&outlineJSON) == nil {
-		var outlineData map[string]interface{}
-		if json.Unmarshal(outlineJSON, &outlineData) == nil {
-			if events, ok := outlineData["events"].([]interface{}); ok && len(events) > 0 {
-				var eventLines []string
-				maxEvents := 3
-				if len(events) < maxEvents {
-					maxEvents = len(events)
-				}
-				for i := 0; i < maxEvents; i++ {
-					if es, ok := events[i].(string); ok {
-						eventLines = append(eventLines, fmt.Sprintf("  %d. %s", i+1, es))
-					}
-				}
-				outlineEventsForPrompt = strings.Join(eventLines, "\n")
-			}
-		}
-	}
-
-	userPrompt := fmt.Sprintf(`请生成第 %d 章的完整内容。
-
-生成参数：
-- 叙事视角：%s
-- POV角色：%s
-- 目标节奏：%s
-- 结尾钩子类型：%s
-- 结尾钩子强度：%d
-- 张力水平：%.1f
-
-⚠️ 【本章必须完成的大纲事件 — 不可遗漏、不可自行添加】
-%s
-以上事件是本章的全部剧情内容，正文必须逐一展开上述每个事件对应的场景，禁止自行发明大纲以外的新事件、新冲突、新角色登场。
-
-硬性要求：
-1. ⚠️ 字数硬上限：正文不得超过 %d 字。当写作接近 %d 字时立即执行断章收尾；字数不足 %d 字时通过对话和动作细节充实。超出上限是严重错误。
-2. 本章只展开上方大纲列出的事件（最多3件），事件展开优先用**对话和动作**推进（不要大段景物描写）
-3. 从上一章结尾处自然承接，禁止复述前文，延续前一章的语言风格和叙述节奏
-4. 严格锁定指定POV视角，不写该角色感知不到的信息
-5. **强制断章要求**：章节必须在场景动作、对话或悬念的高点处戛然而止
-   - 禁止任何收尾：不写总结段、展望段、升华段、情绪收束段
-   - 禁止预告句式：【他知道XXX】【未来XXX】【更大的XXX即将到来】
-   - 最后一段不超过2句话，必须是未完成的动作/对话/悬念
-   - 参考网文断章：在读者最想知道下文时立即断开
-6. 遵守系统提示中的全部反AI文风规则（禁用微微/缓缓/淡淡等）
-7. **角色能力严格遵循时间线**：
-   - 角色只能使用系统提示【角色状态】中已明确记载的能力/装备/身份
-   - 禁止给角色突然出现未记录的新能力、新武器、新师承、新身份
-   - 如本章大纲要求角色获得某项资源，必须写完整获得过程（至少200字场景）
-   - 一章最多1次实力提升，禁止连续突破或批量获得资源
-8. **角色和道具出场约束**：
-   - 正文中出现的有名有姓的角色必须来自系统提示中的【角色状态】列表或本章大纲事件
-   - 任何武器/法宝/道具首次出场必须有明确来源（大纲事件获得/战利品/NPC赠予/购买/祖传）
-   - 禁止凭空出现没有来源的角色或道具`,
-		chapterNum,
-		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
-		req.EndHookType, req.EndHookStrength, req.TensionLevel,
-		outlineEventsForPrompt,
-		wordsMax, wordsMax, wordsMin)
-
-	if req.ContextHint != "" {
-		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
-	}
-	userPrompt += "\n\n请直接输出章节正文，不要包含章节号、标题、元数据或任何标记。"
+	outlineEvents := s.loadOutlineEvents(ctx, projectID, chapterNum)
+	userPrompt := buildChapterUserPrompt(chapterNum, req, outlineEvents, wordsMin, wordsMax)
 
 	resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_generation",
@@ -297,72 +310,8 @@ func (s *ChapterService) regenerateChapter(ctx context.Context, id string, req m
 
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
 
-	var regenOutlineEventsForPrompt string
-	var regenOutlineJSON json.RawMessage
-	if s.db.QueryRow(ctx,
-		`SELECT content FROM outlines WHERE project_id = $1 AND level = 'chapter' AND order_num = $2`,
-		projectID, chapterNum).Scan(&regenOutlineJSON) == nil {
-		var outlineData map[string]interface{}
-		if json.Unmarshal(regenOutlineJSON, &outlineData) == nil {
-			if events, ok := outlineData["events"].([]interface{}); ok && len(events) > 0 {
-				var eventLines []string
-				maxEvents := 3
-				if len(events) < maxEvents {
-					maxEvents = len(events)
-				}
-				for i := 0; i < maxEvents; i++ {
-					if es, ok := events[i].(string); ok {
-						eventLines = append(eventLines, fmt.Sprintf("  %d. %s", i+1, es))
-					}
-				}
-				regenOutlineEventsForPrompt = strings.Join(eventLines, "\n")
-			}
-		}
-	}
-
-	userPrompt := fmt.Sprintf(`请生成第 %d 章的完整内容。
-
-生成参数：
-- 叙事视角：%s
-- POV角色：%s
-- 目标节奏：%s
-- 结尾钩子类型：%s
-- 结尾钩子强度：%d
-- 张力水平：%.1f
-
-⚠️ 【本章必须完成的大纲事件 — 不可遗漏、不可自行添加】
-%s
-以上事件是本章的全部剧情内容，正文必须逐一展开上述每个事件对应的场景，禁止自行发明大纲以外的新事件、新冲突、新角色登场。
-
-硬性要求：
-1. ⚠️ 字数硬上限：正文不得超过 %d 字。当写作接近 %d 字时立即执行断章收尾；字数不足 %d 字时通过对话和动作细节充实。超出上限是严重错误。
-2. 本章只展开上方大纲列出的事件（最多3件），事件展开优先用**对话和动作**推进（不要大段景物描写）
-3. 从上一章结尾处自然承接，禁止复述前文，延续前一章的语言风格和叙述节奏
-4. 严格锁定指定POV视角，不写该角色感知不到的信息
-5. **强制断章要求**：章节必须在场景动作、对话或悬念的高点处戛然而止
-   - 禁止任何收尾：不写总结段、展望段、升华段、情绪收束段
-   - 禁止预告句式：【他知道XXX】【未来XXX】【更大的XXX即将到来】
-   - 最后一段不超过2句话，必须是未完成的动作/对话/悬念
-   - 参考网文断章：在读者最想知道下文时立即断开
-6. 遵守系统提示中的全部反AI文风规则（禁用微微/缓缓/淡淡等）
-7. **角色能力严格遵循时间线**：
-   - 角色只能使用系统提示【角色状态】中已明确记载的能力/装备/身份
-   - 禁止给角色突然出现未记录的新能力、新武器、新师承、新身份
-   - 如本章大纲要求角色获得某项资源，必须写完整获得过程（至少200字场景）
-   - 一章最多1次实力提升，禁止连续突破或批量获得资源
-8. **角色和道具出场约束**：
-   - 正文中出现的有名有姓的角色必须来自系统提示中的【角色状态】列表或本章大纲事件
-   - 任何武器/法宝/道具首次出场必须有明确来源（大纲事件获得/战利品/NPC赠予/购买/祖传）
-   - 禁止凭空出现没有来源的角色或道具`,
-		chapterNum,
-		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
-		req.EndHookType, req.EndHookStrength, req.TensionLevel,
-		regenOutlineEventsForPrompt,
-		wordsMax, wordsMax, wordsMin)
-	if req.ContextHint != "" {
-		userPrompt += fmt.Sprintf("\n\n本章特别方向：%s", req.ContextHint)
-	}
-	userPrompt += "\n\n请直接输出章节正文，不要包含章节号、标题、元数据或任何标记。"
+	outlineEvents := s.loadOutlineEvents(ctx, projectID, chapterNum)
+	userPrompt := buildChapterUserPrompt(chapterNum, req, outlineEvents, wordsMin, wordsMax)
 
 	resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_regeneration",
