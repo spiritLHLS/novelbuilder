@@ -110,10 +110,17 @@ WORKDIR /app/python-sidecar
 COPY python-sidecar/requirements.txt ./
 # Copy novel-downloader submodule source (populated when cloned with --recurse-submodules)
 COPY python-sidecar/novel-downloader ./novel-downloader
-# Install CPU-only torch first (keeps image smaller)
-RUN pip install --no-cache-dir \
-    torch==2.5.1+cpu \
-    --index-url https://download.pytorch.org/whl/cpu
+# Install CPU-only torch first (keeps image smaller).
+# PyTorch publishes +cpu wheels only for amd64; on arm64 the standard PyPI wheel
+# is already CPU-only, so we fall back to plain PyPI there.
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        pip install --no-cache-dir \
+            torch==2.5.1+cpu \
+            --index-url https://download.pytorch.org/whl/cpu; \
+    else \
+        pip install --no-cache-dir torch==2.5.1; \
+    fi
 RUN pip install --no-cache-dir -r requirements.txt
 # Install Playwright and Chromium browser for Fanqie auto-upload
 RUN pip install --no-cache-dir playwright>=1.40.0 \
