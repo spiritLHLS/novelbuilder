@@ -184,7 +184,7 @@
 import { ref, onMounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { characterApi, outlineApi, charInteractionApi } from '@/api'
+import { characterApi, outlineApi, charInteractionApi, chapterApi } from '@/api'
 import cytoscape from 'cytoscape'
 import { renderRichText } from '@/utils/richText'
 
@@ -196,6 +196,7 @@ let cy: any = null
 const characters = ref<any[]>([])
 const outlines = ref<any[]>([])
 const interactions = ref<any[]>([])
+const chapters = ref<any[]>([])
 const selected = ref<any>(null)
 const editMode = ref(false)
 const showCreateDialog = ref(false)
@@ -218,14 +219,16 @@ onMounted(fetchChars)
 
 async function fetchChars() {
   try {
-    const [charRes, outlineRes, interactionRes] = await Promise.all([
+    const [charRes, outlineRes, interactionRes, chapterRes] = await Promise.all([
       characterApi.list(projectId),
       outlineApi.list(projectId).catch(() => ({ data: { data: [] } })),
       charInteractionApi.list(projectId).catch(() => ({ data: { data: [] } })),
+      chapterApi.list(projectId).catch(() => ({ data: { data: [] } })),
     ])
     characters.value = charRes.data.data || []
     outlines.value = outlineRes.data.data || []
     interactions.value = interactionRes.data.data || []
+    chapters.value = chapterRes.data.data || []
     maxTimelineChapter.value = computeTimelineMax()
     timelineChapter.value = Math.max(1, maxTimelineChapter.value)
     buildGraph()
@@ -250,6 +253,11 @@ function extractOutlineCharacters(outline: any): string[] {
 
 function computeTimelineMax(): number {
   let maxChapter = 1
+  // Use actual chapter numbers from generated chapters (most authoritative source)
+  chapters.value.forEach((ch: any) => {
+    const num = Number(ch?.chapter_num) || 0
+    if (num > maxChapter) maxChapter = num
+  })
   outlines.value.forEach((outline: any, index: number) => {
     const chapterNum = Number(outline?.order_num) || index + 1
     if (chapterNum > maxChapter) maxChapter = chapterNum
@@ -478,19 +486,29 @@ function buildGraph() {
       name: 'cose',
       animate: false,
       fit: true,
-      padding: nodes.length > 12 ? 90 : 70,
+      padding: nodes.length > 12 ? 120 : 80,
       nodeDimensionsIncludeLabels: true,
-      componentSpacing: nodes.length > 12 ? 180 : 120,
-      nodeRepulsion: (node: any) => node.connectedEdges().length > 3 ? 26000 : 18000,
-      idealEdgeLength: () => edges.length > 14 ? 240 : 190,
-      edgeElasticity: () => 140,
-      gravity: 0.08,
-      numIter: nodes.length > 12 ? 1500 : 1000,
-      nodeOverlap: 120,
+      componentSpacing: nodes.length > 15 ? 250 : nodes.length > 8 ? 180 : 130,
+      nodeRepulsion: (node: any) => {
+        const degree = node.connectedEdges().length
+        // Much higher repulsion to guarantee non-overlap
+        if (degree > 5) return 80000
+        if (degree > 2) return 55000
+        return 38000
+      },
+      idealEdgeLength: () => {
+        if (edges.length > 20) return 320
+        if (edges.length > 10) return 260
+        return 200
+      },
+      edgeElasticity: () => 100,
+      gravity: nodes.length > 15 ? 0.15 : 0.1,
+      numIter: nodes.length > 15 ? 3000 : 2000,
+      nodeOverlap: 999999, // Maximum overlap penalty — forces strict non-overlap
       randomize: true,
-      initialTemp: 200,
-      coolingFactor: 0.95,
-      minTemp: 1.0,
+      initialTemp: 500,
+      coolingFactor: 0.97,
+      minTemp: 0.5,
     }
 
     if (cy) cy.destroy()
@@ -562,21 +580,21 @@ function buildGraph() {
             label: 'data(label)',
             'line-color': 'rgba(132, 170, 214, 0.46)',
             'line-style': 'solid',
-            'curve-style': 'unbundled-bezier',
-            'control-point-distances': 40,
-            'control-point-weights': 0.5,
+            'curve-style': 'bezier',
             'target-arrow-shape': 'none',
             'source-arrow-shape': 'none',
             'font-size': 9,
             color: 'rgba(222,232,245,0.9)',
             'text-rotation': 'autorotate',
             'text-wrap': 'wrap',
-            'text-max-width': 120,
-            'text-background-color': 'rgba(14,20,32,0.78)',
+            'text-max-width': 100,
+            'text-background-color': 'rgba(14,20,32,0.85)',
             'text-background-opacity': 1,
-            'text-background-padding': '4px',
+            'text-background-padding': '3px',
             'text-background-shape': 'roundrectangle',
-            width: 2,
+            'text-border-opacity': 0,
+            'text-margin-y': -6,
+            width: 1.5,
           },
         },
         {
@@ -625,29 +643,39 @@ function graphZoomOut() {
 function graphRelayout() {
   if (cy) {
     const visibleNodeCount = cy.nodes().length
+    const visibleEdgeCount = cy.edges().length
     cy.layout({
       name: 'cose',
       animate: true,
-      animationDuration: 500,
+      animationDuration: 600,
       fit: true,
-      padding: visibleNodeCount > 12 ? 90 : 70,
+      padding: visibleNodeCount > 12 ? 120 : 80,
       nodeDimensionsIncludeLabels: true,
-      componentSpacing: visibleNodeCount > 12 ? 180 : 120,
-      nodeRepulsion: (node: any) => node.connectedEdges().length > 3 ? 26000 : 18000,
-      idealEdgeLength: () => cy.edges().length > 14 ? 240 : 190,
-      edgeElasticity: () => 140,
-      gravity: 0.08,
-      numIter: visibleNodeCount > 12 ? 1500 : 1000,
-      nodeOverlap: 120,
+      componentSpacing: visibleNodeCount > 15 ? 250 : visibleNodeCount > 8 ? 180 : 130,
+      nodeRepulsion: (node: any) => {
+        const degree = node.connectedEdges().length
+        if (degree > 5) return 80000
+        if (degree > 2) return 55000
+        return 38000
+      },
+      idealEdgeLength: () => {
+        if (visibleEdgeCount > 20) return 320
+        if (visibleEdgeCount > 10) return 260
+        return 200
+      },
+      edgeElasticity: () => 100,
+      gravity: visibleNodeCount > 15 ? 0.15 : 0.1,
+      numIter: visibleNodeCount > 15 ? 3000 : 2000,
+      nodeOverlap: 999999,
       randomize: true,
-      initialTemp: 200,
-      coolingFactor: 0.95,
-      minTemp: 1.0,
+      initialTemp: 500,
+      coolingFactor: 0.97,
+      minTemp: 0.5,
     }).run()
   }
 }
 
-watch([characters, outlines, interactions, timelineChapter], buildGraph, { deep: true })
+watch([characters, outlines, interactions, chapters, timelineChapter], buildGraph, { deep: true })
 </script>
 
 <style scoped>

@@ -111,9 +111,12 @@
         <el-form-item label="模型名称" prop="model_name">
           <el-input
             v-model="form.model_name"
-            placeholder="例如：deepseek-chat"
+            placeholder="例如：claude-sonnet-4-5"
             @blur="autoDetect"
           />
+          <div class="hint" style="margin-top:4px">
+            推荐：claude-sonnet-4-5（Anthropic）/ claude-opus-4（Anthropic）/ gpt-4o（OpenAI）/ gemini-2.0-flash（Gemini）
+          </div>
         </el-form-item>
         <el-form-item label="Max Tokens">
           <el-input-number v-model="form.max_tokens" :min="512" :max="131072" :step="1024" style="width:100%" />
@@ -296,6 +299,9 @@ function applyProviderDefaults(provider: string, modelHint = '') {
       if (!form.base_url || form.base_url === 'https://api.openai.com/v1') {
         form.base_url = 'https://api.anthropic.com/v1'
       }
+      if (!form.model_name) {
+        form.model_name = 'claude-sonnet-4-5'
+      }
       break
     case 'gemini':
       form.api_style = 'gemini'
@@ -351,6 +357,8 @@ async function testDialogForm() {
       model_name: form.model_name,
       api_style: form.api_style,
       provider: form.provider,
+      max_tokens: form.max_tokens || 4096,
+      temperature: form.temperature,
     }
     if (form.api_key) {
       payload.api_key = form.api_key

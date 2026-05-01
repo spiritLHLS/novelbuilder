@@ -368,6 +368,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 
 	// ── Auto-Write Daemon ─────────────────────────────────────────────────────
 	api.PUT("/projects/:id/auto-write", h.SetAutoWrite)
+	api.PUT("/projects/:id/continuation-mode", h.SetContinuationMode)
 
 	// ── Analytics Dashboard ───────────────────────────────────────────────────
 	api.GET("/projects/:id/analytics", h.GetProjectAnalytics)

@@ -362,6 +362,36 @@ func (h *Handler) SetAutoWrite(c *gin.Context) {
 	c.JSON(200, gin.H{"auto_write_enabled": enabled, "auto_write_interval": interval})
 }
 
+// SetContinuationMode marks a project as a continuation of an imported reference book.
+// The reference book's last chapters will be used as prior context when generating the first new chapters.
+func (h *Handler) SetContinuationMode(c *gin.Context) {
+	projectID := c.Param("id")
+	var req struct {
+		RefID        string `json:"ref_id" binding:"required"`
+		StartChapter int    `json:"start_chapter"` // first AI-generated chapter number
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if req.StartChapter <= 0 {
+		// Auto-detect: count reference book chapters + 1
+		var cnt int
+		h.projects.DB().QueryRow(c.Request.Context(),
+			`SELECT COUNT(*) FROM reference_book_chapters WHERE ref_id = $1 AND is_deleted = FALSE`,
+			req.RefID).Scan(&cnt)
+		req.StartChapter = cnt + 1
+		if req.StartChapter <= 1 {
+			req.StartChapter = 1
+		}
+	}
+	if err := h.projects.SetContinuationMode(c.Request.Context(), projectID, req.RefID, req.StartChapter); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"project_type": "continuation", "continuation_ref_id": req.RefID, "continuation_start_chapter": req.StartChapter})
+}
+
 // ── Analytics ─────────────────────────────────────────────────────────────────
 
 func (h *Handler) GetProjectAnalytics(c *gin.Context) {

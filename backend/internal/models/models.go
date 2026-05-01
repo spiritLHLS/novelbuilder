@@ -6,16 +6,19 @@ import (
 )
 
 type Project struct {
-	ID               string    `json:"id" db:"id"`
-	Title            string    `json:"title" db:"title"`
-	Genre            string    `json:"genre" db:"genre"`
-	Description      string    `json:"description" db:"description"`
-	StyleDescription string    `json:"style_description" db:"style_description"`
-	TargetWords      int       `json:"target_words" db:"target_words"`
-	ChapterWords     int       `json:"chapter_words" db:"chapter_words"`
-	Status           string    `json:"status" db:"status"`
-	CreatedAt        time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
+	ID                       string    `json:"id" db:"id"`
+	Title                    string    `json:"title" db:"title"`
+	Genre                    string    `json:"genre" db:"genre"`
+	Description              string    `json:"description" db:"description"`
+	StyleDescription         string    `json:"style_description" db:"style_description"`
+	TargetWords              int       `json:"target_words" db:"target_words"`
+	ChapterWords             int       `json:"chapter_words" db:"chapter_words"`
+	Status                   string    `json:"status" db:"status"`
+	ProjectType              string    `json:"project_type" db:"project_type"`               // original | continuation
+	ContinuationRefID        *string   `json:"continuation_ref_id" db:"continuation_ref_id"` // reference_materials.id
+	ContinuationStartChapter int       `json:"continuation_start_chapter" db:"continuation_start_chapter"`
+	CreatedAt                time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at" db:"updated_at"`
 }
 
 type WorldBible struct {
@@ -208,12 +211,15 @@ type VectorStoreEntry struct {
 // Request/Response types
 
 type CreateProjectRequest struct {
-	Title            string `json:"title" binding:"required"`
-	Genre            string `json:"genre"`
-	Description      string `json:"description"`
-	StyleDescription string `json:"style_description"`
-	TargetWords      int    `json:"target_words"`
-	ChapterWords     int    `json:"chapter_words"`
+	Title                    string  `json:"title" binding:"required"`
+	Genre                    string  `json:"genre"`
+	Description              string  `json:"description"`
+	StyleDescription         string  `json:"style_description"`
+	TargetWords              int     `json:"target_words"`
+	ChapterWords             int     `json:"chapter_words"`
+	ProjectType              string  `json:"project_type"`               // optional: "original" (default) | "continuation"
+	ContinuationRefID        *string `json:"continuation_ref_id"`        // required when project_type="continuation"
+	ContinuationStartChapter int     `json:"continuation_start_chapter"` // first AI-generated chapter number
 }
 
 type GenerateBlueprintRequest struct {

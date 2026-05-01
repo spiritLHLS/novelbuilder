@@ -74,30 +74,53 @@ func (e *Engine) ResumeOrCreateRun(ctx context.Context, projectID string, strict
 }
 
 func (e *Engine) CanGenerateNextChapter(ctx context.Context, projectID string) error {
-	// Check blueprint approval: first look for an approved workflow step (tracked path),
-	// then fall back to checking book_blueprints directly. This handles the common case
-	// where the user approves a blueprint before or without starting the workflow.
-	var bpApproved bool
-	err := e.db.QueryRow(ctx,
-		`SELECT (
-			EXISTS(
-				SELECT 1 FROM workflow_steps ws
-				JOIN workflow_runs wr ON ws.run_id = wr.id
-				WHERE wr.project_id = $1 AND ws.step_key = 'blueprint' AND ws.status = 'approved'
-			) OR EXISTS(
-				SELECT 1 FROM book_blueprints
-				WHERE project_id = $1 AND status = 'approved'
-			)
-		)`, projectID).Scan(&bpApproved)
-	if err != nil {
-		return fmt.Errorf("check blueprint: %w", err)
-	}
-	if !bpApproved {
-		return ErrBlueprintNotApproved
+	// For continuation projects (imported reference books), skip the blueprint gate
+	// when there are reference book chapters to use as prior context.
+	var isContinuation bool
+	var continuationRefID *string
+	if qErr := e.db.QueryRow(ctx,
+		`SELECT COALESCE(project_type, 'original') = 'continuation', continuation_ref_id
+		 FROM projects WHERE id = $1`, projectID,
+	).Scan(&isContinuation, &continuationRefID); qErr == nil && isContinuation && continuationRefID != nil {
+		// Continuation mode: verify that the reference book has at least one chapter.
+		var refChapterCount int
+		e.db.QueryRow(ctx,
+			`SELECT COUNT(*) FROM reference_book_chapters WHERE ref_id = $1 AND is_deleted = FALSE`,
+			*continuationRefID).Scan(&refChapterCount)
+		if refChapterCount > 0 {
+			// Blueprint gate bypassed — reference chapters serve as prior context.
+			// Still check the prev AI-generated chapter approval.
+			goto checkPrevChapter
+		}
 	}
 
+	{
+		// Check blueprint approval: first look for an approved workflow step (tracked path),
+		// then fall back to checking book_blueprints directly. This handles the common case
+		// where the user approves a blueprint before or without starting the workflow.
+		var bpApproved bool
+		err := e.db.QueryRow(ctx,
+			`SELECT (
+				EXISTS(
+					SELECT 1 FROM workflow_steps ws
+					JOIN workflow_runs wr ON ws.run_id = wr.id
+					WHERE wr.project_id = $1 AND ws.step_key = 'blueprint' AND ws.status = 'approved'
+				) OR EXISTS(
+					SELECT 1 FROM book_blueprints
+					WHERE project_id = $1 AND status = 'approved'
+				)
+			)`, projectID).Scan(&bpApproved)
+		if err != nil {
+			return fmt.Errorf("check blueprint: %w", err)
+		}
+		if !bpApproved {
+			return ErrBlueprintNotApproved
+		}
+	}
+
+checkPrevChapter:
 	var lastChapterNum int
-	err = e.db.QueryRow(ctx,
+	err := e.db.QueryRow(ctx,
 		`SELECT COALESCE(MAX(chapter_num), 0) FROM chapters WHERE project_id = $1`, projectID).Scan(&lastChapterNum)
 	if err != nil {
 		return fmt.Errorf("check chapters: %w", err)

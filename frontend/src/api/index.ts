@@ -48,6 +48,8 @@ export const projectApi = {
   create: (data: any) => api.post('/projects', data),
   update: (id: string, data: any) => api.put(`/projects/${id}`, data),
   delete: (id: string) => api.delete(`/projects/${id}`),
+  setContinuationMode: (id: string, refId: string, startChapter?: number) =>
+    api.put(`/projects/${id}/continuation-mode`, { ref_id: refId, start_chapter: startChapter ?? 0 }),
 }
 
 // Blueprints

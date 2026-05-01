@@ -75,6 +75,8 @@
         <template #default="{ row }">
           <el-button size="small" @click="openChaptersDialog(row)">章节管理</el-button>
           <el-button size="small" type="primary" plain @click="openDeepAnalysisDialog(row)">深度分析</el-button>
+          <el-button size="small" type="warning" plain @click="setAsContinuationSource(row)"
+            :loading="settingContinuation === row.id">设为续写底本</el-button>
           <el-button size="small" type="success" @click="exportSingle(row)"
             :loading="exporting === row.id">导出</el-button>
           <el-button size="small" type="danger" @click="deleteReference(row.id)"
@@ -537,18 +539,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, Search, Loading, Lock, Delete, DocumentCopy, Download } from '@element-plus/icons-vue'
-import { referenceApi, streamSearchNovels } from '@/api'
-import type { NovelSearchResult, FetchBookInfo, FetchChapterInfo, ReferenceChapter, NovelSiteCatalog, ResolvedNovelURL } from '@/api'
-import { useDownloadStore } from '@/stores/download'
+import { referenceApi, projectApi } from '@/api'
 import { useReferenceDeepAnalysis } from '@/views/references/useReferenceDeepAnalysis'
+import { useReferenceChapters } from '@/views/references/useReferenceChapters'
+import { useReferenceFetch } from '@/views/references/useReferenceFetch'
 
 const route = useRoute()
 const projectId = route.params.projectId as string
-const downloadStore = useDownloadStore()
 
 const genres = ['玄幻', '修真', '西幻', '都市', '历史', '科幻', '悬疑', '武侠', '其他']
 
@@ -556,359 +557,146 @@ const genres = ['玄幻', '修真', '西幻', '都市', '历史', '科幻', '悬
 const loading = ref(false)
 const references = ref<any[]>([])
 const deleting = ref<string | null>(null)
+const settingContinuation = ref<string | null>(null)
 const exporting = ref<string | null>(null)
 const exportingBatch = ref(false)
-const selectedRefId = ref('')
 const selectedIds = ref<string[]>([])
 const localFileInput = ref<HTMLInputElement | null>(null)
 
-// ─── chapter management ───────────────────────────────────────────────────────
-const showChaptersDialog = ref(false)
-const chapterRefId = ref('')
-const chapterRefTitle = ref('')
-const chapters = ref<ReferenceChapter[]>([])
-const chaptersLoading = ref(false)
-const chapterSearch = ref('')
-const chapterSearchPage = ref(1)
-const CHAPTER_PAGE_SIZE = 10
-const selectedChapterIds = ref<string[]>([])
-const chapterSelectAll = ref(false)
-const deletingChapters = ref(false)
-const chapterTableRef = ref<any>(null)
+// ─── composables ──────────────────────────────────────────────────────────────
+const {
+  showChaptersDialog,
+  chapterRefTitle,
+  chapters,
+  chaptersLoading,
+  chapterSearch,
+  chapterSearchPage,
+  CHAPTER_PAGE_SIZE,
+  selectedChapterIds,
+  chapterSelectAll,
+  deletingChapters,
+  chapterTableRef,
+  deletedCount,
+  filteredChapters,
+  pagedChapters,
+  isChapterIndeterminate,
+  openChaptersDialog,
+  handleChapterSelectionChange,
+  toggleSelectAllChapters,
+  deleteSingleChapter,
+  batchDeleteChapters,
+} = useReferenceChapters()
 
-const deletedCount = ref(0)
+const {
+  showFetchDialog,
+  fetchStep,
+  searchKeyword,
+  searchLoading,
+  searchResults,
+  searchPage,
+  searchStreamStatus,
+  siteCatalogLoading,
+  siteCatalog,
+  selectedSearchSites,
+  directBookURL,
+  urlResolving,
+  resolvedSourceMeta,
+  totalPages,
+  pagedResults,
+  bookInfo,
+  bookInfoLoading,
+  fetchGenre,
+  selectedChapterRange,
+  importingBookTitle,
+  importStartedTotal,
+  fetchDialogTitle,
+  flatChapters,
+  chapterRangeMarks,
+  openFetchDialog,
+  handleFetchDialogClose,
+  resetSearchSiteSelection,
+  doSearch,
+  selectBook,
+  resolveBookURLImport,
+  startFetchImport,
+} = useReferenceFetch(projectId, fetchRefs)
 
-const filteredChapters = computed(() => {
-  const q = chapterSearch.value.trim().toLowerCase()
-  if (!q) return chapters.value
-  return chapters.value.filter(c => c.title.toLowerCase().includes(q))
-})
+const {
+  showDeepAnalysisDialog,
+  deepAnalysisRef,
+  deepAnalysisJob,
+  deepAnalysisDialogLoading,
+  deepAnalysisStarting,
+  deepAnalysisImporting,
+  deepAnalysisResetting,
+  daStatusType,
+  daStatusText,
+  daChars,
+  daWorld,
+  daOutline,
+  daGlossary,
+  daForeshadowings,
+  roleTagType,
+  openDeepAnalysisDialog,
+  doStartDeepAnalysis,
+  stopDeepAnalysisPoll,
+  cancelDeepAnalysis,
+  importDeepAnalysisResult,
+  doResetDeepAnalysis,
+} = useReferenceDeepAnalysis(fetchRefs)
 
-const pagedChapters = computed(() => {
-  const start = (chapterSearchPage.value - 1) * CHAPTER_PAGE_SIZE
-  return filteredChapters.value.slice(start, start + CHAPTER_PAGE_SIZE)
-})
+// ─── reference CRUD ───────────────────────────────────────────────────────────
+onMounted(fetchRefs)
 
-const isChapterIndeterminate = computed(() => {
-  const pageIds = pagedChapters.value.map(c => c.id)
-  const selected = selectedChapterIds.value.filter(id => pageIds.includes(id))
-  return selected.length > 0 && selected.length < pageIds.length
-})
-
-async function openChaptersDialog(row: any) {
-  chapterRefId.value = row.id
-  chapterRefTitle.value = row.title || row.id
-  chapterSearch.value = ''
-  chapterSearchPage.value = 1
-  selectedChapterIds.value = []
-  deletedCount.value = 0
-  showChaptersDialog.value = true
-  await loadChapters()
-}
-
-async function loadChapters() {
-  chaptersLoading.value = true
+async function fetchRefs() {
+  loading.value = true
   try {
-    const res = await referenceApi.listChapters(chapterRefId.value)
-    chapters.value = (res.data as any).data || []
-  } catch (e: any) {
-    ElMessage.error('加载章节失败：' + (e?.response?.data?.error || e?.message))
+    const res = await referenceApi.list(projectId)
+    references.value = (res.data as any).data || []
   } finally {
-    chaptersLoading.value = false
+    loading.value = false
   }
 }
 
-function handleChapterSelectionChange(rows: ReferenceChapter[]) {
-  selectedChapterIds.value = rows.map(r => r.id)
-  const pageIds = pagedChapters.value.map(c => c.id)
-  chapterSelectAll.value = pageIds.every(id => selectedChapterIds.value.includes(id))
-}
-
-function toggleSelectAllChapters(val: boolean) {
-  if (!chapterTableRef.value) return
-  if (val) {
-    pagedChapters.value.forEach(row => chapterTableRef.value.toggleRowSelection(row, true))
-  } else {
-    pagedChapters.value.forEach(row => chapterTableRef.value.toggleRowSelection(row, false))
-  }
-}
-
-async function deleteSingleChapter(id: string) {
-  try {
-    await referenceApi.deleteChapter(id)
-    chapters.value = chapters.value.filter(c => c.id !== id)
-    deletedCount.value++
-    ElMessage.success('章节已删除')
-  } catch {
-    ElMessage.error('删除失败')
-  }
-}
-
-async function batchDeleteChapters() {
-  if (selectedChapterIds.value.length === 0) return
-  try {
-    await ElMessageBox.confirm(
-      `确定删除选中的 ${selectedChapterIds.value.length} 章吗？`,
-      '批量删除',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-    )
-  } catch { return }
-  deletingChapters.value = true
-  try {
-    await referenceApi.batchDeleteChapters(chapterRefId.value, selectedChapterIds.value)
-    const deletedSet = new Set(selectedChapterIds.value)
-    deletedCount.value += deletedSet.size
-    chapters.value = chapters.value.filter(c => !deletedSet.has(c.id))
-    selectedChapterIds.value = []
-    ElMessage.success('批量删除成功')
-  } catch {
-    ElMessage.error('批量删除失败')
-  } finally {
-    deletingChapters.value = false
-  }
-}
-
-// ─── multi-step fetch dialog ──────────────────────────────────────────────────
-const showFetchDialog = ref(false)
-const fetchStep = ref<'search' | 'results' | 'chapters' | 'importing'>('search')
-
-const PAGE_SIZE = 10
-const searchKeyword = ref('')
-const searchLoading = ref(false)
-const searchResults = ref<NovelSearchResult[]>([])
-const searchPage = ref(0)
-const searchStreamStatus = ref('')
-const siteCatalogLoading = ref(false)
-const siteCatalog = ref<NovelSiteCatalog | null>(null)
-const selectedSearchSites = ref<string[]>([])
-const directBookURL = ref('')
-const urlResolving = ref(false)
-const resolvedSourceMeta = ref<ResolvedNovelURL | null>(null)
-let _searchAbort: AbortController | null = null
-
-const totalPages = computed(() => Math.ceil(searchResults.value.length / PAGE_SIZE))
-const pagedResults = computed(() =>
-  searchResults.value.slice(searchPage.value * PAGE_SIZE, (searchPage.value + 1) * PAGE_SIZE)
-)
-
-const selectedBook = ref<NovelSearchResult | null>(null)
-const bookInfo = ref<FetchBookInfo | null>(null)
-const bookInfoLoading = ref(false)
-const fetchGenre = ref('')
-const selectedChapterRange = ref<[number, number]>([0, 0])
-
-const importingBookTitle = ref('')
-const importStartedTotal = ref(0)
-
-const fetchDialogTitle = computed(() => {
-  if (fetchStep.value === 'search') return '搜索参考书'
-  if (fetchStep.value === 'results') return `搜索结果：${searchKeyword.value}`
-  if (fetchStep.value === 'chapters') return bookInfo.value?.title ?? '选择章节'
-  return '下载已启动'
-})
-
-const flatChapters = computed((): FetchChapterInfo[] => {
-  if (!bookInfo.value) return []
-  return bookInfo.value.volumes.flatMap(v => v.chapters)
-})
-
-const chapterRangeMarks = computed(() => {
-  const total = flatChapters.value.length
-  if (total === 0) return {}
-  return { 0: '1', [total - 1]: String(total) }
-})
-
-function openFetchDialog() {
-  if (_searchAbort) { _searchAbort.abort(); _searchAbort = null }
-  fetchStep.value = 'search'
-  searchKeyword.value = ''
-  searchLoading.value = false
-  searchResults.value = []
-  searchStreamStatus.value = ''
-  bookInfo.value = null
-  selectedBook.value = null
-  fetchGenre.value = ''
-  directBookURL.value = ''
-  resolvedSourceMeta.value = null
-  showFetchDialog.value = true
-  void ensureNovelSiteCatalog(true)
-}
-
-function handleFetchDialogClose(done: () => void) {
-  if (_searchAbort) {
-    _searchAbort.abort()
-    _searchAbort = null
-  }
-  done()
-}
-
-function resetSearchSiteSelection() {
-  selectedSearchSites.value = [...(siteCatalog.value?.sites ?? [])]
-}
-
-async function ensureNovelSiteCatalog(resetSelection = false) {
-  if (siteCatalogLoading.value) return
-  if (siteCatalog.value && !resetSelection) return
-  siteCatalogLoading.value = true
-  try {
-    const res = await referenceApi.listNovelSites(projectId)
-    const data = res.data as NovelSiteCatalog
-    siteCatalog.value = data
-    const available = data.sites ?? []
-    if (resetSelection || selectedSearchSites.value.length === 0) {
-      selectedSearchSites.value = [...available]
-    } else {
-      const allowed = new Set(available)
-      selectedSearchSites.value = selectedSearchSites.value.filter(site => allowed.has(site))
-      if (selectedSearchSites.value.length === 0) {
-        selectedSearchSites.value = [...available]
-      }
-    }
-  } catch (e: any) {
-    siteCatalog.value = null
-    selectedSearchSites.value = []
-    ElMessage.warning(e?.response?.data?.error || '加载书源列表失败，将使用后端默认站点集合')
-  } finally {
-    siteCatalogLoading.value = false
-  }
-}
-
-function selectedSearchSitesPayload(): string[] | null {
-  const available = siteCatalog.value?.sites ?? []
-  if (available.length === 0) return null
-  if (selectedSearchSites.value.length === available.length) return null
-  return [...selectedSearchSites.value]
-}
-
-async function doSearch() {
-  const kw = searchKeyword.value.trim()
-  if (!kw) return
-  if (siteCatalog.value && selectedSearchSites.value.length === 0) {
-    ElMessage.warning('请至少选择一个搜索站点')
-    return
-  }
-  if (_searchAbort) _searchAbort.abort()
-  _searchAbort = new AbortController()
-  const signal = _searchAbort.signal
-  const sites = selectedSearchSitesPayload()
-  searchLoading.value = true
-  searchResults.value = []
-  searchPage.value = 0
-  searchStreamStatus.value = '正在连接各站点…'
-  fetchStep.value = 'results'
-  let siteCount = 0
-  try {
-    for await (const event of streamSearchNovels(projectId, kw, { signal, sites })) {
-      if (event.type === 'batch') {
-        searchResults.value.push(...event.results)
-        siteCount++
-        searchStreamStatus.value = `已从 ${siteCount} 个站点获取 ${searchResults.value.length} 条结果…`
-      } else if (event.type === 'done') {
-        searchStreamStatus.value = `搜索完成，共 ${siteCount} 个站点，${event.total} 条结果`
-      } else if (event.type === 'error') {
-        ElMessage.error(`搜索出错：${event.message}`)
-      }
-    }
-  } catch (e: any) {
-    if (signal.aborted) return
-    try {
-      const res = await referenceApi.searchNovels(projectId, kw, sites)
-      searchResults.value = (res.data as any).results ?? []
-      searchStreamStatus.value = `共 ${searchResults.value.length} 条结果`
-    } catch (e2: any) {
-      ElMessage.error(e2?.response?.data?.error || '搜索失败，请稍后重试')
-    }
-  } finally {
-    searchLoading.value = false
-  }
-}
-
-async function selectBook(book: NovelSearchResult) {
-  resolvedSourceMeta.value = null
-  selectedBook.value = book
-  bookInfo.value = null
-  bookInfoLoading.value = true
-  fetchStep.value = 'chapters'
-  try {
-    const res = await referenceApi.getBookInfo(projectId, book.site, book.book_id)
-    bookInfo.value = res.data as FetchBookInfo
-    const total = bookInfo.value.total_chapters
-    selectedChapterRange.value = [0, Math.max(total - 1, 0)]
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error || '获取章节列表失败')
-  } finally {
-    bookInfoLoading.value = false
-  }
-}
-
-async function resolveBookURLImport() {
-  const rawURL = directBookURL.value.trim()
-  if (!rawURL) return
-  urlResolving.value = true
-  try {
-    const res = await referenceApi.resolveNovelURL(projectId, rawURL)
-    const resolved = res.data as ResolvedNovelURL
-    resolvedSourceMeta.value = resolved
-    await selectBook({
-      site: resolved.site,
-      book_id: resolved.book_id,
-      book_url: resolved.url,
-      cover_url: '',
-      title: resolved.source_name || 'URL 导入',
-      author: '',
-      latest_chapter: '',
-      update_date: '',
-      word_count: '',
-    })
-    resolvedSourceMeta.value = resolved
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error || '解析书籍 URL 失败')
-  } finally {
-    urlResolving.value = false
-  }
-}
-
-async function startFetchImport() {
-  if (!selectedBook.value || !bookInfo.value) return
-  const flat = flatChapters.value
-  const [startIdx, endIdx] = selectedChapterRange.value
-  const chapterIds = flat.slice(startIdx, endIdx + 1).map(c => c.chapter_id)
-  if (chapterIds.length === 0) { ElMessage.warning('请至少选择一章'); return }
-
-  importingBookTitle.value = bookInfo.value.title
-  importStartedTotal.value = chapterIds.length
-  fetchStep.value = 'importing'
-
-  try {
-    const res = await referenceApi.startFetchImport(projectId, {
-      site: selectedBook.value.site,
-      book_id: selectedBook.value.book_id,
-      title: bookInfo.value.title,
-      author: bookInfo.value.author,
-      genre: fetchGenre.value,
-      chapter_ids: chapterIds,
-    })
-    const data: any = res.data
-    // Register with download store so the floating widget tracks it
-    downloadStore.addTask(
-      data.ref_id,
-      projectId,
-      bookInfo.value.title,
-      data.fetch_total ?? chapterIds.length,
-    )
-    // Refresh reference list to show the new record
-    await fetchRefs()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error || '启动下载失败')
-    fetchStep.value = 'chapters'
-  }
-}
-
-// ─── export / import ──────────────────────────────────────────────────────────
 function handleSelectionChange(rows: any[]) {
   selectedIds.value = rows.map(r => r.id)
 }
 
+async function setAsContinuationSource(row: any) {
+  settingContinuation.value = row.id
+  try {
+    await projectApi.setContinuationMode(projectId, row.id, 0)
+    ElMessage.success(`已将《${row.title}》设为本项目的续写底本，开始章节将自动从章节数量推算`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error ?? '设置续写底本失败')
+  } finally {
+    settingContinuation.value = null
+  }
+}
+
+async function deleteReference(id: string) {
+  try {
+    await ElMessageBox.confirm('确定要删除该参考书吗？此操作不可撤销。', '删除确认', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+  deleting.value = id
+  try {
+    await referenceApi.delete(id)
+    references.value = references.value.filter(r => r.id !== id)
+    ElMessage.success('已删除')
+  } catch {
+    ElMessage.error('删除失败')
+  } finally {
+    deleting.value = null
+  }
+}
+
+// ─── export / local file ──────────────────────────────────────────────────────
 async function exportSingle(row: any) {
   exporting.value = row.id
   try {
@@ -948,14 +736,12 @@ async function handleLocalFile(event: Event) {
   if (!file) return
   try {
     if (file.name.toLowerCase().endsWith('.json')) {
-      // JSON bundle exported from this app → restore via import-local
       const text = await file.text()
       const bundle = JSON.parse(text)
       const res = await referenceApi.importLocal(projectId, bundle)
       const data: any = res.data
       ElMessage.success(`导入成功，共导入 ${data.count} 本参考书`)
     } else {
-      // Raw text file (.txt / .md / .html / .htm) → upload as new reference
       const formData = new FormData()
       formData.append('file', file)
       formData.append('title', file.name.replace(/\.[^.]+$/, ''))
@@ -970,66 +756,6 @@ async function handleLocalFile(event: Event) {
     ElMessage.error('操作失败：' + (e?.response?.data?.error || e?.message || '未知错误'))
   } finally {
     if (localFileInput.value) localFileInput.value.value = ''
-  }
-}
-
-// ─── analysis & migration ─────────────────────────────────────────────────────
-
-onMounted(fetchRefs)
-
-async function fetchRefs() {
-  loading.value = true
-  try {
-    const res = await referenceApi.list(projectId)
-    references.value = (res.data as any).data || []
-  } finally {
-    loading.value = false
-  }
-}
-
-const {
-  showDeepAnalysisDialog,
-  deepAnalysisRef,
-  deepAnalysisJob,
-  deepAnalysisDialogLoading,
-  deepAnalysisStarting,
-  deepAnalysisImporting,
-  deepAnalysisResetting,
-  daStatusType,
-  daStatusText,
-  daChars,
-  daWorld,
-  daOutline,
-  daGlossary,
-  daForeshadowings,
-  roleTagType,
-  openDeepAnalysisDialog,
-  doStartDeepAnalysis,
-  stopDeepAnalysisPoll,
-  cancelDeepAnalysis,
-  importDeepAnalysisResult,
-  doResetDeepAnalysis,
-} = useReferenceDeepAnalysis(fetchRefs)
-
-async function deleteReference(id: string) {
-  try {
-    await ElMessageBox.confirm('确定要删除该参考书吗？此操作不可撤销。', '删除确认', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-  } catch {
-    return
-  }
-  deleting.value = id
-  try {
-    await referenceApi.delete(id)
-    references.value = references.value.filter(r => r.id !== id)
-    ElMessage.success('已删除')
-  } catch {
-    ElMessage.error('删除失败')
-  } finally {
-    deleting.value = null
   }
 }
 </script>
