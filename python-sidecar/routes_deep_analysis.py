@@ -897,20 +897,55 @@ async def _merge_characters_chunked(all_chars: list, cfg: LLMConfig) -> list:
     logger.info("merge_characters: %d deduped entries → %d LLM batch(es)", len(deduped), len(batches))
 
     # Step 3: LLM-merge each batch with automatic recursive splitting on truncation.
+    # Add delay between batches to avoid API rate limiting.
     batch_results: list[dict] = []
     for i, batch in enumerate(batches):
+        if i > 0:
+            # Rate-limit delay between batches (except first batch)
+            await asyncio.sleep(3.0)
         logger.info("merge_characters: LLM batch %d/%d (%d entries)", i + 1, len(batches), len(batch))
         batch_cfg = _cfg_with_child_session(cfg, f"batch-{i + 1}")
         merged = await _llm_merge_chars_batch(batch, batch_cfg)
-        batch_results.extend(merged)
+        if merged:
+            batch_results.extend(merged)
+        else:
+            logger.warning("merge_characters: batch %d/%d returned empty result, keeping original entries", i + 1, len(batches))
+            batch_results.extend(batch)
 
     if len(batches) == 1:
         return _sort_by_importance(batch_results)
 
     # Step 4: Final merge pass over all condensed batch results.
+    # If there are fewer than 20 entries after batch merging, use Python-level dedup only.
+    # This avoids unnecessary LLM calls and prevents API rate-limiting issues.
+    if len(batch_results) < 20:
+        logger.info(
+            "merge_characters: %d condensed entries (< 20), using python-level dedup only",
+            len(batch_results),
+        )
+        # Python name-dedup on combined results
+        final_map: dict[str, dict] = {}
+        for ch in batch_results:
+            name = (ch.get("name") or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key not in final_map:
+                final_map[key] = dict(ch)
+            else:
+                existing = final_map[key]
+                if len(str(ch.get("description", ""))) > len(str(existing.get("description", ""))):
+                    final_map[key] = {**existing, **{k: v for k, v in ch.items() if v}}
+                else:
+                    for k, v in ch.items():
+                        if v and not existing.get(k):
+                            existing[k] = v
+        return _sort_by_importance(list(final_map.values()))
+
+    # Normal path: LLM final merge pass for larger result sets.
     # _llm_merge_chars_batch handles truncation recursively so no data is lost.
     logger.info(
-        "merge_characters: final merge pass over %d entries from %d batches",
+        "merge_characters: final LLM merge pass over %d entries from %d batches",
         len(batch_results), len(batches),
     )
     final_cfg = _cfg_with_child_session(cfg, "final")
