@@ -53,6 +53,26 @@ def _is_max_tokens_unsupported(exc: Exception) -> bool:
     return "max_tokens" in msg and "max_completion_tokens" in msg
 
 
+class _LLMWrapper:
+    """Thin proxy around a LangChain LLM that overrides invoke/ainvoke without
+    mutating the underlying Pydantic model (Pydantic v2 rejects arbitrary field
+    assignment, so we never do ``llm.invoke = fn`` directly)."""
+
+    def __init__(self, delegate, invoke_fn, ainvoke_fn):
+        self._delegate = delegate
+        self._invoke_fn = invoke_fn
+        self._ainvoke_fn = ainvoke_fn
+
+    def invoke(self, input, config=None, **kwargs):
+        return self._invoke_fn(input, config=config, **kwargs)
+
+    async def ainvoke(self, input, config=None, **kwargs):
+        return await self._ainvoke_fn(input, config=config, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._delegate, name)
+
+
 def _apply_max_completion_tokens_fallback(primary, fallback):
     """Patch invoke/ainvoke on *primary* to transparently retry via *fallback* on the token-param error."""
     _orig_invoke = primary.invoke
@@ -74,9 +94,7 @@ def _apply_max_completion_tokens_fallback(primary, fallback):
                 return await fallback.ainvoke(input, config=config, **kwargs)
             raise
 
-    primary.invoke = _invoke
-    primary.ainvoke = _ainvoke
-    return primary
+    return _LLMWrapper(primary, _invoke, _ainvoke)
 
 
 # ── Per-profile sliding-window rate limiter ───────────────────────────────────
@@ -142,9 +160,7 @@ def _apply_rpm_limit(llm, key: str, rpm_limit: int):
         await asyncio.wait_for(_rate_limit_async(key, rpm_limit), timeout=61.0)
         return await _orig_ainvoke(input, config=config, **kwargs)
 
-    llm.invoke = _invoke
-    llm.ainvoke = _ainvoke
-    return llm
+    return _LLMWrapper(llm, _invoke, _ainvoke)
 
 
 def build_llm(
