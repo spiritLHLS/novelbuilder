@@ -329,7 +329,7 @@ novelbuilder/
 
 ```bash
 docker rm -f nb
-docker volume rm novelbuilder-pg novelbuilder-qdrant novelbuilder-neo4j
+docker volume rm novelbuilder-pg novelbuilder-qdrant novelbuilder-neo4j novelbuilder-uploads
 ```
 
 ### 使用预构建镜像运行（推荐）
@@ -341,6 +341,7 @@ docker run -d \
   -v novelbuilder-pg:/var/lib/postgresql/data \
   -v novelbuilder-qdrant:/var/lib/qdrant \
   -v novelbuilder-neo4j:/opt/neo4j/data \
+  -v novelbuilder-uploads:/data/uploads \
   -e ADMIN_USERNAME=admin \
   -e ADMIN_PASSWORD=your_password_here \
   ghcr.io/spiritlhls/novelbuilder:latest
@@ -355,6 +356,7 @@ docker run -d \
   -v novelbuilder-pg:/var/lib/postgresql/data \
   -v novelbuilder-qdrant:/var/lib/qdrant \
   -v novelbuilder-neo4j:/opt/neo4j/data \
+  -v novelbuilder-uploads:/data/uploads \
   -e ADMIN_USERNAME=admin \
   -e ADMIN_PASSWORD=your_password_here \
   spiritlhl/novelbuilder:latest
@@ -373,16 +375,18 @@ docker run -d \
   -v novelbuilder-pg:/var/lib/postgresql/data \
   -v novelbuilder-qdrant:/var/lib/qdrant \
   -v novelbuilder-neo4j:/opt/neo4j/data \
+  -v novelbuilder-uploads:/data/uploads \
   -e ADMIN_USERNAME=admin \
   -e ADMIN_PASSWORD=your_password_here \
   novelbuilder
 docker logs -f nb
 ```
 
-> 三个 `-v` 数据卷缺一不可:
+> 四个 `-v` 数据卷缺一不可:
 > - `novelbuilder-pg` -- 关系型数据库（项目、角色、章节等所有业务数据）
 > - `novelbuilder-qdrant` -- 向量索引（知识库重建结果，缺少会导致重建后的索引在容器重启后丢失）
 > - `novelbuilder-neo4j` -- 知识图谱（Agent 长期记忆）
+> - `novelbuilder-uploads` -- 上传的参考书文件（txt/pdf，缺少会导致容器重建后参考书丢失）
 >
 > 使用具名卷（named volume）确保数据在容器重建后仍然保留。
 

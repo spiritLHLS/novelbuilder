@@ -329,7 +329,7 @@ def _repair_json(raw: str) -> dict:
     return result
 
 
-_ALLOWED_UPLOAD_DIR = os.path.abspath(os.getenv("UPLOAD_DIR", "/app/uploads"))
+_ALLOWED_UPLOAD_DIR = os.path.abspath(os.getenv("UPLOAD_DIR", "/data/uploads"))
 
 def _read_file(file_path: str) -> str:
     # Prevent path traversal: only allow files under the upload directory

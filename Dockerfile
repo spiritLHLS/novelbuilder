@@ -167,7 +167,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
 
 EXPOSE 8080
 
-VOLUME ["/var/lib/postgresql/data", "/var/lib/qdrant", "/opt/neo4j/data"]
+VOLUME ["/var/lib/postgresql/data", "/var/lib/qdrant", "/opt/neo4j/data", "/data/uploads"]
 
 WORKDIR /app
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
