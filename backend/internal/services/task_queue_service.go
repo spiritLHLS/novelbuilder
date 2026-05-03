@@ -65,11 +65,14 @@ func (s *TaskQueueService) Start() {
 		s.wg.Add(1)
 		go s.worker()
 	}
+	// Periodically recover tasks that got stuck in 'running' after a crash/restart.
+	s.wg.Add(1)
+	go s.recoveryWorker()
 	s.logger.Info("task queue started", zap.Int("workers", s.workers))
 }
 
 // recoverStaleRunning resets tasks that have been stuck in 'running' state for more
-// than 30 minutes back to 'pending' so they can be retried. This handles the case
+// than 5 minutes back to 'pending' so they can be retried. This handles the case
 // where the server crashed while a task was executing.
 func (s *TaskQueueService) recoverStaleRunning(ctx context.Context) {
 	tag, err := s.db.Exec(ctx,
@@ -79,13 +82,29 @@ func (s *TaskQueueService) recoverStaleRunning(ctx context.Context) {
 		     scheduled_at = NOW(),
 		     updated_at = NOW()
 		 WHERE status = 'running'
-		   AND updated_at < NOW() - INTERVAL '30 minutes'`)
+		   AND updated_at < NOW() - INTERVAL '5 minutes'`)
 	if err != nil {
 		s.logger.Warn("failed to recover stale running tasks", zap.Error(err))
 		return
 	}
 	if tag.RowsAffected() > 0 {
 		s.logger.Info("recovered stale running tasks", zap.Int64("count", tag.RowsAffected()))
+	}
+}
+
+// recoveryWorker runs recoverStaleRunning every 5 minutes so tasks that become
+// stale after startup are also cleaned up.
+func (s *TaskQueueService) recoveryWorker() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-ticker.C:
+			s.recoverStaleRunning(s.stopCtx)
+		}
 	}
 }
 
