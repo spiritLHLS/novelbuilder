@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -14,6 +16,39 @@ import (
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
+
+// validateTestURL rejects URLs that point to loopback addresses, link-local
+// addresses, or private RFC-1918 ranges to prevent SSRF via the LLM test
+// endpoint.  External LLM provider URLs are expected to be public Internet
+// addresses.
+func validateTestURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("url scheme must be http or https")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("url host is empty")
+	}
+	// Reject bare IP addresses in private/loopback ranges.
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("url must not point to a loopback address")
+		}
+		// RFC-1918 private ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+		privateRanges := []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"}
+		for _, cidr := range privateRanges {
+			_, block, _ := net.ParseCIDR(cidr)
+			if block != nil && block.Contains(ip) {
+				return fmt.Errorf("url must not point to a private/internal network address")
+			}
+		}
+	}
+	return nil
+}
 
 func (h *Handler) ListLLMProfiles(c *gin.Context) {
 	profiles, err := h.llmProfiles.List(c.Request.Context())
@@ -217,6 +252,12 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 		return
 	}
 
+	// Reject SSRF attempts: the test endpoint must only reach external LLM providers.
+	if err := validateTestURL(req.BaseURL); err != nil {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("base_url rejected: %s", err.Error())})
+		return
+	}
+
 	// Infer api_style from provider when not explicitly set.
 	if req.APIStyle == "" {
 		switch req.Provider {
@@ -360,8 +401,14 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 		rawBodySnippet = rawBodySnippet[:500] + "..."
 	}
 
+	// Redact the API key from the endpoint URL for logging (Gemini embeds key as ?key=... query param).
+	safeEndpoint := endpoint
+	if req.APIStyle == "gemini" && req.APIKey != "" {
+		safeEndpoint = strings.ReplaceAll(safeEndpoint, req.APIKey, "[REDACTED]")
+	}
+
 	h.logger.Info("llm_test raw response",
-		zap.String("endpoint", endpoint),
+		zap.String("endpoint", safeEndpoint),
 		zap.String("model", req.ModelName),
 		zap.Int("status", statusCode),
 		zap.Int64("duration_ms", durationMs),

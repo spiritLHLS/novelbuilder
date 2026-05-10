@@ -184,9 +184,12 @@
 import { ref, onMounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { characterApi, outlineApi, charInteractionApi, chapterApi } from '@/api'
+import { characterApi, outlineApi, charInteractionApi, chapterApi, projectApi } from '@/api'
 import cytoscape from 'cytoscape'
+import fcose from 'cytoscape-fcose'
 import { renderRichText } from '@/utils/richText'
+
+cytoscape.use(fcose)
 
 const route = useRoute()
 const projectId = route.params.projectId as string
@@ -204,6 +207,7 @@ const showEditDlg = ref(false)
 const creating = ref(false)
 const timelineChapter = ref(1)
 const maxTimelineChapter = ref(1)
+const continuationStartChapter = ref(0) // >0 means this is a continuation project
 
 const createForm = ref({ name: '', role: 'supporting', backstory: '', personality_str: '' })
 const editForm = ref<any>({})
@@ -219,16 +223,25 @@ onMounted(fetchChars)
 
 async function fetchChars() {
   try {
-    const [charRes, outlineRes, interactionRes, chapterRes] = await Promise.all([
+    const [charRes, outlineRes, interactionRes, chapterRes, projRes] = await Promise.all([
       characterApi.list(projectId),
       outlineApi.list(projectId).catch(() => ({ data: { data: [] } })),
       charInteractionApi.list(projectId).catch(() => ({ data: { data: [] } })),
       chapterApi.list(projectId).catch(() => ({ data: { data: [] } })),
+      projectApi.get(projectId).catch(() => ({ data: null })),
     ])
     characters.value = charRes.data.data || []
     outlines.value = outlineRes.data.data || []
     interactions.value = interactionRes.data.data || []
     chapters.value = chapterRes.data.data || []
+    // For continuation projects, track the continuation_start_chapter so
+    // the timeline slider can include reference-book chapter numbers too.
+    const proj = projRes.data?.data ?? projRes.data
+    if (proj?.project_type === 'continuation' && proj?.continuation_start_chapter > 1) {
+      continuationStartChapter.value = proj.continuation_start_chapter
+    } else {
+      continuationStartChapter.value = 0
+    }
     maxTimelineChapter.value = computeTimelineMax()
     timelineChapter.value = Math.max(1, maxTimelineChapter.value)
     buildGraph()
@@ -253,6 +266,11 @@ function extractOutlineCharacters(outline: any): string[] {
 
 function computeTimelineMax(): number {
   let maxChapter = 1
+  // For continuation projects, all chapter numbers from the reference book
+  // are also valid (character first-appearance may reference those chapters).
+  if (continuationStartChapter.value > 1) {
+    maxChapter = continuationStartChapter.value - 1
+  }
   // Use actual chapter numbers from generated chapters (most authoritative source)
   chapters.value.forEach((ch: any) => {
     const num = Number(ch?.chapter_num) || 0
@@ -482,33 +500,32 @@ function buildGraph() {
       },
     }))
 
-    const layoutOptions = {
-      name: 'cose',
+    const layoutOptions: any = {
+      name: 'fcose',
       animate: false,
       fit: true,
       padding: nodes.length > 12 ? 120 : 80,
       nodeDimensionsIncludeLabels: true,
-      componentSpacing: nodes.length > 15 ? 250 : nodes.length > 8 ? 180 : 130,
-      nodeRepulsion: (node: any) => {
-        const degree = node.connectedEdges().length
-        // Much higher repulsion to guarantee non-overlap
-        if (degree > 5) return 80000
-        if (degree > 2) return 55000
-        return 38000
+      // fcose guarantees non-overlap via incremental layout
+      nodeRepulsion: () => {
+        const base = nodes.length > 15 ? 6000 : 4500
+        return base
       },
       idealEdgeLength: () => {
-        if (edges.length > 20) return 320
-        if (edges.length > 10) return 260
-        return 200
+        if (edges.length > 20) return 300
+        if (edges.length > 10) return 240
+        return 180
       },
-      edgeElasticity: () => 100,
-      gravity: nodes.length > 15 ? 0.15 : 0.1,
-      numIter: nodes.length > 15 ? 3000 : 2000,
-      nodeOverlap: 999999, // Maximum overlap penalty — forces strict non-overlap
+      edgeElasticity: () => 0.45,
+      nestingFactor: 0.1,
+      gravity: nodes.length > 15 ? 0.15 : 0.08,
+      gravityRange: 3.8,
+      initialEnergyOnIncremental: 0.3,
+      numIter: nodes.length > 20 ? 5000 : 3500,
+      tile: true,
+      tilingPaddingVertical: 20,
+      tilingPaddingHorizontal: 20,
       randomize: true,
-      initialTemp: 500,
-      coolingFactor: 0.97,
-      minTemp: 0.5,
     }
 
     if (cy) cy.destroy()
@@ -580,7 +597,9 @@ function buildGraph() {
             label: 'data(label)',
             'line-color': 'rgba(132, 170, 214, 0.46)',
             'line-style': 'solid',
+            // haystack curves are fastest and ensure edges don't share paths
             'curve-style': 'bezier',
+            'control-point-step-size': 40,
             'target-arrow-shape': 'none',
             'source-arrow-shape': 'none',
             'font-size': 9,
@@ -645,33 +664,29 @@ function graphRelayout() {
     const visibleNodeCount = cy.nodes().length
     const visibleEdgeCount = cy.edges().length
     cy.layout({
-      name: 'cose',
+      name: 'fcose',
       animate: true,
       animationDuration: 600,
       fit: true,
       padding: visibleNodeCount > 12 ? 120 : 80,
       nodeDimensionsIncludeLabels: true,
-      componentSpacing: visibleNodeCount > 15 ? 250 : visibleNodeCount > 8 ? 180 : 130,
-      nodeRepulsion: (node: any) => {
-        const degree = node.connectedEdges().length
-        if (degree > 5) return 80000
-        if (degree > 2) return 55000
-        return 38000
-      },
+      nodeRepulsion: () => visibleNodeCount > 15 ? 6000 : 4500,
       idealEdgeLength: () => {
-        if (visibleEdgeCount > 20) return 320
-        if (visibleEdgeCount > 10) return 260
-        return 200
+        if (visibleEdgeCount > 20) return 300
+        if (visibleEdgeCount > 10) return 240
+        return 180
       },
-      edgeElasticity: () => 100,
-      gravity: visibleNodeCount > 15 ? 0.15 : 0.1,
-      numIter: visibleNodeCount > 15 ? 3000 : 2000,
-      nodeOverlap: 999999,
+      edgeElasticity: () => 0.45,
+      nestingFactor: 0.1,
+      gravity: visibleNodeCount > 15 ? 0.15 : 0.08,
+      gravityRange: 3.8,
+      initialEnergyOnIncremental: 0.3,
+      numIter: visibleNodeCount > 20 ? 5000 : 3500,
+      tile: true,
+      tilingPaddingVertical: 20,
+      tilingPaddingHorizontal: 20,
       randomize: true,
-      initialTemp: 500,
-      coolingFactor: 0.97,
-      minTemp: 0.5,
-    }).run()
+    } as any).run()
   }
 }
 

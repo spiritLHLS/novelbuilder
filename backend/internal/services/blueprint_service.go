@@ -70,9 +70,12 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 	// Validate that the project exists before creating anything.
 	var project models.Project
 	err := s.db.QueryRow(ctx,
-		`SELECT id, title, genre, description, style_description, target_words, chapter_words FROM projects WHERE id = $1`, projectID).Scan(
+		`SELECT id, title, genre, description, style_description, target_words, chapter_words,
+		        COALESCE(project_type,'original'), continuation_ref_id, COALESCE(continuation_start_chapter,1)
+		 FROM projects WHERE id = $1`, projectID).Scan(
 		&project.ID, &project.Title, &project.Genre, &project.Description, &project.StyleDescription,
-		&project.TargetWords, &project.ChapterWords)
+		&project.TargetWords, &project.ChapterWords,
+		&project.ProjectType, &project.ContinuationRefID, &project.ContinuationStartChapter)
 	if err != nil {
 		return nil, fmt.Errorf("project not found: %w", err)
 	}

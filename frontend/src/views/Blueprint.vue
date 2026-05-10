@@ -1,7 +1,12 @@
 <template>
   <div class="blueprint">
     <div class="page-header">
-      <h1>蓝图管理</h1>
+      <h1>
+        蓝图管理
+        <el-tag v-if="isContinuationMode" type="warning" size="small" style="margin-left:8px;vertical-align:middle;">
+          续写模式 · 续集从第 {{ continuationStartChapter }} 章开始
+        </el-tag>
+      </h1>
       <div style="display: flex; gap: 8px;">
         <el-button v-if="currentBlueprint" type="success" plain @click="exportBlueprint">
           <el-icon><Download /></el-icon>导出蓝图
@@ -403,7 +408,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, type FormInstance } from 'element-plus'
-import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, batchWriteApi } from '@/api'
+import { blueprintApi, volumeApi, worldBibleApi, characterApi, outlineApi, foreshadowingApi, batchWriteApi, projectApi } from '@/api'
 import { renderRichText } from '@/utils/richText'
 import {
   blueprintHasData as hasData,
@@ -422,6 +427,8 @@ const route = useRoute()
 const projectId = route.params.projectId as string
 
 const currentBlueprint = ref<any>(null)
+const isContinuationMode = ref(false)
+const continuationStartChapter = ref(0)
 const generating = ref(false)
 const generatingStep = ref(0)
 const generationError = ref('')
@@ -637,6 +644,17 @@ async function saveOutlineEdits() {
 
 onMounted(async () => {
   await fetchAll()
+  // Load project type to show continuation mode indicator.
+  try {
+    const projRes = await projectApi.get(projectId)
+    const proj = projRes?.data?.data
+    if (proj?.project_type === 'continuation') {
+      isContinuationMode.value = true
+      continuationStartChapter.value = proj.continuation_start_chapter || 1
+    }
+  } catch {
+    // Non-critical — ignore
+  }
   // Pre-fill the inline generation form with project defaults (used when no blueprint exists yet).
   if (!currentBlueprint.value) {
     genForm.value = await loadBlueprintGenerationDefaults(projectId, genForm.value)

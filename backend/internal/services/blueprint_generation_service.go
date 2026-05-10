@@ -177,9 +177,52 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 	contextSection := sb.String()
 	worldBibleFields := buildWorldBibleFieldsHint(genre)
 
+	// ── Continuation mode: load reference book tail chapters as context ──────
+	isContinuation := project.ProjectType == "continuation" && project.ContinuationRefID != nil
+	continuationStartChapter := project.ContinuationStartChapter
+	if isContinuation && continuationStartChapter < 1 {
+		continuationStartChapter = 1
+	}
+
+	continuationContextSection := ""
+	if isContinuation {
+		refWindowSize := 10
+		refWindowStart := continuationStartChapter - refWindowSize
+		if refWindowStart < 1 {
+			refWindowStart = 1
+		}
+		refRows, refErr := s.db.Query(ctx,
+			`SELECT chapter_no, title, SUBSTRING(content, 1, 1200) AS snippet
+			 FROM reference_book_chapters
+			 WHERE ref_id = $1 AND is_deleted = FALSE
+			   AND chapter_no >= $2 AND chapter_no < $3
+			 ORDER BY chapter_no ASC`,
+			*project.ContinuationRefID, refWindowStart, continuationStartChapter)
+		if refErr == nil {
+			var refSB strings.Builder
+			refSB.WriteString(fmt.Sprintf("## 【参考书末尾章节（续写衔接参考，第%d～%d章）】\n", refWindowStart, continuationStartChapter-1))
+			refSB.WriteString("以下是被续写参考书的最后几章内容摘要，新书的前几章必须与此衔接，风格、人物状态、悬念和情绪必须自然延续：\n\n")
+			hadRows := false
+			for refRows.Next() {
+				var cNo int
+				var title, snippet string
+				if refRows.Scan(&cNo, &title, &snippet) == nil {
+					refSB.WriteString(fmt.Sprintf("**第%d章《%s》**：%s\n\n", cNo, title, snippet))
+					hadRows = true
+				}
+			}
+			refRows.Close()
+			if hadRows {
+				continuationContextSection = refSB.String()
+			}
+		}
+	}
+
 	hasExistingData := existingWB != nil || len(existingChars) > 0 || len(existingForeshadowings) > 0 || len(existingOutlines) > 0
 	taskInstruction := "生成一套全新的完整整书资产包"
-	if hasExistingData {
+	if isContinuation {
+		taskInstruction = fmt.Sprintf("为参考书的续集生成完整整书资产包，续集内容从第%d章开始，必须与参考书风格、角色设定和情节状态完全衔接", continuationStartChapter)
+	} else if hasExistingData {
 		taskInstruction = "在现有素材基础上完成并扩展整书资产包（不要删改用户已有内容，只补全缺失部分并新增内容）"
 	}
 
@@ -195,9 +238,36 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 		estimatedTotalChapters = volumeCount * 30
 	}
 
+	// For continuation projects: chapter numbers start at continuationStartChapter
+	firstVolumeChapterStart := 1
+	lastVolumeChapterEndApprox := estimatedTotalChapters
+	if isContinuation {
+		firstVolumeChapterStart = continuationStartChapter
+		lastVolumeChapterEndApprox = continuationStartChapter + estimatedTotalChapters - 1
+	}
+
+	volumesConstraint := fmt.Sprintf("volumes 数组必须恰好 %d 个元素，所有卷的章节首尾相连（第一卷chapter_start=%d，最后一卷chapter_end≈%d），章节连续不重叠",
+		volumeCount, firstVolumeChapterStart, lastVolumeChapterEndApprox)
+
+	continuationNote := ""
+	if isContinuation {
+		continuationNote = fmt.Sprintf(`
+---
+## ⚠️ 【续写模式 — 最高优先级约束】
+- 本书是已有参考书的续集，AI生成的章节从**第%d章**开始
+- 第一卷必须从第%d章开始（chapter_start=%d）
+- 所有卷的章节编号连续从第%d章往后排，不从第1章重新开始
+- relation_graph、characters 必须包含参考书中的主要角色（可在其基础上新增角色）
+- global_timeline 的前序事件必须反映参考书结尾的关键状态（角色所处位置、悬念状态、重要道具归属等）
+- master_outline 第1卷的核心冲突必须是对参考书末尾悬念的直接延续
+
+`, continuationStartChapter, continuationStartChapter, continuationStartChapter, continuationStartChapter)
+	}
+
 	prompt := fmt.Sprintf(`你是一位资深小说策划编辑，擅长%s类型的长篇小说规划。
 请%s。
-
+%s
+%s
 %s
 ---
 ## 当前项目信息
@@ -208,7 +278,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 - 计划卷数：%d卷（必须恰好 %d 卷，不得增减）
 - 每章字数范围：%d～%d字（短故事弧可少于此范围，高潮章节可超出此范围，整体控制在此区间内）
 - 全书目标字数：约%d万字
-- 推算总章节数：约%d章（目标字数 ÷ 每章平均字数）
+- 推算AI续写章节数：约%d章（目标字数 ÷ 每章平均字数）
 - 各卷章节数：由你根据剧情弧度自由决定，无需均匀分配；剧情节奏紧凑的卷可章节少、字数短，高潮卷可章节多、字数长
 
 ---
@@ -219,13 +289,13 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 {
   "master_outline": "第1卷:主题/核心冲突/高潮点。第2卷:...（每卷一句，句号分隔，共 %d 卷）",
   "volumes": [
-    {"title":"第一卷卷名","chapter_start":1,"chapter_end":章节数},
+    {"title":"第一卷卷名","chapter_start":%d,"chapter_end":章节数},
     {"title":"第二卷卷名","chapter_start":下一章节号,"chapter_end":章节数},
     ...（按此格式列出全部 %d 卷，每卷的chapter_start/chapter_end由你根据剧情弧度自由决定，章节连续不重叠）
   ],
   "relation_graph": "角色A-角色B:关系描述;角色C-角色D:关系描述（分号分隔每对关系）",
   "global_timeline": "序章:关键事件;第一卷末:关键事件;第二卷末:关键事件;...（分号分隔）",
-  "foreshadowings": [{"content":"伏笔内容","embed_method":"explicit|implicit|symbolic","planned_embed_chapter":5,"planned_resolve_chapter":25,"priority":8}],
+  "foreshadowings": [{"content":"伏笔内容","embed_method":"explicit|implicit|symbolic","planned_embed_chapter":%d,"planned_resolve_chapter":%d,"priority":8}],
   "characters": [{"name":"角色名","role_type":"protagonist|supporting|antagonist|mentor|minor","profile":"角色描述"}],
   "world_bible": {%s}
 }
@@ -237,7 +307,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 
 **重要约束：**
 %s
-- volumes 数组必须恰好 %d 个元素，所有卷的章节首尾相连（第一卷chapter_start=1，最后一卷chapter_end=推算总章节数附近），章节连续不重叠
+- %s
 - 各卷章节数由你根据剧情自由规划（可多可少），不要求相同
 - characters 中已存在角色无需重复，只列**新增**角色
 - foreshadowings 中已存在伏笔无需重复，只列**新增**伏笔
@@ -263,7 +333,9 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 `,
 		genre,
 		taskInstruction,
+		continuationNote,
 		contextSection,
+		continuationContextSection,
 		project.Title,
 		genre,
 		idea,
@@ -273,10 +345,12 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 		targetWordsWan,
 		estimatedTotalChapters,
 		volumeCount,
+		firstVolumeChapterStart,
 		volumeCount,
+		firstVolumeChapterStart+5, firstVolumeChapterStart+20,
 		worldBibleFields,
 		buildGenreConstraints(genre, genreTemplate),
-		volumeCount,
+		volumesConstraint,
 	)
 
 	logger.Info("blueprint generation: calling LLM")
@@ -525,4 +599,3 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 		zap.Int("volumes", len(parsed.Volumes)))
 	return nil
 }
-

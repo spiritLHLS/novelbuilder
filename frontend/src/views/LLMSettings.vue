@@ -337,14 +337,20 @@ function onProviderChange(provider: string) {
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 async function testDialogForm() {
-  // Base URL and model name are needed at minimum
-  if (!form.base_url || !form.model_name) {
-    ElMessage.warning('请先填写 API Base URL 和模型名称')
+  // Base URL and model name are always required
+  if (!form.base_url || !form.base_url.trim()) {
+    ElMessage.warning('请先填写 API Base URL')
+    return
+  }
+  if (!form.model_name || !form.model_name.trim()) {
+    ElMessage.warning('请先填写模型名称')
     return
   }
 
-  const apiKey = form.api_key || (editingProfile.value ? undefined : '')
-  if (!apiKey && !editingProfile.value) {
+  // When creating a new profile, api_key is mandatory.
+  // When editing an existing profile, the saved key can be reused via profile_id.
+  const hasInlineKey = !!form.api_key
+  if (!hasInlineKey && !editingProfile.value) {
     ElMessage.warning('请先填写 API Key')
     return
   }
@@ -353,17 +359,18 @@ async function testDialogForm() {
   dialogTestResult.value = null
   try {
     const payload: any = {
-      base_url: form.base_url,
-      model_name: form.model_name,
+      base_url: form.base_url.trim(),
+      model_name: form.model_name.trim(),
       api_style: form.api_style,
       provider: form.provider,
       max_tokens: form.max_tokens || 4096,
       temperature: form.temperature,
     }
-    if (form.api_key) {
+    if (hasInlineKey) {
       payload.api_key = form.api_key
     } else if (editingProfile.value) {
-      // Re-test the saved profile's key (backend loads it from DB)
+      // Re-test the saved profile's key (backend loads it from DB).
+      // Also send current form values so any edits are tested, not stale DB data.
       payload.profile_id = editingProfile.value.id
     }
     const res = await llmProfileApi.test(payload)
