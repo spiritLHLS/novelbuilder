@@ -219,38 +219,40 @@ func (s *ReferenceDeepAnalysisService) StartDeepAnalysis(ctx context.Context, re
 	var resumableID string
 	var resumableDone int
 	var resumableTotal int
+	var resumableChunkResults []byte
 	_ = s.db.QueryRow(ctx,
-		`SELECT id, done_chunks, total_chunks
+		`SELECT id, done_chunks, total_chunks, COALESCE(chunk_results, '[]'::jsonb)
 		 FROM reference_analysis_jobs
 		 WHERE ref_id = $1
 		   AND status IN ('cancelled','failed')
 		   AND done_chunks > 0
 		 ORDER BY created_at DESC LIMIT 1`, refID,
-	).Scan(&resumableID, &resumableDone, &resumableTotal)
+	).Scan(&resumableID, &resumableDone, &resumableTotal, &resumableChunkResults)
 
 	var jobID string
 	var job AnalysisJob
 
 	if resumableID != "" {
-		// Resume the existing job: mark it pending again, preserve chunk_results.
+		// Resume from the previous checkpoint, but create a fresh job row so any
+		// stale worker that still holds the old job id cannot race the new run.
 		s.logger.Info("resuming deep analysis from checkpoint",
 			zap.String("job_id", resumableID),
 			zap.Int("done_chunks", resumableDone),
 			zap.Int("total_chunks", resumableTotal))
+		jobID = uuid.New().String()
 		err := s.db.QueryRow(ctx,
-			`UPDATE reference_analysis_jobs
-			 SET status='pending', error_message=NULL, updated_at=NOW()
-			 WHERE id=$1
+			`INSERT INTO reference_analysis_jobs
+			     (id, ref_id, project_id, status, total_chunks, done_chunks, chunk_results)
+			 VALUES ($1, $2, $3, 'pending', $4, $5, $6)
 			 RETURNING id, ref_id, project_id, status, total_chunks, done_chunks,
 			           COALESCE(error_message,''), created_at, updated_at`,
-			resumableID).Scan(
+			jobID, refID, projectID, resumableTotal, resumableDone, resumableChunkResults).Scan(
 			&job.ID, &job.RefID, &job.ProjectID, &job.Status,
 			&job.TotalChunks, &job.DoneChunks, &job.ErrorMessage,
 			&job.CreatedAt, &job.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("resume analysis job: %w", err)
 		}
-		jobID = resumableID
 	} else {
 		// Cancel any orphaned running/pending jobs first.
 		if _, dbErr := s.db.Exec(ctx,

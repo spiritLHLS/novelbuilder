@@ -368,6 +368,9 @@ docker run -d \
 # novel-downloader 是 git 子模块，克隆时需带 --recurse-submodules
 git clone --recurse-submodules https://github.com/spiritLHLS/novelbuilder.git
 cd novelbuilder
+# 已克隆仓库更新子模块到上游最新 main
+git submodule update --init --recursive
+git submodule update --remote python-sidecar/novel-downloader
 docker build --no-cache -t novelbuilder .
 docker run -d \
   --name nb \

@@ -56,5 +56,6 @@ playwright>=1.40.0
 
 # Novel download / search (multi-site: 笔趣阁, 起点 etc.)
 # Installed from the git submodule at python-sidecar/novel-downloader/
-# (see Dockerfile).  For local dev: pip install python-sidecar/novel-downloader
+# (see Dockerfile).  For local dev: pip install ./python-sidecar/novel-downloader
+# Or install upstream package directly: pip install -U novel-downloader-spiritlhl
 # After cloning: git submodule update --init --recursive

@@ -135,7 +135,7 @@ async def novels_search(req: NovelSearchReq):
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="novel-downloader not installed; run: pip install novel-downloader",
+            detail="novel-downloader not installed; run: pip install -U novel-downloader-spiritlhl",
         )
     try:
         raw = await nd_search(
@@ -207,7 +207,7 @@ async def novels_search_stream(req: NovelSearchStreamReq):
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="novel-downloader not installed; run: pip install novel-downloader",
+            detail="novel-downloader not installed; run: pip install -U novel-downloader-spiritlhl",
         )
 
     async def event_gen():
@@ -260,7 +260,7 @@ async def novels_list_sites():
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="novel-downloader not installed; run: pip install novel-downloader",
+            detail="novel-downloader not installed; run: pip install -U novel-downloader-spiritlhl",
         )
     classes = registrar.get_searcher_classes(None, load_all_if_none=True)
     sites: list[str] = []
@@ -299,7 +299,7 @@ async def novels_resolve_url(req: NovelResolveURLReq):
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="novel-downloader not installed; run: pip install novel-downloader",
+            detail="novel-downloader not installed; run: pip install -U novel-downloader-spiritlhl",
         )
 
     raw_url = req.url.strip()
@@ -358,7 +358,7 @@ async def novels_book_info(req: NovelBookInfoReq):
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="novel-downloader not installed; run: pip install novel-downloader",
+            detail="novel-downloader not installed; run: pip install -U novel-downloader-spiritlhl",
         )
     try:
         with tempfile.TemporaryDirectory(prefix="nb_info_") as tmpdir:
@@ -416,7 +416,7 @@ async def novels_fetch_import(req: NovelFetchImportReq):
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="novel-downloader not installed; run: pip install novel-downloader",
+            detail="novel-downloader not installed; run: pip install -U novel-downloader-spiritlhl",
         )
 
     import uuid as _uuid

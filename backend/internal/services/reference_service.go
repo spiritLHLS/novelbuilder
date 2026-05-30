@@ -372,44 +372,51 @@ func (s *ReferenceService) RebuildProject(ctx context.Context, projectID string)
 		return 0, fmt.Errorf("rebuild project rows: %w", err)
 	}
 
+	// Preload all non-deleted chapter text for completed references in one pass
+	// to avoid per-reference pagination queries (N+1 pattern).
+	chapterContentByRef := make(map[string]string, len(refs))
+	if chapRows, chErr := s.db.Query(ctx,
+		`SELECT c.ref_id::text, c.content
+		 FROM reference_book_chapters c
+		 JOIN reference_materials r ON r.id = c.ref_id
+		 WHERE r.project_id = $1
+		   AND r.status = 'completed'
+		   AND NOT c.is_deleted
+		   AND c.content <> ''
+		 ORDER BY c.ref_id, c.chapter_no`,
+		projectID); chErr != nil {
+		s.logger.Warn("could not preload chapters for RAG rebuild",
+			zap.String("project_id", projectID), zap.Error(chErr))
+	} else {
+		builders := make(map[string]*strings.Builder, len(refs))
+		for chapRows.Next() {
+			var refID string
+			var content string
+			if scanErr := chapRows.Scan(&refID, &content); scanErr != nil {
+				continue
+			}
+			builder, ok := builders[refID]
+			if !ok {
+				builder = &strings.Builder{}
+				builders[refID] = builder
+			}
+			builder.WriteString(content)
+			builder.WriteByte('\n')
+		}
+		chapRows.Close()
+		for refID, builder := range builders {
+			chapterContentByRef[refID] = builder.String()
+		}
+	}
+
 	rebuilt := 0
-	const chapterBatchSize = 200
 	for _, ref := range refs {
 		meta := map[string]interface{}{"ref_id": ref.id}
 
 		// ── Attempt 1: rebuild from reference_book_chapters ──────────────────
-		var allText strings.Builder
-		offset := 0
-		for {
-			chapRows, chErr := s.db.Query(ctx,
-				`SELECT content FROM reference_book_chapters
-				 WHERE ref_id = $1 AND NOT is_deleted AND content <> ''
-				 ORDER BY chapter_no LIMIT $2 OFFSET $3`,
-				ref.id, chapterBatchSize, offset)
-			if chErr != nil {
-				s.logger.Warn("could not read chapters for RAG rebuild",
-					zap.String("ref_id", ref.id), zap.Error(chErr))
-				break
-			}
-			rowCount := 0
-			for chapRows.Next() {
-				var content string
-				if scanErr := chapRows.Scan(&content); scanErr == nil {
-					allText.WriteString(content)
-					allText.WriteByte('\n')
-				}
-				rowCount++
-			}
-			chapRows.Close()
-			if rowCount < chapterBatchSize {
-				break
-			}
-			offset += chapterBatchSize
-		}
-
-		if allText.Len() > 0 {
+		if allText, ok := chapterContentByRef[ref.id]; ok && strings.TrimSpace(allText) != "" {
 			// Scale sample count to project chapter count.
-			sentences := sampleSentences(allText.String(), targetSamples)
+			sentences := sampleSentences(allText, targetSamples)
 			for _, sentence := range sentences {
 				allItems = append(allItems, BatchEmbedItem{
 					Collection: "style_samples",
