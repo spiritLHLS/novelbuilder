@@ -66,7 +66,7 @@
             <div class="card-header graph-header">
               <div class="graph-title-group">
                 <span>角色关系图谱</span>
-                <span v-if="maxTimelineChapter > 1" class="graph-subtitle">当前显示到第 {{ timelineChapter }} 章</span>
+                <span v-if="maxTimelineChapter > 1" class="graph-subtitle">当前显示第 {{ visibleChapterStart }} - {{ visibleChapterEnd }} 章</span>
               </div>
               <div class="graph-controls">
                 <el-button size="small" @click="graphFit">适应窗口</el-button>
@@ -78,12 +78,12 @@
           </template>
           <div v-if="maxTimelineChapter > 1" class="graph-timeline">
             <div class="graph-timeline-labels">
-              <span>开篇</span>
-              <span>第 {{ timelineChapter }} 章</span>
+              <span>第 {{ visibleChapterStart }} 章</span>
+              <span>当前范围</span>
               <span>第 {{ maxTimelineChapter }} 章</span>
             </div>
-            <el-slider v-model="timelineChapter" :min="1" :max="maxTimelineChapter" :step="1" show-stops />
-            <div class="graph-timeline-note">关系会按章节首次出现顺序逐步展开，避免整书静态关系一次性挤在一起。</div>
+            <el-slider v-model="timelineRange" range :min="1" :max="maxTimelineChapter" :step="1" show-stops />
+            <div class="graph-timeline-note">关系会按首次相遇和最近互动章节过滤；未填写最近互动章节的关系视为建立后持续有效。</div>
           </div>
           <div ref="cyContainer" class="cy-container"></div>
         </el-card>
@@ -181,7 +181,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick, watch } from 'vue'
+import { ref, onMounted, nextTick, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { characterApi, outlineApi, charInteractionApi, chapterApi, projectApi } from '@/api'
@@ -206,8 +206,11 @@ const showCreateDialog = ref(false)
 const showEditDlg = ref(false)
 const creating = ref(false)
 const timelineChapter = ref(1)
+const timelineRange = ref<[number, number]>([1, 1])
 const maxTimelineChapter = ref(1)
 const continuationStartChapter = ref(0) // >0 means this is a continuation project
+const visibleChapterStart = computed(() => Math.max(1, Number(timelineRange.value[0]) || 1))
+const visibleChapterEnd = computed(() => Math.max(visibleChapterStart.value, Number(timelineRange.value[1]) || maxTimelineChapter.value || 1))
 
 const createForm = ref({ name: '', role: 'supporting', backstory: '', personality_str: '' })
 const editForm = ref<any>({})
@@ -244,6 +247,7 @@ async function fetchChars() {
     }
     maxTimelineChapter.value = computeTimelineMax()
     timelineChapter.value = Math.max(1, maxTimelineChapter.value)
+    timelineRange.value = [1, timelineChapter.value]
     buildGraph()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.error ?? '加载角色列表失败')
@@ -426,7 +430,8 @@ async function deleteChar() {
 function buildGraph() {
   nextTick(() => {
     if (!cyContainer.value) return
-    const visibleChapter = Math.max(1, timelineChapter.value || maxTimelineChapter.value || 1)
+    const visibleStart = visibleChapterStart.value
+    const visibleChapter = visibleChapterEnd.value
     const firstAppearanceMap = computeFirstAppearanceMap()
     const charById = new Map(characters.value.map((character: any) => [character.id, character]))
     const charByName = new Map(characters.value.map((character: any) => [character.name, character]))
@@ -442,7 +447,8 @@ function buildGraph() {
 
     interactions.value.forEach((interaction: any) => {
       const firstMeet = Number(interaction?.first_meet_chapter) || 1
-      if (maxTimelineChapter.value > 1 && firstMeet > visibleChapter) return
+      const lastInteract = Number(interaction?.last_interact_chapter) || 0
+      if (maxTimelineChapter.value > 1 && (firstMeet > visibleChapter || (lastInteract > 0 && lastInteract < visibleStart))) return
       const source = String(interaction?.char_a_id || '')
       const target = String(interaction?.char_b_id || '')
       if (!source || !target || !visibleIds.has(source) || !visibleIds.has(target)) return
@@ -497,6 +503,9 @@ function buildGraph() {
         source: edge.source,
         target: edge.target,
         label: Array.from(edge.labels).join(' / '),
+        controlDistance: ((index % 5) - 2) * 38,
+        controlWeight: 0.5 + ((index % 3) - 1) * 0.08,
+        labelOffset: -10 - (index % 4) * 6,
       },
     }))
 
@@ -597,9 +606,9 @@ function buildGraph() {
             label: 'data(label)',
             'line-color': 'rgba(132, 170, 214, 0.46)',
             'line-style': 'solid',
-            // haystack curves are fastest and ensure edges don't share paths
-            'curve-style': 'bezier',
-            'control-point-step-size': 40,
+            'curve-style': 'unbundled-bezier',
+            'control-point-distances': 'data(controlDistance)',
+            'control-point-weights': 'data(controlWeight)',
             'target-arrow-shape': 'none',
             'source-arrow-shape': 'none',
             'font-size': 9,
@@ -612,7 +621,7 @@ function buildGraph() {
             'text-background-padding': '3px',
             'text-background-shape': 'roundrectangle',
             'text-border-opacity': 0,
-            'text-margin-y': -6,
+            'text-margin-y': 'data(labelOffset)',
             width: 1.5,
           },
         },
@@ -628,6 +637,11 @@ function buildGraph() {
     })
 
     cy.ready(() => {
+      separateOverlappingNodes(cy)
+      cy.fit(undefined, nodes.length > 12 ? 100 : 80)
+    })
+    cy.on('layoutstop', () => {
+      separateOverlappingNodes(cy)
       cy.fit(undefined, nodes.length > 12 ? 100 : 80)
     })
 
@@ -650,6 +664,46 @@ function buildGraph() {
   })
 }
 
+function separateOverlappingNodes(instance: any) {
+  if (!instance) return
+  const nodes = instance.nodes()
+  if (nodes.length <= 1) return
+
+  const margin = 22
+  for (let iter = 0; iter < 220; iter++) {
+    let moved = false
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i]
+        const b = nodes[j]
+        const ab = a.boundingBox({ includeLabels: true, includeOverlays: false })
+        const bb = b.boundingBox({ includeLabels: true, includeOverlays: false })
+        const overlapX = Math.min(ab.x2 + margin, bb.x2 + margin) - Math.max(ab.x1 - margin, bb.x1 - margin)
+        const overlapY = Math.min(ab.y2 + margin, bb.y2 + margin) - Math.max(ab.y1 - margin, bb.y1 - margin)
+        if (overlapX <= 0 || overlapY <= 0) continue
+
+        const ap = a.position()
+        const bp = b.position()
+        let dx = bp.x - ap.x
+        let dy = bp.y - ap.y
+        if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
+          const angle = ((i + 1) * 37 + (j + 1) * 53) * Math.PI / 180
+          dx = Math.cos(angle)
+          dy = Math.sin(angle)
+        }
+        const len = Math.hypot(dx, dy) || 1
+        const push = Math.min(80, Math.max(overlapX, overlapY) / 2 + margin)
+        const ux = dx / len
+        const uy = dy / len
+        a.position({ x: ap.x - ux * push, y: ap.y - uy * push })
+        b.position({ x: bp.x + ux * push, y: bp.y + uy * push })
+        moved = true
+      }
+    }
+    if (!moved) break
+  }
+}
+
 function graphFit() {
   if (cy) cy.fit(undefined, 50)
 }
@@ -663,7 +717,7 @@ function graphRelayout() {
   if (cy) {
     const visibleNodeCount = cy.nodes().length
     const visibleEdgeCount = cy.edges().length
-    cy.layout({
+    const layout = cy.layout({
       name: 'fcose',
       animate: true,
       animationDuration: 600,
@@ -686,11 +740,13 @@ function graphRelayout() {
       tilingPaddingVertical: 20,
       tilingPaddingHorizontal: 20,
       randomize: true,
-    } as any).run()
+    } as any)
+    layout.on('layoutstop', () => separateOverlappingNodes(cy))
+    layout.run()
   }
 }
 
-watch([characters, outlines, interactions, chapters, timelineChapter], buildGraph, { deep: true })
+watch([characters, outlines, interactions, chapters, timelineRange], buildGraph, { deep: true })
 </script>
 
 <style scoped>

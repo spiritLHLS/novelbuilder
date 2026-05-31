@@ -100,7 +100,7 @@ const agentTypes = [
 
 function getProfileModel(profileId: string): string {
   const p = profiles.value.find(x => x.id === profileId)
-  return p?.model ?? ''
+  return p?.model_name ?? ''
 }
 
 async function loadProfiles() {

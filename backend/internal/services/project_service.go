@@ -174,7 +174,16 @@ func (s *ProjectService) SetAutoWrite(ctx context.Context, id string, enabled bo
 // SetContinuationMode updates a project to continuation mode with the given reference ID and start chapter.
 func (s *ProjectService) SetContinuationMode(ctx context.Context, id string, refID string, startChapter int) error {
 	if startChapter <= 0 {
-		startChapter = 1
+		var lastReferenceChapter int
+		_ = s.db.QueryRow(ctx,
+			`SELECT COALESCE(MAX(chapter_no), 0)
+			 FROM reference_book_chapters
+			 WHERE ref_id = $1 AND is_deleted = FALSE`,
+			refID).Scan(&lastReferenceChapter)
+		startChapter = lastReferenceChapter + 1
+		if startChapter <= 1 {
+			startChapter = 1
+		}
 	}
 	_, err := s.db.Exec(ctx,
 		`UPDATE projects

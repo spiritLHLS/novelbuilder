@@ -65,6 +65,9 @@ func main() {
 		logger.Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer db.Close()
+	if err := database.EnsureRuntimeSchema(context.Background(), db, logger); err != nil {
+		logger.Fatal("failed to ensure runtime database schema", zap.Error(err))
+	}
 
 	// Initialize Redis
 	rdb, err := database.NewRedis(cfg.Redis, logger)
@@ -332,22 +335,9 @@ func main() {
 			}
 		}
 
-		nextNum, err := chapterService.MaxChapterNum(ctx, *task.ProjectID)
+		nextNum, err := chapterService.NextChapterNum(ctx, *task.ProjectID)
 		if err != nil {
-			return fmt.Errorf("generate_next_chapter: get max chapter: %w", err)
-		}
-		nextNum++
-
-		// For continuation projects, the first AI-generated chapter must be at least
-		// continuation_start_chapter (the point where reference book content ends).
-		if nextNum <= 1 {
-			var projType string
-			var contStart int
-			if qErr := db.QueryRow(ctx,
-				`SELECT COALESCE(project_type,'original'), COALESCE(continuation_start_chapter,1) FROM projects WHERE id = $1`,
-				*task.ProjectID).Scan(&projType, &contStart); qErr == nil && projType == "continuation" && contStart > nextNum {
-				nextNum = contStart
-			}
+			return fmt.Errorf("generate_next_chapter: get next chapter: %w", err)
 		}
 
 		llmCfg, err := agentRoutingService.ResolveForAgent(ctx, "writer", *task.ProjectID)

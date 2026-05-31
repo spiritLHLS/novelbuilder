@@ -386,37 +386,17 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		startChapter = 1
 	}
 
-	// For continuation projects, also include summaries from the reference book chapters.
-	var continuationRefID *string
-	var continuationStartChapter int
-	s.db.QueryRow(ctx,
-		`SELECT continuation_ref_id, COALESCE(continuation_start_chapter, 1)
-		 FROM projects WHERE id = $1 AND COALESCE(project_type, 'original') = 'continuation'`,
-		projectID).Scan(&continuationRefID, &continuationStartChapter)
-
-	if continuationRefID != nil && chapterNum <= continuationStartChapter+windowSize {
-		// Load last N chapters from reference book as context for the first AI-generated chapters.
-		refWindowStart := continuationStartChapter - windowSize
-		if refWindowStart < 1 {
-			refWindowStart = 1
-		}
-		refRows, refErr := s.db.Query(ctx,
-			`SELECT chapter_no, title, SUBSTRING(content, 1, 800) AS snippet
-			 FROM reference_book_chapters
-			 WHERE ref_id = $1 AND is_deleted = FALSE
-			   AND chapter_no >= $2 AND chapter_no < $3
-			 ORDER BY chapter_no ASC`,
-			*continuationRefID, refWindowStart, continuationStartChapter)
-		if refErr == nil {
+	// For continuation projects, include the reference book tail for the first
+	// generated chapters. This treats reference chapters as the real prior text
+	// without copying them into chapters, so generated chapter numbers stay clean.
+	if continuation, ccErr := loadContinuationContext(ctx, s.db, projectID); ccErr == nil &&
+		continuation.Enabled && continuation.ReferenceChapterCount > 0 &&
+		chapterNum <= continuation.StartChapter+windowSize {
+		if tail, tailErr := loadContinuationTail(ctx, s.db, continuation.RefID, continuation.StartChapter, windowSize, 800); tailErr == nil && len(tail) > 0 {
 			sb.WriteString("【参考书前文摘要（续写参考）】\n")
-			for refRows.Next() {
-				var cNo int
-				var title, snippet string
-				if refRows.Scan(&cNo, &title, &snippet) == nil {
-					sb.WriteString(fmt.Sprintf("参考书第%d章《%s》：%s\n", cNo, title, snippet))
-				}
+			for _, ref := range tail {
+				sb.WriteString(fmt.Sprintf("参考书第%d章《%s》：%s\n", ref.ChapterNo, ref.Title, ref.Snippet))
 			}
-			refRows.Close()
 			sb.WriteString("\n")
 		}
 	}

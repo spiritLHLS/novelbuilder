@@ -274,6 +274,21 @@ func (s *BlueprintService) generateChapterOutlines(ctx context.Context, projectI
 		currentVolumeGuide = fmt.Sprintf("\n**整书总纲（仅参考本卷相关部分）：** %s\n", masterOutlineFullText)
 	}
 
+	continuationText := ""
+	if continuation, ccErr := loadContinuationContext(ctx, s.db, projectID); ccErr == nil &&
+		continuation.Enabled && continuation.ReferenceChapterCount > 0 &&
+		nextChapterNum <= continuation.StartChapter+batchSize {
+		if tail, tailErr := loadContinuationTail(ctx, s.db, continuation.RefID, continuation.StartChapter, 8, 1000); tailErr == nil && len(tail) > 0 {
+			var refBuilder strings.Builder
+			refBuilder.WriteString("\n---\n## 【续写底本尾章状态】\n")
+			refBuilder.WriteString("以下参考书尾章是本批章节细纲的直接前文。第一个续写细纲必须承接角色位置、悬念、情绪与关系状态，不得从新书第1章重新开场：\n\n")
+			for _, ref := range tail {
+				refBuilder.WriteString(fmt.Sprintf("- 参考书第%d章《%s》：%s\n", ref.ChapterNo, ref.Title, ref.Snippet))
+			}
+			continuationText = refBuilder.String()
+		}
+	}
+
 	prompt := fmt.Sprintf(`你是一位资深小说策划编辑，擅长%s类型的长篇小说规划。
 
 当前任务：为《%s》的【%s】生成详细的章节大纲。
@@ -293,7 +308,7 @@ func (s *BlueprintService) generateChapterOutlines(ctx context.Context, projectI
 ## 本卷框架
 %s
 **全局时间线（截至本卷）：** %s
-%s%s
+%s%s%s
 ---
 ## 输出格式
 
@@ -345,6 +360,7 @@ func (s *BlueprintService) generateChapterOutlines(ctx context.Context, projectI
 		existingOutlinesText,
 		globalTimelineText,
 		foreshadowingText,
+		continuationText,
 		"",
 		nextChapterNum, nextChapterNum,
 		nextChapterNum+1, nextChapterNum+1,

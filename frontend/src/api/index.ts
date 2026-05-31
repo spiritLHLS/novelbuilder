@@ -760,7 +760,8 @@ export const emotionalArcApi = {
 
 // ── Character Interaction Matrix ──────────────────────────────────────────────
 export const charInteractionApi = {
-  list: (projectId: string) => api.get(`/projects/${projectId}/character-interactions`),
+  list: (projectId: string, params?: { from_chapter?: number; to_chapter?: number }) =>
+    api.get(`/projects/${projectId}/character-interactions`, { params }),
   upsert: (projectId: string, data: any) => api.post(`/projects/${projectId}/character-interactions`, data),
   delete: (id: string) => api.delete(`/character-interactions/${id}`),
 }

@@ -196,6 +196,13 @@ func (s *ChapterService) MaxChapterNum(ctx context.Context, projectID string) (i
 	return n, err
 }
 
+// NextChapterNum returns the first writable chapter number. For continuation
+// projects it skips the imported reference-book range and starts at
+// continuation_start_chapter / last reference chapter + 1.
+func (s *ChapterService) NextChapterNum(ctx context.Context, projectID string) (int, error) {
+	return nextWritableChapterNum(ctx, s.db, projectID)
+}
+
 func (s *ChapterService) Delete(ctx context.Context, id string) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

@@ -34,7 +34,7 @@ func validateTestURL(rawURL string) error {
 		return fmt.Errorf("url host is empty")
 	}
 	// Reject bare IP addresses in private/loopback ranges.
-	if ip := net.ParseIP(host); ip != nil {
+	checkIP := func(ip net.IP) error {
 		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			return fmt.Errorf("url must not point to a loopback address")
 		}
@@ -45,6 +45,22 @@ func validateTestURL(rawURL string) error {
 			if block != nil && block.Contains(ip) {
 				return fmt.Errorf("url must not point to a private/internal network address")
 			}
+		}
+		if !ip.IsGlobalUnicast() {
+			return fmt.Errorf("url must point to a globally routable address")
+		}
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return checkIP(ip)
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve url host: %w", err)
+	}
+	for _, ip := range ips {
+		if err := checkIP(ip); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -418,7 +434,7 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 	if statusCode >= 400 {
 		// Try to extract human-readable error across different provider response shapes.
 		var rawErr map[string]json.RawMessage
-		errMsg := fmt.Sprintf("HTTP %d", resp.StatusCode)
+		errMsg := fmt.Sprintf("HTTP %d", statusCode)
 		if json.Unmarshal(rawBody, &rawErr) == nil {
 			// OpenAI / compatible: {"error":{"message":"..."}}
 			if errField, ok := rawErr["error"]; ok {
@@ -426,19 +442,19 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 					Message string `json:"message"`
 				}
 				if json.Unmarshal(errField, &oaiErr) == nil && oaiErr.Message != "" {
-					errMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, oaiErr.Message)
+					errMsg = fmt.Sprintf("HTTP %d: %s", statusCode, oaiErr.Message)
 				}
 			}
 			// Gemini: {"error":{"message":"...","status":"..."}}
 			// (same shape as OpenAI, already handled above)
 			// Anthropic: {"type":"error","error":{"type":"...","message":"..."}}
-			if errMsg == fmt.Sprintf("HTTP %d", resp.StatusCode) {
+			if errMsg == fmt.Sprintf("HTTP %d", statusCode) {
 				if errField, ok := rawErr["error"]; ok {
 					var anthropicErr struct {
 						Message string `json:"message"`
 					}
 					if json.Unmarshal(errField, &anthropicErr) == nil && anthropicErr.Message != "" {
-						errMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, anthropicErr.Message)
+						errMsg = fmt.Sprintf("HTTP %d: %s", statusCode, anthropicErr.Message)
 					}
 				}
 			}

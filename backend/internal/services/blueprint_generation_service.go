@@ -178,43 +178,25 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 	worldBibleFields := buildWorldBibleFieldsHint(genre)
 
 	// ── Continuation mode: load reference book tail chapters as context ──────
-	isContinuation := project.ProjectType == "continuation" && project.ContinuationRefID != nil
-	continuationStartChapter := project.ContinuationStartChapter
-	if isContinuation && continuationStartChapter < 1 {
+	continuation, _ := loadContinuationContext(ctx, s.db, projectID)
+	isContinuation := continuation.Enabled && continuation.ReferenceChapterCount > 0
+	continuationStartChapter := continuation.StartChapter
+	if !isContinuation {
 		continuationStartChapter = 1
 	}
 
 	continuationContextSection := ""
 	if isContinuation {
 		refWindowSize := 10
-		refWindowStart := continuationStartChapter - refWindowSize
-		if refWindowStart < 1 {
-			refWindowStart = 1
-		}
-		refRows, refErr := s.db.Query(ctx,
-			`SELECT chapter_no, title, SUBSTRING(content, 1, 1200) AS snippet
-			 FROM reference_book_chapters
-			 WHERE ref_id = $1 AND is_deleted = FALSE
-			   AND chapter_no >= $2 AND chapter_no < $3
-			 ORDER BY chapter_no ASC`,
-			*project.ContinuationRefID, refWindowStart, continuationStartChapter)
-		if refErr == nil {
+		if tail, refErr := loadContinuationTail(ctx, s.db, continuation.RefID, continuationStartChapter, refWindowSize, 1200); refErr == nil && len(tail) > 0 {
+			refWindowStart := tail[0].ChapterNo
 			var refSB strings.Builder
 			refSB.WriteString(fmt.Sprintf("## 【参考书末尾章节（续写衔接参考，第%d～%d章）】\n", refWindowStart, continuationStartChapter-1))
 			refSB.WriteString("以下是被续写参考书的最后几章内容摘要，新书的前几章必须与此衔接，风格、人物状态、悬念和情绪必须自然延续：\n\n")
-			hadRows := false
-			for refRows.Next() {
-				var cNo int
-				var title, snippet string
-				if refRows.Scan(&cNo, &title, &snippet) == nil {
-					refSB.WriteString(fmt.Sprintf("**第%d章《%s》**：%s\n\n", cNo, title, snippet))
-					hadRows = true
-				}
+			for _, ref := range tail {
+				refSB.WriteString(fmt.Sprintf("**第%d章《%s》**：%s\n\n", ref.ChapterNo, ref.Title, ref.Snippet))
 			}
-			refRows.Close()
-			if hadRows {
-				continuationContextSection = refSB.String()
-			}
+			continuationContextSection = refSB.String()
 		}
 	}
 

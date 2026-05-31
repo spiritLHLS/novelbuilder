@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/services"
@@ -310,7 +311,9 @@ func (h *Handler) DeleteEmotionalArc(c *gin.Context) {
 // ── Character Interaction Matrix ──────────────────────────────────────────────
 
 func (h *Handler) ListCharacterInteractions(c *gin.Context) {
-	list, err := h.characterInteractions.List(c.Request.Context(), c.Param("id"))
+	fromChapter, _ := strconv.Atoi(c.Query("from_chapter"))
+	toChapter, _ := strconv.Atoi(c.Query("to_chapter"))
+	list, err := h.characterInteractions.ListRange(c.Request.Context(), c.Param("id"), fromChapter, toChapter)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

@@ -375,12 +375,12 @@ func (h *Handler) SetContinuationMode(c *gin.Context) {
 		return
 	}
 	if req.StartChapter <= 0 {
-		// Auto-detect: count reference book chapters + 1
-		var cnt int
+		// Auto-detect from the highest non-deleted reference chapter number.
+		var lastChapterNo int
 		h.projects.DB().QueryRow(c.Request.Context(),
-			`SELECT COUNT(*) FROM reference_book_chapters WHERE ref_id = $1 AND is_deleted = FALSE`,
-			req.RefID).Scan(&cnt)
-		req.StartChapter = cnt + 1
+			`SELECT COALESCE(MAX(chapter_no), 0) FROM reference_book_chapters WHERE ref_id = $1 AND is_deleted = FALSE`,
+			req.RefID).Scan(&lastChapterNo)
+		req.StartChapter = lastChapterNo + 1
 		if req.StartChapter <= 1 {
 			req.StartChapter = 1
 		}

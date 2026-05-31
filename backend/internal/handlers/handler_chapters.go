@@ -89,7 +89,19 @@ func (h *Handler) GenerateChapter(c *gin.Context) {
 		}
 	}
 	if chapterNum == 0 {
-		chapterNum = 1
+		nextNum, err := h.chapters.NextChapterNum(c.Request.Context(), projectID)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to determine next chapter number"})
+			return
+		}
+		chapterNum = nextNum
+	} else if nextNum, err := h.chapters.NextChapterNum(c.Request.Context(), projectID); err == nil && chapterNum < nextNum {
+		c.JSON(400, gin.H{
+			"error":            "chapter_num is before the writable continuation range",
+			"message":          "当前项目已设为参考书续写，参考书章节范围不可被新生成章节覆盖。",
+			"next_chapter_num": nextNum,
+		})
+		return
 	}
 	req.ChapterNum = chapterNum
 	req.LLMConfig = nil
@@ -358,13 +370,12 @@ func (h *Handler) BatchGenerateChapters(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "count must not exceed 200"})
 			return
 		}
-		// Determine starting chapter number.
-		lastNum, err := h.chapters.MaxChapterNum(c.Request.Context(), projectID)
+		// Determine starting chapter number, respecting continuation reference chapters.
+		start, err := h.chapters.NextChapterNum(c.Request.Context(), projectID)
 		if err != nil {
 			c.JSON(500, gin.H{"error": "failed to determine next chapter number"})
 			return
 		}
-		start := lastNum + 1
 		for i := 0; i < count; i++ {
 			chapterNums = append(chapterNums, start+i)
 		}

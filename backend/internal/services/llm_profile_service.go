@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,6 +48,16 @@ func validateLLMProfileValues(maxTokens int, temperature float64, rpmLimit int) 
 	return nil
 }
 
+func normalizeModelName(model string) string {
+	model = strings.TrimSpace(model)
+	model = strings.ReplaceAll(model, "claude-sonet", "claude-sonnet")
+	model = strings.ReplaceAll(model, "Claude-Sonet", "Claude-Sonnet")
+	if strings.EqualFold(model, "claude-sonnet-4.6") {
+		return "claude-sonnet-4-5"
+	}
+	return model
+}
+
 func (s *LLMProfileService) List(ctx context.Context) ([]models.LLMProfile, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit,
@@ -69,7 +80,11 @@ func (s *LLMProfileService) List(ctx context.Context) ([]models.LLMProfile, erro
 			return nil, err
 		}
 		p.HasAPIKey = rawKey != ""
-		p.MaskedAPIKey = maskAPIKey(rawKey)
+		if plain, err := crypto.Decrypt(rawKey, s.encryptionKey); err == nil {
+			p.MaskedAPIKey = maskAPIKey(plain)
+		} else {
+			p.MaskedAPIKey = "****"
+		}
 		profiles = append(profiles, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -97,7 +112,11 @@ func (s *LLMProfileService) Get(ctx context.Context, id string) (*models.LLMProf
 		return nil, fmt.Errorf("get llm_profile: %w", err)
 	}
 	p.HasAPIKey = rawKey != ""
-	p.MaskedAPIKey = maskAPIKey(rawKey)
+	if plain, decErr := crypto.Decrypt(rawKey, s.encryptionKey); decErr == nil {
+		p.MaskedAPIKey = maskAPIKey(plain)
+	} else {
+		p.MaskedAPIKey = "****"
+	}
 	return &p, nil
 }
 
@@ -152,6 +171,7 @@ func (s *LLMProfileService) GetDefault(ctx context.Context) (*models.LLMProfileF
 }
 
 func (s *LLMProfileService) Create(ctx context.Context, req models.CreateLLMProfileRequest) (*models.LLMProfile, error) {
+	req.ModelName = normalizeModelName(req.ModelName)
 	if req.MaxTokens == 0 {
 		req.MaxTokens = 8192
 	}
@@ -263,7 +283,7 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 		maskedKey = plain
 	}
 	if req.ModelName != "" {
-		existing.ModelName = req.ModelName
+		existing.ModelName = normalizeModelName(req.ModelName)
 	}
 	if req.MaxTokens > 0 {
 		existing.MaxTokens = req.MaxTokens

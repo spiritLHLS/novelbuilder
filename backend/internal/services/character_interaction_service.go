@@ -59,6 +59,20 @@ func canonical(a, b string) (string, string) {
 }
 
 func (s *CharacterInteractionService) List(ctx context.Context, projectID string) ([]CharacterInteraction, error) {
+	return s.ListRange(ctx, projectID, 0, 0)
+}
+
+func (s *CharacterInteractionService) ListRange(ctx context.Context, projectID string, fromChapter int, toChapter int) ([]CharacterInteraction, error) {
+	args := []interface{}{projectID}
+	filter := ""
+	if fromChapter > 0 {
+		args = append(args, fromChapter)
+		filter += fmt.Sprintf(" AND COALESCE(ci.last_interact_chapter, ci.first_meet_chapter, 1) >= $%d", len(args))
+	}
+	if toChapter > 0 {
+		args = append(args, toChapter)
+		filter += fmt.Sprintf(" AND COALESCE(ci.first_meet_chapter, 1) <= $%d", len(args))
+	}
 	rows, err := s.db.Query(ctx,
 		`SELECT ci.id, ci.project_id, ci.char_a_id, ci.char_b_id,
 		        COALESCE(ca.name,''), COALESCE(cb.name,''),
@@ -68,8 +82,8 @@ func (s *CharacterInteractionService) List(ctx context.Context, projectID string
 		 FROM character_interactions ci
 		 LEFT JOIN characters ca ON ca.id = ci.char_a_id
 		 LEFT JOIN characters cb ON cb.id = ci.char_b_id
-		 WHERE ci.project_id = $1
-		 ORDER BY ca.name, cb.name`, projectID)
+		 WHERE ci.project_id = $1`+filter+`
+		 ORDER BY ca.name, cb.name`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list character interactions: %w", err)
 	}

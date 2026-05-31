@@ -141,7 +141,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
-import { chapterApi, exportApi, exportExtApi, batchWriteApi, volumeApi } from '@/api'
+import { chapterApi, exportApi, exportExtApi, batchWriteApi, volumeApi, projectApi } from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -150,6 +150,7 @@ const projectId = route.params.projectId as string
 const loading = ref(false)
 const chapters = ref<any[]>([])
 const canGenerate = ref(true)
+const continuationStartChapter = ref(0)
 
 const showGenerateDialog = ref(false)
 const generating = ref(false)
@@ -169,6 +170,7 @@ const volumes = ref<any[]>([])
 const volumesLoading = ref(false)
 
 const latestChapterNum = computed(() => chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0))
+const nextWritableChapterNum = computed(() => Math.max(latestChapterNum.value + 1, continuationStartChapter.value || 1))
 
 function chapterStatusType(s: string) {
   const m: Record<string, string> = {
@@ -189,11 +191,23 @@ function formatDate(d: string) {
 }
 
 onMounted(async () => {
-  await fetchChapters()
-  await fetchVolumes()
-  const maxNum = chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0)
-  genForm.value.chapter_num = maxNum + 1
+  await Promise.all([fetchProject(), fetchChapters(), fetchVolumes()])
+  genForm.value.chapter_num = nextWritableChapterNum.value
 })
+
+async function fetchProject() {
+  try {
+    const res = await projectApi.get(projectId)
+    const project = res.data?.data ?? res.data
+    if (project?.project_type === 'continuation' && Number(project?.continuation_start_chapter) > 1) {
+      continuationStartChapter.value = Number(project.continuation_start_chapter)
+    } else {
+      continuationStartChapter.value = 0
+    }
+  } catch {
+    continuationStartChapter.value = 0
+  }
+}
 
 async function fetchVolumes() {
   volumesLoading.value = true
@@ -273,9 +287,8 @@ async function startBatchGenerate() {
 }
 
 function showGenerate() {
-  const maxNum = chapters.value.reduce((m: number, c: any) => Math.max(m, c.chapter_num || 0), 0)
   regenerateTarget.value = null
-  genForm.value.chapter_num = maxNum + 1
+  genForm.value.chapter_num = nextWritableChapterNum.value
   genForm.value.context_hint = ''
   showGenerateDialog.value = true
 }

@@ -268,6 +268,12 @@ async function fetchProfiles() {
 // Infer provider, api_style, and omit flags from well-known URL/model patterns.
 function autoDetect() {
   const url = form.base_url.toLowerCase()
+  if (form.model_name.toLowerCase().includes('claude-sonet')) {
+    form.model_name = form.model_name.replace(/claude-sonet/ig, 'claude-sonnet')
+  }
+  if (form.model_name.toLowerCase() === 'claude-sonnet-4.6') {
+    form.model_name = 'claude-sonnet-4-5'
+  }
   const model = form.model_name.toLowerCase()
 
   // Provider detection from URL

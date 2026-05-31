@@ -745,16 +745,17 @@ async def import_chapters_analyze(req: ImportChaptersRequest):
     This is designed to be called as a background task.
     """
     # Step 1: Split into chapters
+    pattern = req.split_pattern or r"第.{1,4}[章节回]"
     try:
-        pattern = req.split_pattern or r"第.{1,4}[章节回]"
-        parts = re.split(f"({pattern})", req.source_text)
+        title_re = re.compile(pattern)
     except re.error:
-        parts = re.split(r"(第.{1,4}[章节回])", req.source_text)
+        title_re = re.compile(r"第.{1,4}[章节回]")
+    parts = re.split(f"({title_re.pattern})", req.source_text)
 
     chapters = []
     title_buf = ""
     for part in parts:
-        match = re.match(req.split_pattern or r"第.{1,4}[章节回]", part)
+        match = title_re.match(part)
         if match:
             title_buf = part.strip()
         else:
