@@ -5,7 +5,6 @@ on:
 
 env:
   DOCKER_IMAGE: spiritlhl/novelbuilder
-  GHCR_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   build-dockerhub:
@@ -145,12 +144,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare GHCR image name
+        id: ghcr-image
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          echo "image=ghcr.io/${owner}/${repo}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata for GHCR
         if: steps.login-ghcr.outcome == 'success'
         id: meta-ghcr
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.GHCR_IMAGE }}
+          images: ${{ steps.ghcr-image.outputs.image }}
           tags: |
             type=raw,value=latest
           flavor: |
@@ -167,7 +173,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             SERVER_VERSION=${{ steps.latest-tag.outputs.tag }}
-          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ steps.ghcr-image.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           cache-from: |
             type=gha,scope=ghcr-${{ matrix.arch }}
           cache-to: |
@@ -225,8 +231,18 @@ jobs:
           merge-multiple: true
           path: /tmp/digests-dockerhub
 
+      - name: Check Docker Hub digests
+        id: dockerhub-digests
+        run: |
+          mkdir -p /tmp/digests-dockerhub
+          if find /tmp/digests-dockerhub -maxdepth 1 -type f | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract metadata for Docker Hub
-        if: steps.login-dockerhub.outcome == 'success' && steps.download-dockerhub.outcome == 'success'
+        if: steps.login-dockerhub.outcome == 'success' && steps.download-dockerhub.outcome == 'success' && steps.dockerhub-digests.outputs.present == 'true'
         id: meta-dockerhub
         uses: docker/metadata-action@v5
         with:
@@ -237,7 +253,7 @@ jobs:
             type=raw,value={{date 'YYYYMMDD'}}
 
       - name: Create manifest list and push to Docker Hub
-        if: steps.login-dockerhub.outcome == 'success' && steps.download-dockerhub.outcome == 'success'
+        if: steps.login-dockerhub.outcome == 'success' && steps.download-dockerhub.outcome == 'success' && steps.dockerhub-digests.outputs.present == 'true'
         continue-on-error: true
         working-directory: /tmp/digests-dockerhub
         run: |
@@ -245,7 +261,7 @@ jobs:
             $(printf '${{ env.DOCKER_IMAGE }}@sha256:%s ' *)
 
       - name: Inspect Docker Hub image
-        if: steps.login-dockerhub.outcome == 'success' && steps.download-dockerhub.outcome == 'success'
+        if: steps.login-dockerhub.outcome == 'success' && steps.download-dockerhub.outcome == 'success' && steps.dockerhub-digests.outputs.present == 'true'
         continue-on-error: true
         run: |
           docker buildx imagetools inspect ${{ env.DOCKER_IMAGE }}:latest
@@ -284,6 +300,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare GHCR image name
+        id: ghcr-image
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          echo "image=ghcr.io/${owner}/${repo}" >> "$GITHUB_OUTPUT"
+
       - name: Get current date
         id: date
         run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
@@ -297,27 +320,37 @@ jobs:
           merge-multiple: true
           path: /tmp/digests-ghcr
 
+      - name: Check GHCR digests
+        id: ghcr-digests
+        run: |
+          mkdir -p /tmp/digests-ghcr
+          if find /tmp/digests-ghcr -maxdepth 1 -type f | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract metadata for GHCR
-        if: steps.login-ghcr.outcome == 'success' && steps.download-ghcr.outcome == 'success'
+        if: steps.login-ghcr.outcome == 'success' && steps.download-ghcr.outcome == 'success' && steps.ghcr-digests.outputs.present == 'true'
         id: meta-ghcr
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.GHCR_IMAGE }}
+          images: ${{ steps.ghcr-image.outputs.image }}
           tags: |
             type=raw,value=latest
             type=raw,value=v${{ steps.date.outputs.date }}
             type=raw,value={{date 'YYYYMMDD'}}
 
       - name: Create manifest list and push to GHCR
-        if: steps.login-ghcr.outcome == 'success' && steps.download-ghcr.outcome == 'success'
+        if: steps.login-ghcr.outcome == 'success' && steps.download-ghcr.outcome == 'success' && steps.ghcr-digests.outputs.present == 'true'
         continue-on-error: true
         working-directory: /tmp/digests-ghcr
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.GHCR_IMAGE }}@sha256:%s ' *)
+            $(printf '${{ steps.ghcr-image.outputs.image }}@sha256:%s ' *)
 
       - name: Inspect GHCR image
-        if: steps.login-ghcr.outcome == 'success' && steps.download-ghcr.outcome == 'success'
+        if: steps.login-ghcr.outcome == 'success' && steps.download-ghcr.outcome == 'success' && steps.ghcr-digests.outputs.present == 'true'
         continue-on-error: true
         run: |
-          docker buildx imagetools inspect ${{ env.GHCR_IMAGE }}:latest
+          docker buildx imagetools inspect ${{ steps.ghcr-image.outputs.image }}:latest
