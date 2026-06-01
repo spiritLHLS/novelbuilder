@@ -13,16 +13,19 @@ if (-not (Test-Path "python-sidecar/.venv")) {
 $VenvPython = Join-Path $Root "python-sidecar/.venv/Scripts/python.exe"
 & $VenvPython -m pip install -q --upgrade pip
 & $VenvPython -m pip install -q -r "python-sidecar/requirements.txt"
+if (Test-Path "python-sidecar/novel-downloader/pyproject.toml") {
+  & $VenvPython -m pip install -q "./python-sidecar/novel-downloader"
+}
 
 Write-Host "==> Building frontend"
 Push-Location "frontend"
-& npm install --legacy-peer-deps
+& npm ci --legacy-peer-deps
 & npm run build
 Pop-Location
 
 Write-Host "==> Building backend"
 Push-Location "backend"
-& go build -ldflags "-s -w -X main.version=${Version}" -o (Join-Path $Root "novelbuilder.exe") "./cmd/server"
+& go build -trimpath -ldflags "-s -w -buildid= -X main.version=${Version}" -o (Join-Path $Root "novelbuilder.exe") "./cmd/server"
 Pop-Location
 
 Write-Host ""

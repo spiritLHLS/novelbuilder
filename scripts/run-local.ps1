@@ -58,6 +58,9 @@ if (-not (Test-Path "python-sidecar/.venv")) {
 $VenvPython = Join-Path $Root "python-sidecar/.venv/Scripts/python.exe"
 & $VenvPython -m pip install -q --upgrade pip
 & $VenvPython -m pip install -q -r "python-sidecar/requirements.txt"
+if (Test-Path "python-sidecar/novel-downloader/pyproject.toml") {
+  & $VenvPython -m pip install -q "./python-sidecar/novel-downloader"
+}
 
 if (Test-Path "python-sidecar/runtime_capabilities.py") {
   Push-Location "python-sidecar"
@@ -69,7 +72,8 @@ $Backend = if ($env:BACKEND_BIN) { $env:BACKEND_BIN } else { Join-Path $Root "no
 if (-not (Test-Path $Backend)) {
   if (Test-Path "backend") {
     Push-Location "backend"
-    & go build -o $Backend "./cmd/server"
+    $BuildVersion = if ($env:VERSION) { $env:VERSION } else { "local" }
+    & go build -trimpath -ldflags "-s -w -buildid= -X main.version=$BuildVersion" -o $Backend "./cmd/server"
     Pop-Location
   } else {
     throw "backend binary not found: $Backend"
@@ -79,7 +83,7 @@ if (-not (Test-Path $Backend)) {
 if (-not (Test-Path "frontend/dist")) {
   if (Test-Path "frontend") {
     Push-Location "frontend"
-    & npm install --legacy-peer-deps
+    & npm ci --legacy-peer-deps
     & npm run build
     Pop-Location
   } else {

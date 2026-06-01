@@ -61,6 +61,9 @@ fi
 source python-sidecar/.venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r python-sidecar/requirements.txt
+if [[ -f "python-sidecar/novel-downloader/pyproject.toml" ]]; then
+  pip install -q ./python-sidecar/novel-downloader
+fi
 
 if [[ -f "python-sidecar/runtime_capabilities.py" ]]; then
   (
@@ -80,7 +83,7 @@ if [[ ! -x "${BACKEND_BIN}" ]]; then
   elif [[ -d "${ROOT_DIR}/backend" ]]; then
     need go
     echo "building backend binary..."
-    (cd backend && go build -o "${ROOT_DIR}/novelbuilder" ./cmd/server)
+    (cd backend && go build -trimpath -ldflags "-s -w -buildid= -X main.version=${VERSION:-local}" -o "${ROOT_DIR}/novelbuilder" ./cmd/server)
     BACKEND_BIN="${ROOT_DIR}/novelbuilder"
   else
     echo "backend binary not found: ${BACKEND_BIN}" >&2
@@ -91,7 +94,7 @@ fi
 if [[ ! -d "frontend/dist" ]]; then
   if [[ -d "frontend" ]]; then
     need npm
-    (cd frontend && npm install --legacy-peer-deps && npm run build)
+    (cd frontend && npm ci --legacy-peer-deps && npm run build)
   else
     echo "frontend/dist not found" >&2
     exit 67

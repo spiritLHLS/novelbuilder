@@ -1,7 +1,7 @@
 <template>
   <el-config-provider>
-    <!-- Login page gets a clean fullscreen layout (no sidebar) -->
-    <router-view v-if="route.name === 'login'" />
+    <!-- Public bootstrap pages get a clean fullscreen layout (no sidebar) -->
+    <router-view v-if="isFullscreenRoute" />
 
     <div v-else class="app-wrapper" :class="{ dark: isDark }">
       <aside class="app-sidebar">
@@ -53,6 +53,10 @@
             <span>{{ isDark ? '☀️' : '🌙' }}</span>
             <span>{{ isDark ? '切换亮色' : '切换暗色' }}</span>
           </button>
+          <button class="guide-btn" @click="openGuide">
+            <el-icon><QuestionFilled /></el-icon>
+            <span>使用向导</span>
+          </button>
           <button class="logout-btn" @click="handleLogout">
             <el-icon><SwitchButton /></el-icon>
             <span>退出登录</span>
@@ -63,12 +67,13 @@
         <router-view />
       </main>
       <DownloadWidget />
+      <FirstRunGuide v-if="showGuideHost" v-model="guideVisible" />
     </div>
   </el-config-provider>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useProjectStore } from '@/stores/project'
@@ -76,6 +81,7 @@ import { useThemeStore } from '@/stores/theme'
 import { useDownloadStore } from '@/stores/download'
 import { useAuthStore } from '@/stores/auth'
 import DownloadWidget from '@/components/DownloadWidget.vue'
+import FirstRunGuide from '@/components/FirstRunGuide.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -83,16 +89,35 @@ const projectStore = useProjectStore()
 const themeStore = useThemeStore()
 const downloadStore = useDownloadStore()
 const auth = useAuthStore()
+const GUIDE_KEY = 'nb_first_run_guide_done'
+const guideVisible = ref(false)
 
-onMounted(() => downloadStore.restoreAndPoll())
+onMounted(() => {
+  downloadStore.restoreAndPoll()
+  if (auth.token && !localStorage.getItem(GUIDE_KEY)) {
+    guideVisible.value = true
+  }
+})
 
 const isDark = computed(() => themeStore.theme === 'dark')
 const currentProjectId = computed(() => projectStore.currentProjectId)
+const isFullscreenRoute = computed(() => route.name === 'login' || route.name === 'setup')
+const showGuideHost = computed(() => Boolean(auth.token) && !isFullscreenRoute.value)
+
+watch(() => auth.token, (token) => {
+  if (token && !localStorage.getItem(GUIDE_KEY)) {
+    guideVisible.value = true
+  }
+})
 
 async function handleLogout() {
   await auth.logout()
   ElMessage.info('已退出登录')
   router.push('/login')
+}
+
+function openGuide() {
+  guideVisible.value = true
 }
 
 const workshopItems = computed(() => {
@@ -198,6 +223,14 @@ body {
   margin-bottom: 6px;
 }
 .theme-btn:hover { background-color: var(--nb-bg-sidebar-hover); color: var(--nb-accent); }
+.guide-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  color: var(--nb-text-sidebar); font-size: 12px; cursor: pointer;
+  transition: background-color 0.12s, color 0.12s;
+  margin-bottom: 6px;
+}
+.guide-btn:hover { background-color: var(--nb-bg-sidebar-hover); color: var(--nb-accent); }
 .logout-btn {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
   border: 1px solid transparent; border-radius: 6px; background: transparent;
@@ -207,4 +240,43 @@ body {
 }
 .logout-btn:hover { background-color: rgba(245,108,108,0.12); color: #f56c6c; opacity: 1; }
 .app-main { flex: 1; overflow-y: auto; background-color: var(--nb-main-bg); padding: 24px; transition: background-color 0.2s; }
+
+@media (max-width: 760px) {
+  .app-sidebar {
+    width: 72px;
+    min-width: 72px;
+  }
+
+  .sidebar-logo {
+    justify-content: center;
+    padding: 14px 8px;
+  }
+
+  .logo-text,
+  .nav-group-title,
+  .nav-item span,
+  .theme-btn span:last-child,
+  .guide-btn span,
+  .logout-btn span,
+  .user-info .username {
+    display: none;
+  }
+
+  .nav-item,
+  .theme-btn,
+  .guide-btn,
+  .logout-btn {
+    justify-content: center;
+    padding: 9px 8px;
+  }
+
+  .user-info {
+    justify-content: center;
+    padding: 6px 0 8px;
+  }
+
+  .app-main {
+    padding: 16px;
+  }
+}
 </style>

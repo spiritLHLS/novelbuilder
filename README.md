@@ -2,31 +2,24 @@
 
 [中文说明](README.zh-CN.md)
 
-NovelBuilder is an AI long-form fiction workbench.
+NovelBuilder is an AI long-form fiction workbench with a Vue UI, Go API gateway, Python agent sidecar, optional graph/vector memory, and deployment profiles from SQLite-only local mode to full all-in-one Docker.
+
 ## Architecture
 
-```text
-Vue SPA
-  -> Go API Gateway
-     -> GORM schema bootstrap and PostgreSQL/SQLite data path
-     -> task queue, auth, LLM profile routing, quality gates
-  -> Python Sidecar
-     -> reference analysis, LangGraph agents, audit, humanization, upload automation
-  -> PostgreSQL/SQLite, Redis, Qdrant, Neo4j
+```mermaid
+flowchart LR
+  User["User browser"] --> Vue["Vue SPA"]
+  Vue --> Go["Go API Gateway<br/>auth, projects, workflows, task queue"]
+  Go --> DB[("PostgreSQL or SQLite<br/>project data and settings")]
+  Go --> Redis[("Redis<br/>sessions, cache, queue hints")]
+  Go --> Sidecar["Python Sidecar<br/>analysis, RAG, agents, upload automation"]
+  Sidecar --> Qdrant[("Qdrant<br/>vector retrieval")]
+  Sidecar --> Neo4j[("Neo4j<br/>graph memory")]
+  Go --> LLM["LLM Providers<br/>OpenAI-compatible, Anthropic, Gemini"]
+  Sidecar --> LLM
 ```
 
-## Deployment Profiles
-
-| Tag | Dockerfile | Dependencies | Suggested resources | Use case |
-| --- | --- | --- | --- | --- |
-| `latest`, `full`, `YYYYMMDD` | `Dockerfile` | Go, Python, Vue, PostgreSQL, Redis, Qdrant, Neo4j, Playwright | 4 CPU, 8 GB RAM, 20 GB disk | Complete local all-in-one deployment |
-| `standard`, `YYYYMMDD-standard` | `Dockerfile.standard` | Go, Python, Vue, PostgreSQL, Redis | 2 CPU, 4 GB RAM, 10 GB disk | Daily writing and review without graph/vector services |
-| `app`, `YYYYMMDD-app` | `Dockerfile.app` | Go, Python, Vue only | 2 CPU, 2 GB RAM plus external services | Multi-container compose or managed databases |
-| `no-neo4j` | `Dockerfile.no-neo4j` | Full minus Neo4j | 3 CPU, 6 GB RAM | Keep vector search, disable graph memory |
-| `no-qdrant` | `Dockerfile.no-qdrant` | Full minus Qdrant | 3 CPU, 6 GB RAM | Keep graph memory, disable vector search |
-| `no-graph-vector` | `Dockerfile.no-graph-vector` | PostgreSQL and Redis only | 2 CPU, 4 GB RAM | Text generation with deterministic context only |
-| `no-redis` | `Dockerfile.no-redis` | PostgreSQL only | 2 CPU, 3 GB RAM | Single-user degraded mode with in-process sessions |
-| `sqlite` | `Dockerfile.sqlite` | Go, Python, Vue, SQLite | 1 CPU, 2 GB RAM, 5 GB disk | Minimal local/binary mode without external services |
+The Go service owns authentication, durable data, task dispatch, static Vue hosting, and LLM profile routing. The Python sidecar owns heavier language-processing tasks, novel-source integration, graph/vector adapters, and runtime accelerator detection.
 
 ## Quick Start
 
@@ -37,7 +30,7 @@ docker compose up -d
 open http://127.0.0.1:8080/setup
 ```
 
-Standard profile:
+Standard profile without graph/vector services:
 
 ```bash
 docker compose -f docker-compose.standard.yml up -d
@@ -49,51 +42,70 @@ Minimal SQLite profile:
 docker compose -f docker-compose.sqlite.yml up -d
 ```
 
-Multi-container profile:
+Source or binary local mode:
 
-```bash
-docker compose -f docker-compose.multi.yml --profile full up -d
-```
-
-Bare-metal source install:
+Prerequisites for source builds: Go 1.22+, Python 3.11+, Node.js 20.19+.
 
 ```bash
 ./scripts/install.sh
 ./scripts/run-local.sh
 ```
 
-Windows source install:
+Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 ```
 
-Binary packages are produced by:
+Open `/setup` first. It checks runtime readiness and then the in-app guide walks through model configuration, project creation, references, blueprint generation, and chapter generation.
 
-```bash
-VERSION=dev ./scripts/build-binaries.sh
-```
+## Deployment Profiles
 
-Each package contains the Go backend binary, Vue `frontend/dist`, Python sidecar source, and `run-local` scripts. Binary mode defaults to SQLite at `./data/novelbuilder.db`; set `DB_DRIVER=postgres` plus `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` to use PostgreSQL. Redis, Qdrant, and Neo4j are optional.
+| Tag | Dockerfile | Shape | Suggested resources | Notes |
+| --- | --- | --- | --- | --- |
+| `latest`, `full`, `YYYYMMDD` | `Dockerfile` | Single container with PostgreSQL, Redis, Qdrant, Neo4j, Python, Go, Vue, Playwright | 4 CPU, 8 GB RAM, 20 GB disk | Complete local deployment |
+| `standard`, `YYYYMMDD-standard` | `Dockerfile.standard` | Single container with PostgreSQL, Redis, Python, Go, Vue | 2 CPU, 4 GB RAM, 10 GB disk | Smaller daily writing profile |
+| `app`, `YYYYMMDD-app` | `Dockerfile.app` | App, sidecar, and Vue only | 2 CPU, 2 GB RAM plus external services | Multi-container compose or managed services |
+| `sqlite` | `Dockerfile.sqlite` | App profile with SQLite and optional services disabled | 1 CPU, 2 GB RAM, 5 GB disk | Smallest local/container profile |
+| `no-neo4j`, `no-qdrant`, `no-graph-vector`, `no-redis` | overlay Dockerfiles | Runtime-disabled variants built from `full` or `standard` | profile-dependent | These disable services/configuration; choose `standard`, `app`, or `sqlite` for the largest physical size reduction |
+
+The release workflow builds `full`, `standard`, and `app` first, then builds overlay variants from same-run `run-${GITHUB_RUN_ID}-profile` base tags for Docker Hub and GHCR independently.
 
 ## Configuration
 
-Infrastructure settings come from environment variables:
+Infrastructure settings are environment variables. Application settings, LLM profiles, prompt presets, and runtime snapshots are stored in the database.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `APP_PROFILE` | `full` | Runtime profile name displayed in diagnostics |
-| `DB_DRIVER` | `postgres` in containers, `sqlite` in binary scripts | `sqlite`/`sqlite3` or `postgres` |
+| `APP_PROFILE` | `full` in Docker, `binary` in local scripts | Displayed in setup diagnostics |
+| `SERVER_HOST`, `SERVER_PORT`, `SERVER_MODE` | `0.0.0.0`, `8080`, `release` | Go gateway listener |
+| `ALLOWED_ORIGINS` | localhost dev and `:8080` origins | Comma-separated CORS allowlist; use your HTTPS origin for public deployments |
+| `TRUSTED_PROXIES` | empty | Comma-separated proxy CIDRs; set only when running behind a trusted reverse proxy |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `spiritlhl`, demo password | Change `ADMIN_PASSWORD` before exposing the app |
+| `SESSION_TTL_HOURS` | `24` | Sliding session lifetime |
+| `LOGIN_MAX_ATTEMPTS` | `5` | Failed login attempts before lockout |
+| `LOGIN_WINDOW_SECONDS` | `300` | Counting window for failed logins |
+| `LOGIN_LOCKOUT_SECONDS` | `900` | Lockout duration after too many failures |
+| `DB_DRIVER` | `postgres` in containers, `sqlite` in local scripts | `sqlite`/`sqlite3` or `postgres` |
 | `SQLITE_PATH` | `/data/novelbuilder.db` or `./data/novelbuilder.db` | Used when `DB_DRIVER=sqlite` |
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | local PostgreSQL defaults | Used when `DB_DRIVER=postgres` |
-| `REDIS_ENABLED` | `true` | Set `false` for in-process sessions and degraded cache behavior |
-| `REDIS_ADDR`, `REDIS_URL` | local Redis defaults | Go uses `REDIS_ADDR`; Python uses `REDIS_URL` |
-| `NEO4J_URI` | profile-specific | Empty disables graph services |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSLMODE` | local PostgreSQL defaults | Used when `DB_DRIVER=postgres` |
+| `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS` | `25`, `5` | Go database pool sizing |
+| `REDIS_ENABLED`, `REDIS_ADDR`, `REDIS_URL`, `REDIS_PASSWORD`, `REDIS_DB` | profile-specific | Go uses `REDIS_ADDR`; Python uses `REDIS_URL` |
+| `SIDECAR_URL`, `SIDECAR_TIMEOUT` | `http://127.0.0.1:8081`, `600` | Go to Python sidecar |
+| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` | profile-specific | Empty `NEO4J_URI` disables graph services |
 | `QDRANT_URL` | profile-specific | Empty disables vector services |
+| `TASK_WORKERS`, `TASK_MAX_RETRIES` | `4`, `3` | Background task queue |
 | `NB_ACCELERATOR` | `auto` | `auto`, `cpu`, `cuda`, `rocm`, or `npu` |
 
-Application settings, LLM profiles, prompt presets, and runtime snapshots live in `system_settings` and related database tables.
+## Build And Size Controls
+
+```bash
+VERSION=dev UPX_ENABLED=auto ./scripts/build-binaries.sh
+TARGETS="linux amd64,windows amd64" ./scripts/build-binaries.sh
+```
+
+Go binaries are built with `-trimpath`, stripped symbols, and an empty build id. If `upx` is installed, Linux and Windows binary packages are compressed automatically. Docker builds pass `UPX_ENABLED=true` in CI and use `npm ci`, no pip cache, no Python bytecode writes, and a narrower Docker build context.
 
 ## Development Checks
 
@@ -102,3 +114,9 @@ cd backend && go test ./...
 cd python-sidecar && python3 -m py_compile main.py routes_audit.py routes_analysis.py runtime_capabilities.py
 cd frontend && npm run build
 ```
+
+More details:
+
+- [Deployment matrix](docs/deployment_matrix.md)
+- [Generation architecture](docs/generation_architecture.md)
+- [Modernization todo](docs/modernization_todo.md)

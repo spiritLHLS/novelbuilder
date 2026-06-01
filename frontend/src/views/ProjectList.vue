@@ -9,7 +9,7 @@
     </div>
 
     <el-row :gutter="20">
-      <el-col :span="8" v-for="project in projectStore.projects" :key="project.id">
+      <el-col :xs="24" :sm="12" :md="8" v-for="project in projectStore.projects" :key="project.id">
         <el-card class="project-card" shadow="hover" @click="enterProject(project)">
           <template #header>
             <div class="card-header">

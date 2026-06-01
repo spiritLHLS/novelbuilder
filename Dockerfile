@@ -14,20 +14,27 @@
 FROM golang:1.22-alpine AS go-builder
 
 RUN apk add --no-cache git gcc musl-dev
+ARG SERVER_VERSION=dev
+ARG UPX_ENABLED=false
 
 WORKDIR /build/backend
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
 COPY backend/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -o /build/server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags "-s -w -buildid= -X main.version=${SERVER_VERSION}" \
+      -o /build/server ./cmd/server \
+    && if [ "${UPX_ENABLED}" = "true" ]; then \
+      (apk add --no-cache upx && upx -9 /build/server) || true; \
+    fi
 
 # ── Stage 2: Vue frontend ────────────────────────────────
 FROM node:20-alpine AS vue-builder
 
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --legacy-peer-deps
+RUN npm ci --legacy-peer-deps
 
 COPY frontend/ ./
 RUN npm run build
@@ -51,6 +58,10 @@ FROM eclipse-temurin:21-jre AS jre-source
 # The runtime patch in python-sidecar/main.py restores the variadic form
 # before novel-downloader is first imported.
 FROM python:3.11.11-slim
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 # ---- System packages ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -115,25 +126,25 @@ COPY python-sidecar/novel-downloader ./novel-downloader
 # is already CPU-only, so we fall back to plain PyPI there.
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" = "amd64" ]; then \
-        pip install --no-cache-dir \
+        pip install --no-cache-dir --no-compile \
             torch==2.5.1+cpu \
             --index-url https://download.pytorch.org/whl/cpu; \
     else \
-        pip install --no-cache-dir torch==2.5.1; \
+        pip install --no-cache-dir --no-compile torch==2.5.1; \
     fi
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --no-compile -r requirements.txt
 # Install Playwright and Chromium browser for Fanqie auto-upload
-RUN pip install --no-cache-dir playwright>=1.40.0 \
-    && playwright install --with-deps chromium
+RUN python -m playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
 # Install novel-downloader: prefer local submodule copy; fall back to GitHub if submodule
 # was not initialised (i.e. the directory is empty after a shallow clone).
 RUN if [ -f "./novel-downloader/pyproject.toml" ]; then \
-        pip install --no-cache-dir ./novel-downloader; \
+        pip install --no-cache-dir --no-compile ./novel-downloader; \
     else \
         echo "WARNING: novel-downloader submodule is empty; downloading from GitHub..." \
         && curl -fsSL https://github.com/spiritLHLS/novel-downloader/archive/refs/heads/main.tar.gz \
            | tar -xz -C /tmp \
-        && pip install --no-cache-dir /tmp/novel-downloader-main \
+        && pip install --no-cache-dir --no-compile /tmp/novel-downloader-main \
         && rm -rf /tmp/novel-downloader-main; \
     fi
 COPY python-sidecar/ ./

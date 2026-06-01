@@ -26,6 +26,8 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+var version = "dev"
+
 func attachTaskSession(ctx context.Context, cfg map[string]interface{}, sessionID string) (context.Context, map[string]interface{}) {
 	if sessionID == "" {
 		return ctx, cfg
@@ -521,10 +523,17 @@ func main() {
 
 	// Setup Gin router
 	r := gin.Default()
+	trustedProxies := cfg.Server.TrustedProxies
+	if len(trustedProxies) == 1 && trustedProxies[0] == "*" {
+		trustedProxies = []string{"0.0.0.0/0", "::/0"}
+	}
+	if err := r.SetTrustedProxies(trustedProxies); err != nil {
+		logger.Warn("failed to configure trusted proxies", zap.Error(err))
+	}
 
 	// CORS middleware
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:  []string{"*"},
+		AllowOrigins:  cfg.Server.AllowedOrigins,
 		AllowMethods:  []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:  []string{"Origin", "Content-Type", "Authorization", "Idempotency-Key", "X-Request-Id"},
 		ExposeHeaders: []string{"Content-Length", "X-Request-Id"},
@@ -559,12 +568,20 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{
 			"initialized": true,
 			"profile":     cfg.App.Profile,
+			"version":     version,
 			"backend": gin.H{
 				"database_driver": cfg.Database.Driver,
 				"session_store":   sessionStore.Mode(),
 				"redis_enabled":   rdb != nil,
 			},
 			"sidecar": sidecarStatus,
+			"security": gin.H{
+				"allowed_origins":       cfg.Server.AllowedOrigins,
+				"trusted_proxies_count": len(cfg.Server.TrustedProxies),
+				"login_max_attempts":    cfg.Auth.LoginMaxAttempts,
+				"login_window_seconds":  cfg.Auth.LoginWindowSeconds,
+				"login_lockout_seconds": cfg.Auth.LoginLockoutSeconds,
+			},
 			"next": gin.H{
 				"login_path": "/login",
 				"settings":   "/settings/llm",
@@ -578,6 +595,9 @@ func main() {
 		cfg.Auth.Password,
 		sessionStore,
 		cfg.Auth.SessionTTLHours,
+		cfg.Auth.LoginMaxAttempts,
+		cfg.Auth.LoginWindowSeconds,
+		cfg.Auth.LoginLockoutSeconds,
 	)
 	sessionTTL := time.Duration(cfg.Auth.SessionTTLHours) * time.Hour
 	authMiddleware := middleware.RequireAuth(sessionStore, sessionTTL)

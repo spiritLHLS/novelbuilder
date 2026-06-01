@@ -22,6 +22,9 @@ services:
       # ADMIN_USERNAME: spiritlhl
       # ADMIN_PASSWORD: change-this
       # SESSION_TTL_HOURS: "24"
+      # ALLOWED_ORIGINS: https://your-domain.example
+      # LOGIN_MAX_ATTEMPTS: "5"
+      # LOGIN_LOCKOUT_SECONDS: "900"
       # DB_PASSWORD: changeme
       # NEO4J_PASSWORD: changeme
 

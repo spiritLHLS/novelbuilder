@@ -26,12 +26,15 @@ fi
 source python-sidecar/.venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r python-sidecar/requirements.txt
+if [[ -f "python-sidecar/novel-downloader/pyproject.toml" ]]; then
+  pip install -q ./python-sidecar/novel-downloader
+fi
 
 echo "==> Building frontend"
-(cd frontend && npm install --legacy-peer-deps && npm run build)
+(cd frontend && npm ci --legacy-peer-deps && npm run build)
 
 echo "==> Building backend"
-(cd backend && go build -ldflags "-s -w -X main.version=${VERSION}" -o "${ROOT_DIR}/novelbuilder" ./cmd/server)
+(cd backend && go build -trimpath -ldflags "-s -w -buildid= -X main.version=${VERSION}" -o "${ROOT_DIR}/novelbuilder" ./cmd/server)
 
 chmod +x scripts/run-local.sh novelbuilder
 

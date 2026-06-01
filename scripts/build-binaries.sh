@@ -10,9 +10,28 @@ mkdir -p "${DIST_DIR}"
 echo "==> Building frontend"
 (
   cd "${ROOT_DIR}/frontend"
-  npm install --legacy-peer-deps
+  npm ci --legacy-peer-deps
   npm run build
 )
+
+compress_binary() {
+  local path="$1"
+  local goos="$2"
+  if [[ "${goos}" == "darwin" ]]; then
+    return 0
+  fi
+  case "${UPX_ENABLED:-auto}" in
+    0|false|FALSE|off|OFF|no|NO)
+      return 0
+      ;;
+  esac
+  if command -v upx >/dev/null 2>&1; then
+    echo "==> UPX compressing $(basename "${path}")"
+    upx -9 --lzma "${path}" >/dev/null || echo "WARN: UPX failed for ${path}; keeping stripped binary"
+  elif [[ "${UPX_ENABLED:-auto}" == "true" || "${UPX_ENABLED:-auto}" == "1" ]]; then
+    echo "WARN: UPX_ENABLED=${UPX_ENABLED} but upx is not installed; keeping stripped binary" >&2
+  fi
+}
 
 build_one() {
   local goos="$1"
@@ -32,11 +51,25 @@ build_one() {
     cd "${ROOT_DIR}/backend"
     GOSUMDB="${GOSUMDB:-off}" GOPROXY="${GOPROXY:-https://proxy.golang.org,direct}" \
       CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
-      go build -ldflags "-s -w -X main.version=${VERSION}" -o "${out}/novelbuilder${ext}" ./cmd/server
+      go build -trimpath -ldflags "-s -w -buildid= -X main.version=${VERSION}" \
+        -o "${out}/novelbuilder${ext}" ./cmd/server
   )
+  compress_binary "${out}/novelbuilder${ext}" "${goos}"
 
   cp -R "${ROOT_DIR}/frontend/dist" "${out}/frontend/dist"
-  rsync -a --exclude '__pycache__' --exclude '.venv' --exclude 'novel-downloader/.git' \
+  rsync -a \
+    --exclude '__pycache__' \
+    --exclude '*.pyc' \
+    --exclude '.pytest_cache' \
+    --exclude '.mypy_cache' \
+    --exclude '.ruff_cache' \
+    --exclude '.venv' \
+    --exclude 'node_modules' \
+    --exclude 'novel-downloader/.git' \
+    --exclude 'novel-downloader/docs' \
+    --exclude 'novel-downloader/tests' \
+    --exclude 'novel-downloader/.pytest_cache' \
+    --exclude 'novel-downloader/.mypy_cache' \
     "${ROOT_DIR}/python-sidecar/" "${out}/python-sidecar/"
   cp "${ROOT_DIR}/scripts/run-local.sh" "${out}/run-local.sh"
   cp "${ROOT_DIR}/scripts/run-local.ps1" "${out}/run-local.ps1"

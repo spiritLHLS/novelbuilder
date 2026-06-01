@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds only the infrastructure parameters that must be known before
@@ -24,9 +25,11 @@ type AppConfig struct {
 }
 
 type ServerConfig struct {
-	Host string
-	Port int
-	Mode string
+	Host           string
+	Port           int
+	Mode           string
+	AllowedOrigins []string
+	TrustedProxies []string
 }
 
 type DatabaseConfig struct {
@@ -62,9 +65,12 @@ type TaskQueueConfig struct {
 // AuthConfig holds credentials for the built-in single-user authentication.
 // Credentials can be overridden via environment variables.
 type AuthConfig struct {
-	Username        string
-	Password        string // plain-text default; overridden by ADMIN_PASSWORD env var
-	SessionTTLHours int
+	Username            string
+	Password            string // plain-text default; overridden by ADMIN_PASSWORD env var
+	SessionTTLHours     int
+	LoginMaxAttempts    int
+	LoginWindowSeconds  int
+	LoginLockoutSeconds int
 }
 
 func envStr(key, def string) string {
@@ -95,6 +101,31 @@ func envBool(key string, def bool) bool {
 	return def
 }
 
+func envCSV(key string, def []string) []string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	items := strings.Split(raw, ",")
+	out := make([]string, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		value := strings.TrimSpace(item)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 // Load reads configuration exclusively from environment variables with
 // safe defaults that match the bundled single-container setup.
 // No config files are read; run `docker run -e DB_HOST=... novelbuilder` to override.
@@ -107,6 +138,17 @@ func Load() *Config {
 			Host: envStr("SERVER_HOST", "0.0.0.0"),
 			Port: envInt("SERVER_PORT", 8080),
 			Mode: envStr("SERVER_MODE", "release"),
+			AllowedOrigins: envCSV("ALLOWED_ORIGINS", []string{
+				"http://localhost:5173",
+				"http://127.0.0.1:5173",
+				"http://localhost:4173",
+				"http://127.0.0.1:4173",
+				"http://localhost:8080",
+				"http://127.0.0.1:8080",
+				"http://localhost:3000",
+				"http://127.0.0.1:3000",
+			}),
+			TrustedProxies: envCSV("TRUSTED_PROXIES", nil),
 		},
 		Database: DatabaseConfig{
 			Driver:       envStr("DB_DRIVER", "postgres"),
@@ -135,9 +177,12 @@ func Load() *Config {
 			MaxRetries: envInt("TASK_MAX_RETRIES", 3),
 		},
 		Auth: AuthConfig{
-			Username:        envStr("ADMIN_USERNAME", "spiritlhl"),
-			Password:        envStr("ADMIN_PASSWORD", "spiritlhl136@136"),
-			SessionTTLHours: envInt("SESSION_TTL_HOURS", 24),
+			Username:            envStr("ADMIN_USERNAME", "spiritlhl"),
+			Password:            envStr("ADMIN_PASSWORD", "spiritlhl136@136"),
+			SessionTTLHours:     envInt("SESSION_TTL_HOURS", 24),
+			LoginMaxAttempts:    envInt("LOGIN_MAX_ATTEMPTS", 5),
+			LoginWindowSeconds:  envInt("LOGIN_WINDOW_SECONDS", 300),
+			LoginLockoutSeconds: envInt("LOGIN_LOCKOUT_SECONDS", 900),
 		},
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,26 +17,130 @@ import (
 // Authhandler handles login, logout, and session-check for the built-in
 // single-user authentication system.
 type AuthHandler struct {
-	username   string
-	pwHash     []byte // bcrypt hash of the configured password
-	sessions   sessions.Store
-	sessionTTL time.Duration
+	username     string
+	pwHash       []byte // bcrypt hash of the configured password
+	sessions     sessions.Store
+	sessionTTL   time.Duration
+	loginLimiter loginLimiter
 }
 
-// NewAuthHandler creates an AuthHandler.  The plain-text password is hashed
-// once at startup so comparisons are always constant-time.
-func NewAuthHandler(username, password string, sessionStore sessions.Store, sessionTTLHours int) *AuthHandler {
+type loginAttempt struct {
+	failures    int
+	firstFailed time.Time
+	lockedUntil time.Time
+}
+
+type loginLimiter struct {
+	mu          sync.Mutex
+	attempts    map[string]loginAttempt
+	maxAttempts int
+	window      time.Duration
+	lockout     time.Duration
+}
+
+// NewAuthHandler creates an AuthHandler. The plain-text password is hashed
+// once at startup so every login attempt uses bcrypt comparison.
+func NewAuthHandler(username, password string, sessionStore sessions.Store, sessionTTLHours, loginMaxAttempts, loginWindowSeconds, loginLockoutSeconds int) *AuthHandler {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		// bcrypt should never fail here; panic so the misconfiguration is obvious.
 		panic("auth: failed to hash admin password: " + err.Error())
+	}
+	if sessionTTLHours <= 0 {
+		sessionTTLHours = 24
+	}
+	if loginMaxAttempts <= 0 {
+		loginMaxAttempts = 5
+	}
+	if loginWindowSeconds <= 0 {
+		loginWindowSeconds = 300
+	}
+	if loginLockoutSeconds <= 0 {
+		loginLockoutSeconds = 900
 	}
 	return &AuthHandler{
 		username:   username,
 		pwHash:     hash,
 		sessions:   sessionStore,
 		sessionTTL: time.Duration(sessionTTLHours) * time.Hour,
+		loginLimiter: loginLimiter{
+			attempts:    make(map[string]loginAttempt),
+			maxAttempts: loginMaxAttempts,
+			window:      time.Duration(loginWindowSeconds) * time.Second,
+			lockout:     time.Duration(loginLockoutSeconds) * time.Second,
+		},
 	}
+}
+
+func loginKeys(c *gin.Context, username string) []string {
+	ip := c.ClientIP()
+	normalizedUser := strings.ToLower(strings.TrimSpace(username))
+	return []string{"ip:" + ip, "user:" + normalizedUser + "|ip:" + ip}
+}
+
+func (a *AuthHandler) retryAfter(keys []string, now time.Time) time.Duration {
+	a.loginLimiter.mu.Lock()
+	defer a.loginLimiter.mu.Unlock()
+	var longest time.Duration
+	for _, key := range keys {
+		attempt, ok := a.loginLimiter.attempts[key]
+		if !ok {
+			continue
+		}
+		if !attempt.lockedUntil.IsZero() && now.Before(attempt.lockedUntil) {
+			if wait := time.Until(attempt.lockedUntil); wait > longest {
+				longest = wait
+			}
+			continue
+		}
+		if now.Sub(attempt.firstFailed) > a.loginLimiter.window+a.loginLimiter.lockout {
+			delete(a.loginLimiter.attempts, key)
+		}
+	}
+	return longest
+}
+
+func (a *AuthHandler) recordFailure(keys []string, now time.Time) time.Duration {
+	a.loginLimiter.mu.Lock()
+	defer a.loginLimiter.mu.Unlock()
+	var longest time.Duration
+	for _, key := range keys {
+		attempt := a.loginLimiter.attempts[key]
+		if attempt.firstFailed.IsZero() || now.Sub(attempt.firstFailed) > a.loginLimiter.window {
+			attempt = loginAttempt{firstFailed: now}
+		}
+		attempt.failures++
+		if attempt.failures >= a.loginLimiter.maxAttempts {
+			attempt.lockedUntil = now.Add(a.loginLimiter.lockout)
+			if a.loginLimiter.lockout > longest {
+				longest = a.loginLimiter.lockout
+			}
+		}
+		a.loginLimiter.attempts[key] = attempt
+	}
+	if len(a.loginLimiter.attempts) > 4096 {
+		for key, attempt := range a.loginLimiter.attempts {
+			if now.Sub(attempt.firstFailed) > a.loginLimiter.window+a.loginLimiter.lockout {
+				delete(a.loginLimiter.attempts, key)
+			}
+		}
+	}
+	return longest
+}
+
+func (a *AuthHandler) clearFailures(keys []string) {
+	a.loginLimiter.mu.Lock()
+	defer a.loginLimiter.mu.Unlock()
+	for _, key := range keys {
+		delete(a.loginLimiter.attempts, key)
+	}
+}
+
+func retryAfterSeconds(d time.Duration) string {
+	if d <= 0 {
+		return "0"
+	}
+	return strconv.Itoa(int((d + time.Second - 1) / time.Second))
 }
 
 // Login checks credentials and returns a session token on success.
@@ -51,15 +157,26 @@ func (a *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Constant-time username comparison to prevent user enumeration.
-	if !strings.EqualFold(req.Username, a.username) {
+	now := time.Now()
+	keys := loginKeys(c, req.Username)
+	if wait := a.retryAfter(keys, now); wait > 0 {
+		c.Header("Retry-After", retryAfterSeconds(wait))
+		c.JSON(429, gin.H{"error": "too many login attempts; try again later"})
+		return
+	}
+
+	usernameOK := strings.EqualFold(strings.TrimSpace(req.Username), a.username)
+	passwordErr := bcrypt.CompareHashAndPassword(a.pwHash, []byte(req.Password))
+	if !usernameOK || passwordErr != nil {
+		if wait := a.recordFailure(keys, now); wait > 0 {
+			c.Header("Retry-After", retryAfterSeconds(wait))
+			c.JSON(429, gin.H{"error": "too many login attempts; try again later"})
+			return
+		}
 		c.JSON(401, gin.H{"error": "invalid credentials"})
 		return
 	}
-	if err := bcrypt.CompareHashAndPassword(a.pwHash, []byte(req.Password)); err != nil {
-		c.JSON(401, gin.H{"error": "invalid credentials"})
-		return
-	}
+	a.clearFailures(keys)
 
 	// Generate a cryptographically random session token.
 	raw := make([]byte, 32)
