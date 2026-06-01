@@ -18,6 +18,7 @@ export function useReferenceDeepAnalysis(fetchRefs: () => Promise<void>) {
     if (status === 'completed') return 'success'
     if (status === 'failed') return 'danger'
     if (status === 'cancelled') return 'info'
+    if (status === 'paused') return 'warning'
     return 'warning'
   })
 
@@ -28,6 +29,7 @@ export function useReferenceDeepAnalysis(fetchRefs: () => Promise<void>) {
       completed: '已完成',
       failed: '失败',
       cancelled: '已取消',
+      paused: '已暂停',
     }
     return map[deepAnalysisJob.value?.status] ?? deepAnalysisJob.value?.status ?? '—'
   })

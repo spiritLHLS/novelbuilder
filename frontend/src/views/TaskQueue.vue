@@ -1,12 +1,20 @@
 <template>
   <div class="task-queue-page">
     <div class="page-header">
-      <h2>任务队列</h2>
-      <p class="subtitle">查看和管理后台异步任务</p>
+      <h2>{{ projectId ? '项目任务总控' : '全局任务总控' }}</h2>
+      <p class="subtitle">查看和管理所有后台异步任务，支持暂停、继续、取消和失败回退</p>
       <div class="header-actions">
         <el-switch v-model="autoRefresh" active-text="自动刷新 (5s)" @change="toggleAutoRefresh" />
         <el-button :icon="Refresh" @click="loadTasks">刷新</el-button>
       </div>
+    </div>
+
+    <div v-if="projectId" class="project-controls">
+      <el-button @click="changeProjectState('start')">启动项目</el-button>
+      <el-button @click="changeProjectState('pause')">暂停项目</el-button>
+      <el-button @click="changeProjectState('resume')">继续项目</el-button>
+      <el-button type="danger" plain @click="changeProjectState('terminate')">终止项目</el-button>
+      <el-button plain @click="changeProjectState('reset')">重置任务状态</el-button>
     </div>
 
     <!-- Filter bar -->
@@ -15,6 +23,7 @@
         <el-option label="全部" value="" />
         <el-option label="待执行" value="pending" />
         <el-option label="执行中" value="running" />
+        <el-option label="已暂停" value="paused" />
         <el-option label="已完成" value="done" />
         <el-option label="失败" value="failed" />
         <el-option label="已取消" value="cancelled" />
@@ -22,11 +31,16 @@
       <el-select v-model="filterType" placeholder="全部类型" clearable style="width: 200px" @change="() => { page = 1; loadTasks() }">
         <el-option label="全部" value="" />
         <el-option label="章节生成" value="chapter_generate" />
+        <el-option label="蓝图生成" value="blueprint_generate" />
         <el-option label="章节重写" value="chapter_regenerate" />
         <el-option label="自动续写" value="generate_next_chapter" />
         <el-option label="章节导入处理" value="chapter_import_process" />
-        <el-option label="向量索引" value="rag_index" />
-        <el-option label="质量检测" value="quality_check" />
+        <el-option label="参考书下载" value="reference_fetch_import" />
+        <el-option label="参考书分析" value="reference_analyze" />
+        <el-option label="参考书深度分析" value="reference_analysis" />
+        <el-option label="RAG 重建" value="rag_rebuild" />
+        <el-option label="图谱同步" value="graph_sync" />
+        <el-option label="向量重建" value="vector_rebuild" />
       </el-select>
     </div>
 
@@ -34,6 +48,11 @@
       <el-table-column label="任务类型" prop="task_type" min-width="160">
         <template #default="{ row }">
           <code>{{ row.task_type }}</code>
+        </template>
+      </el-table-column>
+      <el-table-column v-if="!projectId" label="项目" prop="project_id" min-width="150" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span class="muted">{{ row.project_id || '系统任务' }}</span>
         </template>
       </el-table-column>
       <el-table-column label="任务内容" min-width="180" show-overflow-tooltip>
@@ -62,10 +81,24 @@
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="160" align="center">
+      <el-table-column label="操作" width="220" align="center">
         <template #default="{ row }">
           <el-button
             v-if="row.status === 'pending' || row.status === 'running'"
+            type="info"
+            text
+            size="small"
+            @click="pauseTask(row.id)"
+          >暂停</el-button>
+          <el-button
+            v-if="row.status === 'paused'"
+            type="success"
+            text
+            size="small"
+            @click="resumeTask(row.id)"
+          >继续</el-button>
+          <el-button
+            v-if="row.status === 'pending' || row.status === 'running' || row.status === 'paused'"
             type="warning"
             text
             size="small"
@@ -107,7 +140,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import { taskApi } from '@/api'
+import { projectApi, taskApi } from '@/api'
 
 interface Task {
   id: string
@@ -125,7 +158,7 @@ interface Task {
 }
 
 const route = useRoute()
-const projectId = computed(() => route.params.projectId as string)
+const projectId = computed(() => (route.params.projectId as string | undefined) || '')
 
 const tasks = ref<Task[]>([])
 const loading = ref(false)
@@ -141,6 +174,7 @@ const statusLabel = (s: string) => {
   const map: Record<string, string> = {
     pending: '待执行',
     running: '执行中',
+    paused: '已暂停',
     done: '已完成',
     failed: '失败',
     cancelled: '已取消',
@@ -152,9 +186,10 @@ const statusTagType = (s: string): '' | 'success' | 'warning' | 'danger' | 'info
   const map: Record<string, '' | 'success' | 'warning' | 'danger' | 'info'> = {
     pending: 'info',
     running: 'warning',
+    paused: 'info',
     done: 'success',
     failed: 'danger',
-    cancelled: '',
+    cancelled: 'info',
   }
   return map[s] ?? 'info'
 }
@@ -169,6 +204,8 @@ function taskSummary(task: Task) {
   const request = payload.request || {}
 
   switch (task.task_type) {
+    case 'blueprint_generate':
+      return '生成整书蓝图'
     case 'chapter_generate': {
       const chapterNum = Number(request.chapter_num) || 0
       return chapterNum > 0 ? `生成第${chapterNum}章` : '章节生成'
@@ -179,6 +216,18 @@ function taskSummary(task: Task) {
     }
     case 'generate_next_chapter':
       return '继续生成下一章'
+    case 'reference_fetch_import':
+      return payload.title ? `下载参考书《${payload.title}》` : '参考书下载'
+    case 'reference_analyze':
+      return '参考书分析'
+    case 'reference_analysis':
+      return payload.ref_id ? `深度分析参考书 ${payload.ref_id}` : '参考书深度分析'
+    case 'rag_rebuild':
+      return '重建 RAG 知识库'
+    case 'graph_sync':
+      return '同步图谱记忆'
+    case 'vector_rebuild':
+      return '重建向量索引'
     case 'generate_chapter_outlines': {
       const volumeNum = Number(payload.volume_num) || 0
       const startChapter = Number(payload.start_chapter) || 0
@@ -198,7 +247,7 @@ function taskSummary(task: Task) {
 async function loadTasks() {
   loading.value = true
   try {
-    const res = await taskApi.list(projectId.value, {
+    const res = await taskApi.list(projectId.value || undefined, {
       page: page.value,
       page_size: pageSize.value,
       status: filterStatus.value || undefined,
@@ -225,6 +274,26 @@ async function cancelTask(id: string) {
   }
 }
 
+async function pauseTask(id: string) {
+  try {
+    await taskApi.pause(id)
+    ElMessage.success('任务已暂停')
+    await loadTasks()
+  } catch {
+    ElMessage.error('暂停失败')
+  }
+}
+
+async function resumeTask(id: string) {
+  try {
+    await taskApi.resume(id)
+    ElMessage.success('任务已继续')
+    await loadTasks()
+  } catch {
+    ElMessage.error('继续失败')
+  }
+}
+
 async function retryTask(id: string) {
   try {
     await taskApi.retry(id)
@@ -232,6 +301,17 @@ async function retryTask(id: string) {
     await loadTasks()
   } catch {
     ElMessage.error('重试失败')
+  }
+}
+
+async function changeProjectState(action: 'start' | 'pause' | 'resume' | 'terminate' | 'reset') {
+  if (!projectId.value) return
+  try {
+    await projectApi.state(projectId.value, action)
+    ElMessage.success('项目任务状态已更新')
+    await loadTasks()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '项目状态更新失败')
   }
 }
 
@@ -289,6 +369,13 @@ onUnmounted(() => {
   gap: 12px;
   align-items: center;
   margin-bottom: 16px;
+}
+
+.project-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
 }
 
 .error-text {

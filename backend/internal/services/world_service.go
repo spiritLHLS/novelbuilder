@@ -33,7 +33,7 @@ func (s *WorldBibleService) Get(ctx context.Context, projectID string) (*models.
 	err := s.db.QueryRow(ctx,
 		`SELECT id, project_id, content, migration_source, version, created_at, updated_at
 		 FROM world_bibles WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1`,
-		projectID).Scan(&wb.ID, &wb.ProjectID, &wb.Content, &wb.MigrationSource,
+		projectID).Scan(&wb.ID, &wb.ProjectID, rawJSONScanner{dst: &wb.Content}, &wb.MigrationSource,
 		&wb.Version, &wb.CreatedAt, &wb.UpdatedAt)
 	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
@@ -51,7 +51,7 @@ func (s *WorldBibleService) Update(ctx context.Context, projectID string, conten
 		         version = world_bibles.version + 1,
 		         updated_at = NOW()
 		 RETURNING id, project_id, content, migration_source, version, created_at, updated_at`,
-		uuid.New().String(), projectID, content).Scan(&wb.ID, &wb.ProjectID, &wb.Content, &wb.MigrationSource,
+		uuid.New().String(), projectID, content).Scan(&wb.ID, &wb.ProjectID, rawJSONScanner{dst: &wb.Content}, &wb.MigrationSource,
 		&wb.Version, &wb.CreatedAt, &wb.UpdatedAt)
 	return &wb, err
 }
@@ -143,8 +143,11 @@ func (s *WorldBibleService) GetConstitution(ctx context.Context, projectID strin
 	err := s.db.QueryRow(ctx,
 		`SELECT id, project_id, immutable_rules, mutable_rules, forbidden_anchors, version, created_at, updated_at
 		 FROM world_bible_constitutions WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1`,
-		projectID).Scan(&wbc.ID, &wbc.ProjectID, &wbc.ImmutableRules, &wbc.MutableRules,
-		&wbc.ForbiddenAnchors, &wbc.Version, &wbc.CreatedAt, &wbc.UpdatedAt)
+		projectID).Scan(&wbc.ID, &wbc.ProjectID,
+		rawJSONScanner{dst: &wbc.ImmutableRules},
+		rawJSONScanner{dst: &wbc.MutableRules},
+		rawJSONScanner{dst: &wbc.ForbiddenAnchors},
+		&wbc.Version, &wbc.CreatedAt, &wbc.UpdatedAt)
 	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
 	}
@@ -163,8 +166,11 @@ func (s *WorldBibleService) UpdateConstitution(ctx context.Context, projectID st
 		     forbidden_anchors = EXCLUDED.forbidden_anchors,
 		     version          = world_bible_constitutions.version + 1
 		 RETURNING id, project_id, immutable_rules, mutable_rules, forbidden_anchors, version, created_at, updated_at`,
-		projectID, immutable, mutable, forbidden).Scan(&wbc.ID, &wbc.ProjectID, &wbc.ImmutableRules,
-		&wbc.MutableRules, &wbc.ForbiddenAnchors, &wbc.Version, &wbc.CreatedAt, &wbc.UpdatedAt)
+		projectID, immutable, mutable, forbidden).Scan(&wbc.ID, &wbc.ProjectID,
+		rawJSONScanner{dst: &wbc.ImmutableRules},
+		rawJSONScanner{dst: &wbc.MutableRules},
+		rawJSONScanner{dst: &wbc.ForbiddenAnchors},
+		&wbc.Version, &wbc.CreatedAt, &wbc.UpdatedAt)
 	return &wbc, err
 }
 
@@ -195,8 +201,10 @@ func (s *CharacterService) List(ctx context.Context, projectID string) ([]models
 	var chars []models.Character
 	for rows.Next() {
 		var c models.Character
-		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Name, &c.RoleType, &c.Profile,
-			&c.CurrentState, &c.VoiceCollection, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Name, &c.RoleType,
+			rawJSONScanner{dst: &c.Profile},
+			rawJSONScanner{dst: &c.CurrentState},
+			&c.VoiceCollection, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		chars = append(chars, c)
@@ -212,8 +220,10 @@ func (s *CharacterService) Get(ctx context.Context, id string) (*models.Characte
 	err := s.db.QueryRow(ctx,
 		`SELECT id, project_id, name, role_type, profile, COALESCE(current_state, '{}'), COALESCE(voice_collection, ''), created_at, updated_at
 		 FROM characters WHERE id = $1`, id).Scan(
-		&c.ID, &c.ProjectID, &c.Name, &c.RoleType, &c.Profile,
-		&c.CurrentState, &c.VoiceCollection, &c.CreatedAt, &c.UpdatedAt)
+		&c.ID, &c.ProjectID, &c.Name, &c.RoleType,
+		rawJSONScanner{dst: &c.Profile},
+		rawJSONScanner{dst: &c.CurrentState},
+		&c.VoiceCollection, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, database.ErrNoRows) {
 			return nil, nil
@@ -229,8 +239,10 @@ func (s *CharacterService) Create(ctx context.Context, projectID string, name, r
 		`INSERT INTO characters (project_id, name, role_type, profile) VALUES ($1, $2, $3, $4)
 		 RETURNING id, project_id, name, role_type, profile, current_state, COALESCE(voice_collection, ''), created_at, updated_at`,
 		projectID, name, roleType, profile).Scan(
-		&c.ID, &c.ProjectID, &c.Name, &c.RoleType, &c.Profile,
-		&c.CurrentState, &c.VoiceCollection, &c.CreatedAt, &c.UpdatedAt)
+		&c.ID, &c.ProjectID, &c.Name, &c.RoleType,
+		rawJSONScanner{dst: &c.Profile},
+		rawJSONScanner{dst: &c.CurrentState},
+		&c.VoiceCollection, &c.CreatedAt, &c.UpdatedAt)
 	return &c, err
 }
 
@@ -241,8 +253,10 @@ func (s *CharacterService) Update(ctx context.Context, id string, name, roleType
 		 WHERE id = $4
 		 RETURNING id, project_id, name, role_type, profile, COALESCE(current_state, '{}'), COALESCE(voice_collection, ''), created_at, updated_at`,
 		name, roleType, profile, id).Scan(
-		&c.ID, &c.ProjectID, &c.Name, &c.RoleType, &c.Profile,
-		&c.CurrentState, &c.VoiceCollection, &c.CreatedAt, &c.UpdatedAt)
+		&c.ID, &c.ProjectID, &c.Name, &c.RoleType,
+		rawJSONScanner{dst: &c.Profile},
+		rawJSONScanner{dst: &c.CurrentState},
+		&c.VoiceCollection, &c.CreatedAt, &c.UpdatedAt)
 	return &c, err
 }
 
@@ -278,7 +292,7 @@ func (s *OutlineService) List(ctx context.Context, projectID string) ([]models.O
 	for rows.Next() {
 		var o models.Outline
 		if err := rows.Scan(&o.ID, &o.ProjectID, &o.Level, &o.ParentID, &o.OrderNum,
-			&o.Title, &o.Content, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt); err != nil {
+			&o.Title, rawJSONScanner{dst: &o.Content}, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
 		outlines = append(outlines, o)
@@ -328,7 +342,7 @@ func (s *OutlineService) ListChapterOutlines(ctx context.Context, projectID stri
 	for rows.Next() {
 		var o models.Outline
 		if err := rows.Scan(&o.ID, &o.ProjectID, &o.Level, &o.ParentID, &o.OrderNum,
-			&o.Title, &o.Content, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt); err != nil {
+			&o.Title, rawJSONScanner{dst: &o.Content}, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
 		outlines = append(outlines, o)
@@ -347,7 +361,7 @@ func (s *OutlineService) Create(ctx context.Context, projectID, level string, pa
 		 RETURNING id, project_id, level, parent_id, order_num, title, content, tension_target, created_at, updated_at`,
 		projectID, level, parentID, orderNum, title, content, tension).Scan(
 		&o.ID, &o.ProjectID, &o.Level, &o.ParentID, &o.OrderNum,
-		&o.Title, &o.Content, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt)
+		&o.Title, rawJSONScanner{dst: &o.Content}, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt)
 	return &o, err
 }
 
@@ -359,7 +373,7 @@ func (s *OutlineService) Update(ctx context.Context, id string, title string, co
 		 RETURNING id, project_id, level, parent_id, order_num, title, content, tension_target, created_at, updated_at`,
 		title, content, tension, id).Scan(
 		&o.ID, &o.ProjectID, &o.Level, &o.ParentID, &o.OrderNum,
-		&o.Title, &o.Content, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt)
+		&o.Title, rawJSONScanner{dst: &o.Content}, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt)
 	return &o, err
 }
 

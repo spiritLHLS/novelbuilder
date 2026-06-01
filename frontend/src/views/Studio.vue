@@ -2,8 +2,45 @@
   <div class="studio">
     <div class="page-header">
       <h1>创作工作台</h1>
-      <el-tag>{{ projectStore.currentProject?.title }}</el-tag>
+      <el-tag>{{ project?.title || projectStore.currentProject?.title }}</el-tag>
+      <el-tag :type="projectStatusType(project?.status)" effect="plain">{{ projectStatusText(project?.status) }}</el-tag>
+      <div class="state-actions">
+        <el-button size="small" @click="changeProjectState('start')">启动</el-button>
+        <el-button size="small" @click="changeProjectState('pause')">暂停</el-button>
+        <el-button size="small" @click="changeProjectState('resume')">继续</el-button>
+        <el-button size="small" type="danger" plain @click="changeProjectState('terminate')">终止</el-button>
+        <el-button size="small" plain @click="changeProjectState('reset')">重置状态</el-button>
+      </div>
     </div>
+
+    <el-card class="section-card flow-card" shadow="never">
+      <template #header>
+        <div class="flow-header">
+          <span>一段 prompt 开始写书</span>
+          <el-tag size="small">{{ project?.language === 'en-US' ? 'English' : '中文' }}</el-tag>
+        </div>
+      </template>
+      <el-input
+        v-model="bookPrompt"
+        type="textarea"
+        :rows="4"
+        placeholder="写下题材、主角、核心冲突、爽点/情绪体验、风格偏好。无需参考书，也可以直接生成整书蓝图。"
+      />
+      <div class="flow-actions">
+        <el-button type="primary" :loading="startingBlueprint" @click="startBlueprintFromPrompt">
+          <el-icon><Document /></el-icon>
+          生成整书蓝图
+        </el-button>
+        <el-button :loading="continuing" @click="continueWrite">
+          <el-icon><Edit /></el-icon>
+          继续下一章
+        </el-button>
+        <el-button @click="goTo('tasks')">
+          <el-icon><Timer /></el-icon>
+          查看任务
+        </el-button>
+      </div>
+    </el-card>
 
     <el-row :gutter="20">
       <!-- 概览卡片 -->
@@ -113,7 +150,7 @@
     <!-- 项目进度 -->
     <el-card class="section-card" header="项目进度" shadow="never">
       <div class="progress-info">
-        <span>目标: {{ formatNumber(projectStore.currentProject?.target_words || 0) }} 字</span>
+        <span>目标: {{ formatNumber(project?.target_words || projectStore.currentProject?.target_words || 0) }} 字</span>
         <span>已完成: {{ formatNumber(stats.totalWords) }} 字</span>
       </div>
       <el-progress
@@ -132,7 +169,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useProjectStore } from '@/stores/project'
-import { chapterApi, characterApi } from '@/api'
+import { blueprintApi, chapterApi, characterApi, projectApi } from '@/api'
 
 const router = useRouter()
 const route = useRoute()
@@ -140,21 +177,28 @@ const projectStore = useProjectStore()
 const projectId = route.params.projectId as string
 
 const loading = ref(false)
+const startingBlueprint = ref(false)
+const continuing = ref(false)
+const project = ref<any>(null)
+const bookPrompt = ref('')
 const recentChapters = ref<any[]>([])
 const stats = ref({ chapters: 0, approved: 0, totalWords: 0, characters: 0 })
 
 const progressPercent = computed(() => {
-  const target = projectStore.currentProject?.target_words || 1
+  const target = project.value?.target_words || projectStore.currentProject?.target_words || 1
   return Math.min(100, Math.round((stats.value.totalWords / target) * 100))
 })
 
 onMounted(async () => {
   loading.value = true
   try {
-    const [chaptersRes, charsRes] = await Promise.all([
+    const [projectRes, chaptersRes, charsRes] = await Promise.all([
+      projectApi.get(projectId),
       chapterApi.list(projectId),
       characterApi.list(projectId),
     ])
+    project.value = projectRes.data?.data
+    bookPrompt.value = project.value?.description || ''
     const chapters = chaptersRes.data.data || []
     recentChapters.value = chapters.slice(-10).reverse()
     stats.value.chapters = chapters.length
@@ -173,6 +217,7 @@ function goTo(page: string) {
 }
 
 async function continueWrite() {
+  continuing.value = true
   try {
     await chapterApi.continueGenerate(projectId)
     ElMessage.success('章节生成任务已创建，请在任务队列查看进度')
@@ -183,6 +228,38 @@ async function continueWrite() {
     if (code === 'WF_001') {
       goTo('blueprint')
     }
+  } finally {
+    continuing.value = false
+  }
+}
+
+async function startBlueprintFromPrompt() {
+  if (!bookPrompt.value.trim()) {
+    ElMessage.warning('请先写一段开书 prompt')
+    return
+  }
+  startingBlueprint.value = true
+  try {
+    await blueprintApi.generate(projectId, {
+      idea: bookPrompt.value.trim(),
+      genre: project.value?.genre,
+    })
+    ElMessage.success('整书蓝图任务已创建')
+    goTo('blueprint')
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '蓝图任务创建失败')
+  } finally {
+    startingBlueprint.value = false
+  }
+}
+
+async function changeProjectState(action: 'start' | 'pause' | 'resume' | 'terminate' | 'reset') {
+  try {
+    const res = await projectApi.state(projectId, action)
+    if (project.value) project.value.status = res.data?.project_status || project.value.status
+    ElMessage.success('项目状态已更新')
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '状态更新失败')
   }
 }
 
@@ -229,6 +306,29 @@ function statusText(status: string) {
   }
   return map[status] || status
 }
+
+function projectStatusText(status?: string) {
+  const map: Record<string, string> = {
+    draft: '草稿',
+    active: '进行中',
+    blueprint_generated: '蓝图已生成',
+    paused: '已暂停',
+    terminated: '已终止',
+    completed: '已完成',
+  }
+  return map[status || ''] || status || '未知状态'
+}
+
+function projectStatusType(status?: string) {
+  const map: Record<string, string> = {
+    active: 'success',
+    blueprint_generated: 'success',
+    paused: 'warning',
+    terminated: 'danger',
+    completed: 'success',
+  }
+  return (map[status || ''] || 'info') as any
+}
 </script>
 
 <style scoped>
@@ -239,4 +339,8 @@ function statusText(status: string) {
 .section-card { background: var(--nb-card-bg); border: 1px solid var(--nb-card-border); margin-bottom: 20px; }
 .quick-btn { width: 100%; height: 60px; font-size: 15px; }
 .progress-info { display: flex; justify-content: space-between; margin-bottom: 12px; color: #999; }
+.state-actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.flow-card { margin-bottom: 20px; }
+.flow-header { display: flex; align-items: center; justify-content: space-between; }
+.flow-actions { display: flex; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
 </style>

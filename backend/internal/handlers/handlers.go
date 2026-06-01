@@ -147,9 +147,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 	api.GET("/projects/:id", h.GetProject)
 	api.PUT("/projects/:id", h.UpdateProject)
 	api.DELETE("/projects/:id", h.DeleteProject)
+	api.POST("/projects/:id/state/:action", h.UpdateProjectState)
 
 	api.POST("/projects/:id/blueprint/generate", h.GenerateBlueprint)
 	api.GET("/projects/:id/blueprint", h.GetBlueprint)
+	api.GET("/projects/:id/blueprint/template", h.ExportBlueprintTemplate)
 	api.GET("/projects/:id/blueprint/export", h.ExportBlueprint)
 	api.POST("/projects/:id/blueprint/import", h.ImportBlueprint)
 	api.POST("/projects/:id/blueprint/generate-chapter-outlines", h.GenerateChapterOutlines)
@@ -189,6 +191,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 	api.POST("/volumes/:id/reject", h.RejectVolume)
 
 	api.GET("/projects/:id/chapters", h.ListChapters)
+	api.GET("/projects/:id/chapters/export", h.ExportChaptersJSON)
+	api.POST("/projects/:id/chapters/import", h.ImportChaptersJSON)
 	api.POST("/projects/:id/chapters/generate", h.GenerateChapter)
 	api.POST("/projects/:id/chapters/continue", h.ContinueGenerate)
 	api.GET("/chapters/:id", h.GetChapter)
@@ -288,9 +292,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 	api.DELETE("/glossary/:id", h.DeleteGlossaryTerm)
 
 	// Task Queue
+	api.GET("/tasks", h.ListTasks)
 	api.GET("/projects/:id/tasks", h.ListTasks)
 	api.POST("/tasks", h.EnqueueTask)
 	api.GET("/tasks/:id", h.GetTask)
+	api.POST("/tasks/:id/pause", h.PauseTask)
+	api.POST("/tasks/:id/resume", h.ResumeTask)
 	api.POST("/tasks/:id/cancel", h.CancelTask)
 	api.POST("/tasks/:id/retry", h.RetryTask)
 

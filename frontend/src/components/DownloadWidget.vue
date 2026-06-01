@@ -119,12 +119,14 @@ function toggle() {
 
 function statusLabel(status: DownloadStatus): string {
   if (status === 'downloading') return '下载中'
+  if (status === 'paused') return '已暂停'
   if (status === 'completed') return '已完成'
   return '失败'
 }
 
-function statusTagType(status: DownloadStatus): '' | 'success' | 'danger' | 'info' {
+function statusTagType(status: DownloadStatus): '' | 'success' | 'danger' | 'info' | 'warning' {
   if (status === 'downloading') return 'info'
+  if (status === 'paused') return 'warning'
   if (status === 'completed') return 'success'
   return 'danger'
 }

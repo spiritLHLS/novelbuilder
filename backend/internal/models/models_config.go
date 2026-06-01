@@ -127,7 +127,7 @@ type TaskQueueItem struct {
 	ProjectID    *string         `json:"project_id"`
 	TaskType     string          `json:"task_type"`
 	Payload      json.RawMessage `json:"payload"`
-	Status       string          `json:"status"` // pending|running|done|failed|cancelled
+	Status       string          `json:"status"` // pending|running|paused|done|failed|cancelled
 	Priority     int             `json:"priority"`
 	Attempts     int             `json:"attempts"`
 	MaxAttempts  int             `json:"max_attempts"`

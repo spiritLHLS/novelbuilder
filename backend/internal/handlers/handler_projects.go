@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,6 +73,117 @@ func (h *Handler) DeleteProject(c *gin.Context) {
 	c.JSON(204, nil)
 }
 
+func (h *Handler) UpdateProjectState(c *gin.Context) {
+	projectID := c.Param("id")
+	action := c.Param("action")
+	if action == "" {
+		var req models.ProjectStateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		action = req.Action
+	}
+
+	var (
+		status       string
+		affected     int64
+		taskErr      error
+		responseVerb string
+	)
+	switch action {
+	case "start", "resume", "continue":
+		status = "active"
+		affected, taskErr = h.taskQueue.ResumeProject(c.Request.Context(), projectID)
+		h.syncProjectArtifactState(c.Request.Context(), projectID, "running")
+		responseVerb = "resumed"
+	case "pause":
+		status = "paused"
+		affected, taskErr = h.taskQueue.PauseProject(c.Request.Context(), projectID)
+		h.syncProjectArtifactState(c.Request.Context(), projectID, "paused")
+		responseVerb = "paused"
+	case "terminate", "cancel":
+		status = "terminated"
+		affected, taskErr = h.taskQueue.CancelProject(c.Request.Context(), projectID)
+		h.syncProjectArtifactState(c.Request.Context(), projectID, "cancelled")
+		responseVerb = "terminated"
+	case "reset":
+		status = "draft"
+		affected, taskErr = h.taskQueue.ResetProjectTasks(c.Request.Context(), projectID)
+		h.syncProjectArtifactState(c.Request.Context(), projectID, "reset")
+		responseVerb = "reset"
+	default:
+		c.JSON(400, gin.H{"error": "unsupported project state action"})
+		return
+	}
+	if taskErr != nil {
+		c.JSON(500, gin.H{"error": taskErr.Error()})
+		return
+	}
+	if err := h.projects.SetStatus(c.Request.Context(), projectID, status); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": responseVerb, "project_status": status, "affected_tasks": affected})
+}
+
+func (h *Handler) syncProjectArtifactState(ctx context.Context, projectID, state string) {
+	switch state {
+	case "paused":
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE book_blueprints SET status='paused', error_message='', updated_at=NOW()
+			 WHERE project_id=$1 AND status='generating'`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_materials SET fetch_status='paused', fetch_error=''
+			 WHERE project_id=$1 AND fetch_status='downloading'`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_materials SET status='paused'
+			 WHERE project_id=$1 AND status='analyzing'`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_analysis_jobs SET status='paused', updated_at=NOW()
+			 WHERE project_id=$1 AND status IN ('pending','running')`, projectID)
+	case "running":
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE book_blueprints SET status='generating', error_message='', updated_at=NOW()
+			 WHERE project_id=$1 AND status='paused'`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_materials SET fetch_status='downloading', fetch_error=''
+			 WHERE project_id=$1 AND fetch_status='paused'`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_materials SET status='analyzing'
+			 WHERE project_id=$1 AND status='paused'`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_analysis_jobs SET status='pending', error_message='', updated_at=NOW()
+			 WHERE project_id=$1 AND status='paused'`, projectID)
+	case "cancelled":
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE book_blueprints SET status='failed', error_message='project terminated', updated_at=NOW()
+			 WHERE project_id=$1 AND status IN ('generating','paused')`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_materials SET fetch_status='failed', fetch_error='project terminated'
+			 WHERE project_id=$1 AND fetch_status IN ('downloading','paused')`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_materials SET status='failed'
+			 WHERE project_id=$1 AND status IN ('analyzing','paused')`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_analysis_jobs SET status='cancelled', updated_at=NOW()
+			 WHERE project_id=$1 AND status IN ('pending','running','paused')`, projectID)
+	case "reset":
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE book_blueprints SET status='draft', error_message='reset requested', updated_at=NOW()
+			 WHERE project_id=$1 AND status IN ('generating','paused','failed')`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_materials SET fetch_status='failed', fetch_error='reset requested'
+			 WHERE project_id=$1 AND fetch_status IN ('downloading','paused')`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_materials SET status='failed'
+			 WHERE project_id=$1 AND status IN ('analyzing','paused')`, projectID)
+		_, _ = h.projects.DB().Exec(ctx,
+			`UPDATE reference_analysis_jobs SET status='cancelled', updated_at=NOW()
+			 WHERE project_id=$1 AND status IN ('pending','running','paused')`, projectID)
+	}
+}
+
 // ── Blueprint Workflow ────────────────────────────────────────────────────────
 
 func (h *Handler) GenerateBlueprint(c *gin.Context) {
@@ -80,13 +192,30 @@ func (h *Handler) GenerateBlueprint(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	bp, err := h.blueprints.Generate(c.Request.Context(), c.Param("id"), req)
+	projectID := c.Param("id")
+	bp, runID, err := h.blueprints.PrepareGenerate(c.Request.Context(), projectID, req)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	// 202: generation is running in the background; caller should poll GET blueprint.
-	c.JSON(202, gin.H{"data": bp})
+	payload, _ := json.Marshal(models.BlueprintGenerateTaskPayload{
+		Request:     req,
+		BlueprintID: bp.ID,
+		RunID:       runID,
+	})
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+		ProjectID:   projectID,
+		TaskType:    "blueprint_generate",
+		Payload:     payload,
+		Priority:    8,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	// 202: generation is tracked by task_queue; caller should poll blueprint/task status.
+	c.JSON(202, gin.H{"data": bp, "task_id": task.ID, "status": "queued"})
 }
 
 func (h *Handler) GetBlueprint(c *gin.Context) {
@@ -150,6 +279,15 @@ func (h *Handler) RejectBlueprint(c *gin.Context) {
 
 func (h *Handler) ExportBlueprint(c *gin.Context) {
 	export, err := h.blueprints.Export(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": export})
+}
+
+func (h *Handler) ExportBlueprintTemplate(c *gin.Context) {
+	export, err := h.blueprints.BlankTemplate(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

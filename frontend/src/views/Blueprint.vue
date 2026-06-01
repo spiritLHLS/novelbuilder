@@ -8,6 +8,9 @@
         </el-tag>
       </h1>
       <div style="display: flex; gap: 8px;">
+        <el-button type="info" plain @click="exportTemplate">
+          <el-icon><Download /></el-icon>导出空白模板
+        </el-button>
         <el-button v-if="currentBlueprint" type="success" plain @click="exportBlueprint">
           <el-icon><Download /></el-icon>导出蓝图
         </el-button>
@@ -35,6 +38,9 @@
           将蓝图JSON文件拖到此处，或<em>点击上传</em>
         </div>
       </el-upload>
+      <el-checkbox v-model="optimizeAfterImport" style="margin-top: 12px;">
+        导入后立即用 AI 优化整书蓝图
+      </el-checkbox>
       <template #footer>
         <el-button @click="showImportDialog = false">取消</el-button>
         <el-button type="primary" :loading="importing" @click="confirmImport">
@@ -547,6 +553,8 @@ async function pollBlueprintStatus() {
         generationError.value = bp.error_message || '未知错误'
         currentBlueprint.value = null
         ElMessage.error('蓝图生成失败')
+      } else if (bp.status === 'paused') {
+        ElMessage.warning('蓝图任务已暂停，可在任务总控中继续')
       } else {
         generatingStep.value = 4
         ElMessage.success('蓝图生成完成')
@@ -561,13 +569,14 @@ async function pollBlueprintStatus() {
 const blueprintStatusType = computed(() => {
   const map: Record<string, string> = {
     generating: 'info', draft: 'info', pending_review: 'warning', approved: 'success', rejected: 'danger', failed: 'danger',
+    paused: 'warning',
   }
   return (map[currentBlueprint.value?.status] || 'info') as any
 })
 
 const blueprintStatusLabel = computed(() => {
   const map: Record<string, string> = {
-    generating: '生成中', draft: '草稿', pending_review: '待审核', approved: '已批准', rejected: '已驳回', failed: '生成失败',
+    generating: '生成中', paused: '已暂停', draft: '草稿', pending_review: '待审核', approved: '已批准', rejected: '已驳回', failed: '生成失败',
   }
   return map[currentBlueprint.value?.status] || currentBlueprint.value?.status
 })
@@ -668,6 +677,9 @@ onMounted(async () => {
     // Show the error from the previous attempt and allow the user to retry.
     generationError.value = currentBlueprint.value.error_message || '蓝图生成失败，请重试'
     currentBlueprint.value = null
+  } else if (currentBlueprint.value?.status === 'paused') {
+    generating.value = false
+    generationError.value = '蓝图生成任务已暂停，请在任务总控中继续。'
   }
 })
 
@@ -734,10 +746,15 @@ const {
   showImportDialog,
   importing,
   importFileList,
+  optimizeAfterImport,
   exportBlueprint,
+  exportTemplate,
   handleImportFileChange,
   confirmImport,
-} = useBlueprintTransfer(projectId, fetchAll)
+} = useBlueprintTransfer(projectId, fetchAll, async () => {
+  genForm.value.idea = '请基于刚导入的蓝图模板和用户填写内容，优化整书资产包，补全缺失设定并保持原有意图。'
+  await doGenerate()
+})
 
 async function submitReview() {
   try {

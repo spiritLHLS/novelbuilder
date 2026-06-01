@@ -22,6 +22,7 @@
           </template>
           <div class="card-body">
             <el-tag :type="genreTagType(project.genre)" size="small">{{ project.genre }}</el-tag>
+            <el-tag size="small" style="margin-left: 6px">{{ project.language === 'en-US' ? 'English' : '中文' }}</el-tag>
             <p class="target-words">目标字数: {{ formatNumber(project.target_words) }}</p>
             <p class="target-words">单章字数: {{ formatNumber(project.chapter_words || 3000) }}</p>
             <p class="style-desc" v-if="project.description">
@@ -68,6 +69,9 @@
             <el-option label="其他" value="其他" />
           </el-select>
         </el-form-item>
+        <el-form-item label="写作语言">
+          <el-segmented v-model="form.language" :options="languageOptions" />
+        </el-form-item>
         <el-form-item label="目标字数">
           <el-input-number v-model="form.target_words" :min="10000" :max="10000000" :step="10000" />
         </el-form-item>
@@ -79,7 +83,7 @@
             v-model="form.description"
             type="textarea"
             :rows="3"
-            placeholder="一句话说明题材、主角、核心冲突"
+            placeholder="直接写开书 prompt：题材、主角、核心冲突、卖点、期望读者体验"
           />
         </el-form-item>
         <el-form-item label="风格描述">
@@ -89,6 +93,9 @@
             :rows="3"
             placeholder="描述期望的写作风格，如：类似天蚕土豆的热血玄幻风格"
           />
+        </el-form-item>
+        <el-form-item v-if="!editingProject" label="创建后">
+          <el-checkbox v-model="autoGenerateBlueprint">立即生成整书蓝图</el-checkbox>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -105,6 +112,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { blueprintApi } from '@/api'
 import { useProjectStore, type Project } from '@/stores/project'
 
 const router = useRouter()
@@ -113,10 +121,16 @@ const projectStore = useProjectStore()
 const showCreateDialog = ref(false)
 const editingProject = ref<Project | null>(null)
 const saving = ref(false)
+const autoGenerateBlueprint = ref(true)
+const languageOptions = [
+  { label: '中文', value: 'zh-CN' },
+  { label: 'English', value: 'en-US' },
+]
 
 const form = ref({
   title: '',
   genre: '玄幻',
+  language: 'zh-CN' as 'zh-CN' | 'en-US',
   description: '',
   target_words: 500000,
   chapter_words: 3000,
@@ -148,6 +162,7 @@ function editProject(project: Project) {
   form.value = {
     title: project.title,
     genre: project.genre,
+    language: project.language || 'zh-CN',
     description: project.description || '',
     target_words: project.target_words,
     chapter_words: project.chapter_words || 3000,
@@ -174,6 +189,14 @@ async function handleSave() {
     } else {
       const project = await projectStore.createProject(form.value)
       ElMessage.success('项目创建成功')
+      if (autoGenerateBlueprint.value && form.value.description.trim()) {
+        try {
+          await blueprintApi.generate(project.id, { idea: form.value.description, genre: form.value.genre })
+          ElMessage.success('整书蓝图任务已创建')
+        } catch (err: any) {
+          ElMessage.warning(err.response?.data?.error || '项目已创建，但蓝图任务启动失败')
+        }
+      }
       enterProject(project)
     }
     showCreateDialog.value = false
@@ -198,7 +221,8 @@ async function confirmDelete(project: Project) {
 
 function resetForm() {
   editingProject.value = null
-  form.value = { title: '', genre: '玄幻', description: '', target_words: 500000, chapter_words: 3000, style_description: '' }
+  form.value = { title: '', genre: '玄幻', language: 'zh-CN', description: '', target_words: 500000, chapter_words: 3000, style_description: '' }
+  autoGenerateBlueprint.value = true
 }
 
 function formatNumber(n: number) {
@@ -211,22 +235,22 @@ function formatDate(d: string) {
 
 function genreTagType(genre: string) {
   const map: Record<string, string> = {
-    '玄幻': '', '仙侠': 'success', '西幻': 'warning', '都市': 'info',
+    '玄幻': 'primary', '仙侠': 'success', '西幻': 'warning', '都市': 'info',
     '科幻': 'warning', '悬疑': 'danger',
   }
-  return (map[genre] || '') as any
+  return (map[genre] || 'info') as any
 }
 
 function statusTagType(status: string) {
   const map: Record<string, string> = {
-    draft: 'info', active: '', in_progress: '', completed: 'success',
+    draft: 'info', active: 'success', in_progress: 'success', paused: 'warning', terminated: 'danger', completed: 'success',
   }
   return (map[status] || 'info') as any
 }
 
 function statusLabel(status: string) {
   const map: Record<string, string> = {
-    draft: '草稿', active: '创作中', in_progress: '进行中', completed: '已完成',
+    draft: '草稿', active: '创作中', in_progress: '进行中', paused: '已暂停', terminated: '已终止', completed: '已完成',
   }
   return map[status] || status
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -72,6 +73,15 @@ func main() {
 	if err := database.AutoMigrate(context.Background(), db.GORM(), logger); err != nil {
 		logger.Fatal("failed to auto-migrate database schema", zap.Error(err))
 	}
+	taskWorkers := cfg.TaskQueue.Workers
+	if taskWorkers < 1 {
+		taskWorkers = 1
+	}
+	if strings.EqualFold(db.DriverName(), "sqlite") && taskWorkers > 1 {
+		logger.Info("sqlite runtime detected; using a single task worker to avoid write-lock contention",
+			zap.Int("configured_workers", taskWorkers))
+		taskWorkers = 1
+	}
 
 	// Initialize Redis
 	rdb, err := database.NewRedis(cfg.Redis, logger)
@@ -103,7 +113,7 @@ func main() {
 		"runtime.redis_enabled":   fmt.Sprintf("%t", rdb != nil),
 		"runtime.session_store":   sessionStore.Mode(),
 		"runtime.sidecar_url":     cfg.PythonSidecar.URL,
-		"runtime.task_workers":    fmt.Sprintf("%d", cfg.TaskQueue.Workers),
+		"runtime.task_workers":    fmt.Sprintf("%d", taskWorkers),
 	}); err != nil {
 		logger.Fatal("failed to sync runtime settings", zap.Error(err))
 	}
@@ -134,7 +144,7 @@ func main() {
 	agentReviewService := services.NewAgentReviewService(db, aiGateway, logger)
 	exportService := services.NewExportService(db, logger)
 	promptPresetService := services.NewPromptPresetService(db, logger)
-	taskQueueService := services.NewTaskQueueService(db, cfg.TaskQueue.Workers, cfg.TaskQueue.MaxRetries, logger)
+	taskQueueService := services.NewTaskQueueService(db, taskWorkers, cfg.TaskQueue.MaxRetries, logger)
 	resourceLedgerService := services.NewResourceLedgerService(db, logger)
 
 	// Sidecar proxy service (agent / graph / vector)
@@ -300,6 +310,24 @@ func main() {
 		return chapterService.AutoApprove(ctx, chapter.ID, "auto-approved after passing generation quality gate")
 	}
 
+	taskQueueService.RegisterHandler("blueprint_generate", func(ctx context.Context, task models.TaskQueueItem) error {
+		if task.ProjectID == nil || *task.ProjectID == "" {
+			return fmt.Errorf("blueprint_generate requires project_id")
+		}
+		var payload models.BlueprintGenerateTaskPayload
+		if len(task.Payload) > 0 {
+			if err := json.Unmarshal(task.Payload, &payload); err != nil {
+				return fmt.Errorf("blueprint_generate: parse payload: %w", err)
+			}
+		}
+		if payload.BlueprintID == "" || payload.RunID == "" {
+			return fmt.Errorf("blueprint_generate: missing blueprint_id or run_id")
+		}
+		runCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		return blueprintService.RunGenerateTask(runCtx, *task.ProjectID, payload.BlueprintID, payload.RunID, payload.Request)
+	})
+
 	taskQueueService.RegisterHandler("chapter_generate", func(ctx context.Context, task models.TaskQueueItem) error {
 		if task.ProjectID == nil || *task.ProjectID == "" {
 			return fmt.Errorf("chapter_generate requires project_id")
@@ -423,6 +451,69 @@ func main() {
 		}
 
 		return importService.Process(ctx, payload.ImportID, llmCfg)
+	})
+
+	taskQueueService.RegisterHandler("reference_fetch_import", func(ctx context.Context, task models.TaskQueueItem) error {
+		var payload struct {
+			RefID      string   `json:"ref_id"`
+			Site       string   `json:"site"`
+			BookID     string   `json:"book_id"`
+			Title      string   `json:"title"`
+			Author     string   `json:"author"`
+			ChapterIDs []string `json:"chapter_ids"`
+		}
+		if len(task.Payload) > 0 {
+			if err := json.Unmarshal(task.Payload, &payload); err != nil {
+				return fmt.Errorf("reference_fetch_import: parse payload: %w", err)
+			}
+		}
+		if payload.RefID == "" || payload.Site == "" || payload.BookID == "" || len(payload.ChapterIDs) == 0 {
+			return fmt.Errorf("reference_fetch_import: missing ref/site/book/chapters")
+		}
+		return h.RunReferenceDownload(ctx, payload.RefID, cfg.PythonSidecar.URL, payload.Site, payload.BookID, payload.Title, payload.Author, payload.ChapterIDs)
+	})
+
+	taskQueueService.RegisterHandler("reference_analyze", func(ctx context.Context, task models.TaskQueueItem) error {
+		var payload struct {
+			RefID string `json:"ref_id"`
+		}
+		if len(task.Payload) > 0 {
+			if err := json.Unmarshal(task.Payload, &payload); err != nil {
+				return fmt.Errorf("reference_analyze: parse payload: %w", err)
+			}
+		}
+		if payload.RefID == "" {
+			return fmt.Errorf("reference_analyze: missing ref_id")
+		}
+		return h.RunReferenceAnalyze(ctx, payload.RefID)
+	})
+
+	taskQueueService.RegisterHandler("rag_rebuild", func(ctx context.Context, task models.TaskQueueItem) error {
+		if task.ProjectID == nil || *task.ProjectID == "" {
+			return fmt.Errorf("rag_rebuild requires project_id")
+		}
+		_, err := referenceService.RebuildProject(ctx, *task.ProjectID)
+		return err
+	})
+
+	taskQueueService.RegisterHandler("graph_sync", func(ctx context.Context, task models.TaskQueueItem) error {
+		if task.ProjectID == nil || *task.ProjectID == "" {
+			return fmt.Errorf("graph_sync requires project_id")
+		}
+		return sidecarService.SyncProjectGraph(ctx, *task.ProjectID)
+	})
+
+	taskQueueService.RegisterHandler("vector_rebuild", func(ctx context.Context, task models.TaskQueueItem) error {
+		if task.ProjectID == nil || *task.ProjectID == "" {
+			return fmt.Errorf("vector_rebuild requires project_id")
+		}
+		var payload models.VectorRebuildRequest
+		if len(task.Payload) > 0 {
+			if err := json.Unmarshal(task.Payload, &payload); err != nil {
+				return fmt.Errorf("vector_rebuild: parse payload: %w", err)
+			}
+		}
+		return sidecarService.RebuildVectorIndex(ctx, *task.ProjectID, payload.Items)
 	})
 
 	// generate_chapter_outlines: enqueued by GenerateChapterOutlines handler.

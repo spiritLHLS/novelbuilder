@@ -122,6 +122,11 @@ const router = createRouter({
       component: () => import('@/views/SystemLogs.vue'),
     },
     {
+      path: '/tasks',
+      name: 'global-task-queue',
+      component: () => import('@/views/TaskQueue.vue'),
+    },
+    {
       path: '/projects/:projectId/glossary',
       name: 'glossary',
       component: () => import('@/views/Glossary.vue'),

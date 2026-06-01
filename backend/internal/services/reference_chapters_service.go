@@ -292,11 +292,14 @@ func (s *ReferenceService) ExportBundle(ctx context.Context, refIDs []string) (*
 		if err := matRows.Scan(
 			&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
 			&ref.SourceURL,
-			&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
-			&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
-			&ref.SampleTexts,
+			rawJSONScanner{dst: &ref.StyleLayer},
+			rawJSONScanner{dst: &ref.NarrativeLayer},
+			rawJSONScanner{dst: &ref.AtmosphereLayer},
+			rawJSONScanner{dst: &ref.MigrationConfig},
+			&ref.StyleCollection, &ref.Status, &ref.CreatedAt,
+			rawJSONScanner{dst: &ref.SampleTexts},
 			&ref.FetchStatus, &ref.FetchDone, &ref.FetchTotal,
-			&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, &ref.FetchChapterIDs,
+			&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, rawJSONScanner{dst: &ref.FetchChapterIDs},
 		); err != nil {
 			return nil, err
 		}
@@ -363,8 +366,11 @@ func (s *ReferenceService) ExportBundle(ctx context.Context, refIDs []string) (*
 			var refID string
 			var ae models.ReferenceAnalysisExport
 			if scanErr := anaRows.Scan(&refID,
-				&ae.ExtractedCharacters, &ae.ExtractedWorld, &ae.ExtractedOutline,
-				&ae.ExtractedGlossary, &ae.ExtractedForeshadowings,
+				rawJSONScanner{dst: &ae.ExtractedCharacters},
+				rawJSONScanner{dst: &ae.ExtractedWorld},
+				rawJSONScanner{dst: &ae.ExtractedOutline},
+				rawJSONScanner{dst: &ae.ExtractedGlossary},
+				rawJSONScanner{dst: &ae.ExtractedForeshadowings},
 			); scanErr == nil {
 				cp := ae
 				analysisMap[refID] = &cp
@@ -516,11 +522,14 @@ func (s *ReferenceService) ListDownloadingRefs(ctx context.Context, projectID st
 		if err := rows.Scan(
 			&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre,
 			&ref.FilePath, &ref.SourceURL,
-			&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
-			&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
-			&ref.SampleTexts,
+			rawJSONScanner{dst: &ref.StyleLayer},
+			rawJSONScanner{dst: &ref.NarrativeLayer},
+			rawJSONScanner{dst: &ref.AtmosphereLayer},
+			rawJSONScanner{dst: &ref.MigrationConfig},
+			&ref.StyleCollection, &ref.Status, &ref.CreatedAt,
+			rawJSONScanner{dst: &ref.SampleTexts},
 			&ref.FetchStatus, &ref.FetchDone, &ref.FetchTotal,
-			&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, &ref.FetchChapterIDs,
+			&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, rawJSONScanner{dst: &ref.FetchChapterIDs},
 		); err != nil {
 			return nil, err
 		}

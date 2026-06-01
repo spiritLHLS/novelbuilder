@@ -18,19 +18,19 @@
             <el-icon><Folder /></el-icon><span>项目管理</span>
           </a>
           <template v-if="currentProjectId">
-            <div class="nav-group-title">创作工坊</div>
+            <div class="nav-group-title">写书流程</div>
             <a v-for="item in workshopItems" :key="item.path" class="nav-item"
               :class="{ active: route.path === item.path }"
               @click.prevent="router.push(item.path)" href="#">
               <el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span>
             </a>
-            <div class="nav-group-title">生成管线</div>
+            <div class="nav-group-title">资产与知识</div>
             <a v-for="item in pipelineItems" :key="item.path" class="nav-item"
               :class="{ active: route.path === item.path }"
               @click.prevent="router.push(item.path)" href="#">
               <el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span>
             </a>
-            <div class="nav-group-title">创作工具</div>
+            <div class="nav-group-title">质量与发布</div>
             <a v-for="item in toolItems" :key="item.path" class="nav-item"
               :class="{ active: route.path === item.path }"
               @click.prevent="router.push(item.path)" href="#">
@@ -123,47 +123,36 @@ function openGuide() {
 const workshopItems = computed(() => {
   const pid = currentProjectId.value
   return [
-    { path: `/projects/${pid}/studio`, icon: 'Edit', label: '创作工作台' },
-    { path: `/projects/${pid}/references`, icon: 'Reading', label: '参考书管理' },
-    { path: `/projects/${pid}/rag`, icon: 'Management', label: '知识库管理' },
-    { path: `/projects/${pid}/world`, icon: 'Place', label: '世界观设定' },
-    { path: `/projects/${pid}/characters`, icon: 'User', label: '角色管理' },
-    { path: `/projects/${pid}/outline`, icon: 'List', label: '大纲编辑' },
-    { path: `/projects/${pid}/foreshadowing`, icon: 'Connection', label: '伏笔管理' },
-    { path: `/projects/${pid}/glossary`, icon: 'Collection', label: '术语表' },
-    { path: `/projects/${pid}/resources`, icon: 'Coin', label: '资源账本' },
-    { path: `/projects/${pid}/analytics`, icon: 'TrendCharts', label: '数据分析' },
-    { path: `/projects/${pid}/graph-memory`, icon: 'Share', label: '图谱记忆' },
+    { path: `/projects/${pid}/studio`, icon: 'Edit', label: '创作中枢' },
+    { path: `/projects/${pid}/blueprint`, icon: 'Document', label: '蓝图规划' },
+    { path: `/projects/${pid}/chapters`, icon: 'Notebook', label: '章节生成' },
+    { path: `/projects/${pid}/workflow`, icon: 'SetUp', label: '流程状态' },
+    { path: `/projects/${pid}/tasks`, icon: 'Timer', label: '任务总控' },
   ]
 })
 
 const pipelineItems = computed(() => {
   const pid = currentProjectId.value
   return [
-    { path: `/projects/${pid}/blueprint`, icon: 'Document', label: '整书蓝图' },
-    { path: `/projects/${pid}/chapters`, icon: 'Notebook', label: '章节管理' },
-    { path: `/projects/${pid}/workflow`, icon: 'SetUp', label: '工作流控制台' },
-    { path: `/projects/${pid}/quality`, icon: 'DataAnalysis', label: '质量检测' },
-    { path: `/projects/${pid}/agent-review`, icon: 'ChatDotRound', label: '多智能体评审' },
-    { path: `/projects/${pid}/propagation`, icon: 'Connection', label: '变更传播' },
-    { path: `/projects/${pid}/tasks`, icon: 'Timer', label: '任务队列' },
+    { path: `/projects/${pid}/references`, icon: 'Reading', label: '参考书与导入' },
+    { path: `/projects/${pid}/rag`, icon: 'Management', label: 'RAG 知识库' },
+    { path: `/projects/${pid}/world`, icon: 'Place', label: '世界/角色/大纲' },
+    { path: `/projects/${pid}/glossary`, icon: 'Collection', label: '术语与资源' },
   ]
 })
 
 const toolItems = computed(() => {
   const pid = currentProjectId.value
   return [
-    { path: `/projects/${pid}/creative-brief`, icon: 'DocumentAdd', label: '创作简报' },
-    { path: `/projects/${pid}/import-chapters`, icon: 'Upload', label: '导入续写' },
-    { path: `/projects/${pid}/subplots`, icon: 'Menu', label: '子情节管理' },
-    { path: `/projects/${pid}/emotional-arcs`, icon: 'DataLine', label: '情绪弧线' },
-    { path: `/projects/${pid}/character-matrix`, icon: 'Grid', label: '角色关系矩阵' },
-    { path: `/projects/${pid}/radar`, icon: 'Aim', label: '雷达分析' },
-    { path: `/projects/${pid}/fanqie`, icon: 'Promotion', label: '番茄上传' },
+    { path: `/projects/${pid}/quality`, icon: 'DataAnalysis', label: '质量审稿' },
+    { path: `/projects/${pid}/agent-review`, icon: 'ChatDotRound', label: '智能体评审' },
+    { path: `/projects/${pid}/analytics`, icon: 'TrendCharts', label: '统计分析' },
+    { path: `/projects/${pid}/fanqie`, icon: 'Promotion', label: '发布上传' },
   ]
 })
 
 const systemItems = [
+  { path: '/tasks', icon: 'Timer', label: '全局任务' },
   { path: '/settings/llm', icon: 'Setting', label: 'AI 模型配置' },
   { path: '/settings/agent-routing', icon: 'Share', label: '多模型路由' },
   { path: '/settings/prompt-presets', icon: 'DocumentCopy', label: '提示词预设' },

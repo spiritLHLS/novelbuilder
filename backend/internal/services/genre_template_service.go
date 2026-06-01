@@ -85,9 +85,9 @@ func (s *GenreTemplateService) List(ctx context.Context) ([]models.GenreTemplate
 	var out []models.GenreTemplate
 	for rows.Next() {
 		var t models.GenreTemplate
-		var extraJSON []byte
+		var extraJSON json.RawMessage
 		if err := rows.Scan(&t.ID, &t.Genre, &t.RulesContent, &t.LanguageConstraints, &t.RhythmRules,
-			&extraJSON, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			rawJSONScanner{dst: &extraJSON}, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		t.AuditDimensionsExtra = extraJSON
@@ -98,12 +98,12 @@ func (s *GenreTemplateService) List(ctx context.Context) ([]models.GenreTemplate
 
 func (s *GenreTemplateService) Get(ctx context.Context, genre string) (*models.GenreTemplate, error) {
 	var t models.GenreTemplate
-	var extraJSON []byte
+	var extraJSON json.RawMessage
 	err := s.db.QueryRow(ctx,
 		`SELECT id, genre, rules_content, language_constraints, rhythm_rules, audit_dimensions_extra, created_at, updated_at
 		 FROM genre_templates WHERE genre = $1`, genre).
 		Scan(&t.ID, &t.Genre, &t.RulesContent, &t.LanguageConstraints, &t.RhythmRules,
-			&extraJSON, &t.CreatedAt, &t.UpdatedAt)
+			rawJSONScanner{dst: &extraJSON}, &t.CreatedAt, &t.UpdatedAt)
 	if err == database.ErrNoRows {
 		return nil, nil
 	}
@@ -121,7 +121,7 @@ func (s *GenreTemplateService) Upsert(ctx context.Context, genre string, req mod
 	}
 
 	var t models.GenreTemplate
-	var rawExtra []byte
+	var rawExtra json.RawMessage
 	now := time.Now()
 	err := s.db.QueryRow(ctx,
 		`INSERT INTO genre_templates (genre, rules_content, language_constraints, rhythm_rules, audit_dimensions_extra, created_at, updated_at)
@@ -135,7 +135,7 @@ func (s *GenreTemplateService) Upsert(ctx context.Context, genre string, req mod
 		 RETURNING id, genre, rules_content, language_constraints, rhythm_rules, audit_dimensions_extra, created_at, updated_at`,
 		genre, req.RulesContent, req.LanguageConstraints, req.RhythmRules, extraJSON, now).
 		Scan(&t.ID, &t.Genre, &t.RulesContent, &t.LanguageConstraints, &t.RhythmRules,
-			&rawExtra, &t.CreatedAt, &t.UpdatedAt)
+			rawJSONScanner{dst: &rawExtra}, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

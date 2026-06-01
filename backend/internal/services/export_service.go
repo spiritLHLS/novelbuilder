@@ -136,10 +136,14 @@ func (s *ExportService) loadApprovedChapters(ctx context.Context, projectID stri
 // ExportEPUB returns the full novel as a valid EPUB 3 byte slice.
 // Each approved chapter becomes a separate XHTML document inside the archive.
 func (s *ExportService) ExportEPUB(ctx context.Context, projectID string) ([]byte, error) {
-	var title, genre string
+	var title, genre, language string
 	if err := s.db.QueryRow(ctx,
-		`SELECT title, COALESCE(genre,'') FROM projects WHERE id = $1`, projectID).Scan(&title, &genre); err != nil {
+		`SELECT title, COALESCE(genre,''), COALESCE(language,'zh-CN') FROM projects WHERE id = $1`, projectID).Scan(&title, &genre, &language); err != nil {
 		return nil, fmt.Errorf("project not found: %w", err)
+	}
+	epubLanguage := "zh"
+	if strings.HasPrefix(strings.ToLower(language), "en") {
+		epubLanguage = "en"
 	}
 
 	chapters, err := s.loadApprovedChapters(ctx, projectID)
@@ -180,7 +184,7 @@ func (s *ExportService) ExportEPUB(ctx context.Context, projectID string) ([]byt
 <package version="3.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="uid">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>%s</dc:title>
-    <dc:language>zh</dc:language>
+    <dc:language>%s</dc:language>
     <dc:identifier id="uid">urn:uuid:%s</dc:identifier>
     %s
   </metadata>
@@ -191,6 +195,7 @@ func (s *ExportService) ExportEPUB(ctx context.Context, projectID string) ([]byt
 %s  </spine>
 </package>`,
 		html.EscapeString(title),
+		epubLanguage,
 		projectID,
 		func() string {
 			if genre != "" {

@@ -13,6 +13,17 @@ import (
 	"go.uber.org/zap"
 )
 
+var agentStreamHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+	},
+}
+
 // ── Agent Review Handlers ─────────────────────────────────────────────────────
 
 func (h *Handler) StartAgentReview(c *gin.Context) {
@@ -197,15 +208,7 @@ func (h *Handler) AgentSessionStream(c *gin.Context) {
 		return
 	}
 
-	// Use a transport with a dial timeout so a non-responsive sidecar doesn't hang
-	// indefinitely.  No overall client timeout is set because SSE streams are long-lived;
-	// the request context (cancelled on client disconnect) handles termination.
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-		},
-	}
-	resp, err := client.Do(req)
+	resp, err := agentStreamHTTPClient.Do(req)
 	if err != nil {
 		c.JSON(502, gin.H{"error": "sidecar stream unavailable"})
 		return
@@ -269,11 +272,18 @@ func (h *Handler) UpsertGraphEntity(c *gin.Context) {
 }
 
 func (h *Handler) SyncProjectGraph(c *gin.Context) {
-	if err := h.sidecar.SyncProjectGraph(c.Request.Context(), c.Param("id")); err != nil {
-		c.JSON(502, gin.H{"error": err.Error()})
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+		ProjectID:   c.Param("id"),
+		TaskType:    "graph_sync",
+		Payload:     json.RawMessage(`{}`),
+		Priority:    3,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"ok": true, "message": "graph sync triggered"})
+	c.JSON(202, gin.H{"ok": true, "task_id": task.ID, "message": "graph sync queued"})
 }
 
 // ── Vector Store (Qdrant) Handlers ───────────────────────────────────────────
@@ -291,11 +301,19 @@ func (h *Handler) RebuildVectorIndex(c *gin.Context) {
 	var req models.VectorRebuildRequest
 	// Body is optional — ignore bind errors (empty body is valid)
 	_ = c.ShouldBindJSON(&req)
-	if err := h.sidecar.RebuildVectorIndex(c.Request.Context(), c.Param("id"), req.Items); err != nil {
-		c.JSON(502, gin.H{"error": err.Error()})
+	payload, _ := json.Marshal(req)
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+		ProjectID:   c.Param("id"),
+		TaskType:    "vector_rebuild",
+		Payload:     payload,
+		Priority:    3,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"ok": true})
+	c.JSON(202, gin.H{"ok": true, "task_id": task.ID})
 }
 
 func (h *Handler) SearchVector(c *gin.Context) {

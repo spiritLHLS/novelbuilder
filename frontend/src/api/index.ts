@@ -52,6 +52,8 @@ export const projectApi = {
   create: (data: any) => api.post('/projects', data),
   update: (id: string, data: any) => api.put(`/projects/${id}`, data),
   delete: (id: string) => api.delete(`/projects/${id}`),
+  state: (id: string, action: 'start' | 'pause' | 'resume' | 'terminate' | 'reset') =>
+    api.post(`/projects/${id}/state/${action}`),
   setContinuationMode: (id: string, refId: string, startChapter?: number) =>
     api.put(`/projects/${id}/continuation-mode`, { ref_id: refId, start_chapter: startChapter ?? 0 }),
 }
@@ -65,6 +67,7 @@ export const blueprintApi = {
   approve: (_projectId: string, id: string, comment?: string) => api.post(`/blueprints/${id}/approve`, { review_comment: comment }),
   reject: (_projectId: string, id: string, comment?: string) => api.post(`/blueprints/${id}/reject`, { review_comment: comment }),
   export: (projectId: string) => api.get(`/projects/${projectId}/blueprint/export`),
+  template: (projectId: string) => api.get(`/projects/${projectId}/blueprint/template`),
   import: (projectId: string, data: any) => api.post(`/projects/${projectId}/blueprint/import`, data),
   generateChapterOutlines: (projectId: string, volumeNum: number, batchSize: number = 10, startChapter: number = 0) =>
     api.post(`/projects/${projectId}/blueprint/generate-chapter-outlines`, { volume_num: volumeNum, batch_size: batchSize, start_chapter: startChapter }),
@@ -119,6 +122,8 @@ export const volumeApi = {
 // Chapters
 export const chapterApi = {
   list: (projectId: string) => api.get(`/projects/${projectId}/chapters`),
+  exportJson: (projectId: string) => api.get(`/projects/${projectId}/chapters/export`),
+  importJson: (projectId: string, data: any) => api.post(`/projects/${projectId}/chapters/import`, data),
   get: (_projectId: string, id: string) => api.get(`/chapters/${id}`),
   update: (_projectId: string, id: string, data: any) => api.put(`/chapters/${id}`, data),
   delete: (_projectId: string, id: string) => api.delete(`/chapters/${id}`),
@@ -513,10 +518,12 @@ export const glossaryApi = {
 
 // Task Queue
 export const taskApi = {
-  list: (projectId: string, params?: { page?: number; page_size?: number; status?: string; type?: string }) => 
-    api.get(`/projects/${projectId}/tasks`, { params }),
+  list: (projectId?: string, params?: { page?: number; page_size?: number; status?: string; type?: string }) =>
+    api.get(projectId ? `/projects/${projectId}/tasks` : '/tasks', { params }),
   get: (id: string) => api.get(`/tasks/${id}`),
   enqueue: (data: any) => api.post('/tasks', data),
+  pause: (id: string) => api.post(`/tasks/${id}/pause`),
+  resume: (id: string) => api.post(`/tasks/${id}/resume`),
   cancel: (id: string) => api.post(`/tasks/${id}/cancel`),
   retry: (id: string) => api.post(`/tasks/${id}/retry`),
 }

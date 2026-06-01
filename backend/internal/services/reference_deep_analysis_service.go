@@ -313,8 +313,11 @@ func (s *ReferenceDeepAnalysisService) GetJob(ctx context.Context, jobID string)
 		 FROM reference_analysis_jobs WHERE id = $1`, jobID).Scan(
 		&job.ID, &job.RefID, &job.ProjectID, &job.Status,
 		&job.TotalChunks, &job.DoneChunks, &job.ErrorMessage,
-		&job.ExtractedCharacters, &job.ExtractedWorld, &job.ExtractedOutline,
-		&job.ExtractedGlossary, &job.ExtractedForeshadowings,
+		rawJSONScanner{dst: &job.ExtractedCharacters},
+		rawJSONScanner{dst: &job.ExtractedWorld},
+		rawJSONScanner{dst: &job.ExtractedOutline},
+		rawJSONScanner{dst: &job.ExtractedGlossary},
+		rawJSONScanner{dst: &job.ExtractedForeshadowings},
 		&job.CreatedAt, &job.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get analysis job: %w", err)
@@ -338,8 +341,11 @@ func (s *ReferenceDeepAnalysisService) GetJobByRef(ctx context.Context, refID st
 		 ORDER BY created_at DESC LIMIT 1`, refID).Scan(
 		&job.ID, &job.RefID, &job.ProjectID, &job.Status,
 		&job.TotalChunks, &job.DoneChunks, &job.ErrorMessage,
-		&job.ExtractedCharacters, &job.ExtractedWorld, &job.ExtractedOutline,
-		&job.ExtractedGlossary, &job.ExtractedForeshadowings,
+		rawJSONScanner{dst: &job.ExtractedCharacters},
+		rawJSONScanner{dst: &job.ExtractedWorld},
+		rawJSONScanner{dst: &job.ExtractedOutline},
+		rawJSONScanner{dst: &job.ExtractedGlossary},
+		rawJSONScanner{dst: &job.ExtractedForeshadowings},
 		&job.CreatedAt, &job.UpdatedAt)
 	if err != nil {
 		return nil, nil // no job yet is not an error

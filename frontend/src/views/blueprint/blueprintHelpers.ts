@@ -111,11 +111,12 @@ async function readBlueprintImportFile(file: File) {
   return JSON.parse(content)
 }
 
-export function useBlueprintTransfer(projectId: string, fetchAll: () => Promise<void>) {
+export function useBlueprintTransfer(projectId: string, fetchAll: () => Promise<void>, afterImportOptimize?: () => Promise<void>) {
   const showImportDialog = ref(false)
   const importing = ref(false)
   const importFileList = ref<UploadFile[]>([])
   const importFileContent = ref<unknown>(null)
+  const optimizeAfterImport = ref(false)
 
   async function exportBlueprint() {
     try {
@@ -129,6 +130,21 @@ export function useBlueprintTransfer(projectId: string, fetchAll: () => Promise<
       ElMessage.success('蓝图已导出')
     } catch {
       ElMessage.error('导出失败')
+    }
+  }
+
+  async function exportTemplate() {
+    try {
+      const res = await blueprintApi.template(projectId)
+      const data = res?.data?.data
+      if (!data) {
+        ElMessage.error('模板导出失败：无数据')
+        return
+      }
+      downloadJsonFile(data, `blueprint-template-${projectId}.json`)
+      ElMessage.success('空白蓝图模板已导出')
+    } catch {
+      ElMessage.error('模板导出失败')
     }
   }
 
@@ -157,6 +173,9 @@ export function useBlueprintTransfer(projectId: string, fetchAll: () => Promise<
       importFileList.value = []
       importFileContent.value = null
       await fetchAll()
+      if (optimizeAfterImport.value && afterImportOptimize) {
+        await afterImportOptimize()
+      }
     } catch {
       ElMessage.error('导入失败')
     } finally {
@@ -168,7 +187,9 @@ export function useBlueprintTransfer(projectId: string, fetchAll: () => Promise<
     showImportDialog,
     importing,
     importFileList,
+    optimizeAfterImport,
     exportBlueprint,
+    exportTemplate,
     handleImportFileChange,
     confirmImport,
   }

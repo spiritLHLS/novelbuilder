@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"sort"
 	"strconv"
@@ -289,19 +291,153 @@ func (h *Handler) GetTask(c *gin.Context) {
 }
 
 func (h *Handler) CancelTask(c *gin.Context) {
-	if err := h.taskQueue.Cancel(c.Request.Context(), c.Param("id")); err != nil {
+	taskID := c.Param("id")
+	if err := h.taskQueue.Cancel(c.Request.Context(), taskID); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	h.syncTaskArtifactState(c.Request.Context(), taskID, "cancelled") //nolint
 	c.JSON(200, gin.H{"message": "task cancelled"})
 }
 
-func (h *Handler) RetryTask(c *gin.Context) {
-	if err := h.taskQueue.Retry(c.Request.Context(), c.Param("id")); err != nil {
+func (h *Handler) PauseTask(c *gin.Context) {
+	taskID := c.Param("id")
+	if err := h.taskQueue.Pause(c.Request.Context(), taskID); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	h.syncTaskArtifactState(c.Request.Context(), taskID, "paused") //nolint
+	c.JSON(200, gin.H{"message": "task paused"})
+}
+
+func (h *Handler) ResumeTask(c *gin.Context) {
+	taskID := c.Param("id")
+	if err := h.taskQueue.Resume(c.Request.Context(), taskID); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	h.syncTaskArtifactState(c.Request.Context(), taskID, "running") //nolint
+	c.JSON(200, gin.H{"message": "task resumed"})
+}
+
+func (h *Handler) RetryTask(c *gin.Context) {
+	taskID := c.Param("id")
+	if err := h.taskQueue.Retry(c.Request.Context(), taskID); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	h.syncTaskArtifactState(c.Request.Context(), taskID, "running") //nolint
 	c.JSON(200, gin.H{"message": "task queued for retry"})
+}
+
+func (h *Handler) syncTaskArtifactState(ctx context.Context, taskID, state string) {
+	task, err := h.taskQueue.Get(ctx, taskID)
+	if err != nil || task == nil {
+		return
+	}
+	switch task.TaskType {
+	case "blueprint_generate":
+		var payload models.BlueprintGenerateTaskPayload
+		if err := json.Unmarshal(task.Payload, &payload); err != nil || payload.BlueprintID == "" {
+			return
+		}
+		switch state {
+		case "paused":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE book_blueprints SET status='paused', error_message='', updated_at=NOW() WHERE id=$1 AND status='generating'`,
+				payload.BlueprintID)
+		case "running":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE book_blueprints SET status='generating', error_message='', updated_at=NOW() WHERE id=$1 AND status IN ('paused','failed')`,
+				payload.BlueprintID)
+		case "cancelled":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE book_blueprints SET status='failed', error_message='cancel requested', updated_at=NOW() WHERE id=$1 AND status IN ('generating','paused')`,
+				payload.BlueprintID)
+		}
+	case "reference_fetch_import":
+		var payload struct {
+			RefID string `json:"ref_id"`
+		}
+		if err := json.Unmarshal(task.Payload, &payload); err != nil || payload.RefID == "" {
+			return
+		}
+		switch state {
+		case "paused":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE reference_materials SET fetch_status='paused', fetch_error='' WHERE id=$1 AND fetch_status='downloading'`,
+				payload.RefID)
+		case "running":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE reference_materials SET fetch_status='downloading', fetch_error='' WHERE id=$1 AND fetch_status IN ('paused','failed')`,
+				payload.RefID)
+		case "cancelled":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE reference_materials SET fetch_status='failed', fetch_error='cancel requested' WHERE id=$1 AND fetch_status IN ('downloading','paused')`,
+				payload.RefID)
+		}
+	case "reference_analyze":
+		var payload struct {
+			RefID string `json:"ref_id"`
+		}
+		if err := json.Unmarshal(task.Payload, &payload); err != nil || payload.RefID == "" {
+			return
+		}
+		switch state {
+		case "paused":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE reference_materials SET status='paused' WHERE id=$1 AND status='analyzing'`,
+				payload.RefID)
+		case "running":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE reference_materials SET status='analyzing' WHERE id=$1 AND status IN ('paused','failed')`,
+				payload.RefID)
+		case "cancelled":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE reference_materials SET status='failed' WHERE id=$1 AND status IN ('analyzing','paused')`,
+				payload.RefID)
+		}
+	case "reference_analysis":
+		var payload struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.Unmarshal(task.Payload, &payload); err != nil || payload.JobID == "" {
+			return
+		}
+		switch state {
+		case "paused":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE reference_analysis_jobs SET status='paused', updated_at=NOW() WHERE id=$1 AND status IN ('pending','running')`,
+				payload.JobID)
+		case "running":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE reference_analysis_jobs SET status='pending', error_message='', updated_at=NOW() WHERE id=$1 AND status IN ('paused','failed','cancelled')`,
+				payload.JobID)
+		case "cancelled":
+			_, _ = h.projects.DB().Exec(ctx,
+				`UPDATE reference_analysis_jobs SET status='cancelled', updated_at=NOW() WHERE id=$1 AND status IN ('pending','running','paused')`,
+				payload.JobID)
+		}
+	}
+}
+
+func (h *Handler) latestTaskByType(ctx context.Context, projectID, taskType string) (*models.TaskQueueItem, error) {
+	var t models.TaskQueueItem
+	err := h.projects.DB().QueryRow(ctx,
+		`SELECT id, project_id, task_type, payload, status, priority, attempts, max_attempts,
+		        error_message, scheduled_at, started_at, completed_at, created_at, updated_at
+		 FROM task_queue
+		 WHERE project_id = $1 AND task_type = $2
+		 ORDER BY created_at DESC
+		 LIMIT 1`,
+		projectID, taskType).Scan(
+		&t.ID, &t.ProjectID, &t.TaskType, &t.Payload, &t.Status, &t.Priority,
+		&t.Attempts, &t.MaxAttempts, &t.ErrorMessage, &t.ScheduledAt,
+		&t.StartedAt, &t.CompletedAt, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // ── Resource Ledger ───────────────────────────────────────────────────────────

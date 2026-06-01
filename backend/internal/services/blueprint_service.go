@@ -34,6 +34,34 @@ type BlueprintService struct {
 	logger         *zap.Logger
 }
 
+type rawJSONScanner struct {
+	dst *json.RawMessage
+}
+
+func (s rawJSONScanner) Scan(src interface{}) error {
+	if s.dst == nil {
+		return nil
+	}
+	switch v := src.(type) {
+	case nil:
+		*s.dst = nil
+	case []byte:
+		*s.dst = append((*s.dst)[:0], v...)
+	case string:
+		*s.dst = append((*s.dst)[:0], v...)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		*s.dst = append((*s.dst)[:0], b...)
+	}
+	if len(*s.dst) == 0 {
+		*s.dst = json.RawMessage(`null`)
+	}
+	return nil
+}
+
 func NewBlueprintService(
 	db *database.DB,
 	ai *gateway.AIGateway,
@@ -62,21 +90,23 @@ func NewBlueprintService(
 	}
 }
 
-// Generate creates a placeholder blueprint record immediately (status="generating") and
-// launches the actual AI generation in the background. The caller receives 202 and
-// should poll GET /projects/:id/blueprint until status changes.
-func (s *BlueprintService) Generate(ctx context.Context, projectID string, req models.GenerateBlueprintRequest) (*models.BookBlueprint, error) {
+// PrepareGenerate creates a placeholder blueprint record immediately
+// (status="generating"). The actual AI work is performed by a tracked task via
+// RunGenerateTask so project/task pause, resume, cancel and retry all use the
+// same state machine.
+func (s *BlueprintService) PrepareGenerate(ctx context.Context, projectID string, req models.GenerateBlueprintRequest) (*models.BookBlueprint, string, error) {
 	// Validate that the project exists before creating anything.
 	var project models.Project
 	err := s.db.QueryRow(ctx,
-		`SELECT id, title, genre, description, style_description, target_words, chapter_words,
+		`SELECT id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words,
 		        COALESCE(project_type,'original'), continuation_ref_id, COALESCE(continuation_start_chapter,1)
 		 FROM projects WHERE id = $1`, projectID).Scan(
 		&project.ID, &project.Title, &project.Genre, &project.Description, &project.StyleDescription,
+		&project.Language,
 		&project.TargetWords, &project.ChapterWords,
 		&project.ProjectType, &project.ContinuationRefID, &project.ContinuationStartChapter)
 	if err != nil {
-		return nil, fmt.Errorf("project not found: %w", err)
+		return nil, "", fmt.Errorf("project not found: %w", err)
 	}
 
 	// Create a workflow run (non-critical; ignore error).
@@ -94,34 +124,68 @@ func (s *BlueprintService) Generate(ctx context.Context, projectID string, req m
 		     updated_at = NOW()
 		 RETURNING id, project_id, world_bible_ref, master_outline, relation_graph, global_timeline, status, version, review_comment, error_message, created_at, updated_at`,
 		bpID, projectID).Scan(
-		&bp.ID, &bp.ProjectID, &bp.WorldBibleRef, &bp.MasterOutline, &bp.RelationGraph,
-		&bp.GlobalTimeline, &bp.Status, &bp.Version, &bp.ReviewComment, &bp.ErrorMessage,
+		&bp.ID, &bp.ProjectID, &bp.WorldBibleRef,
+		rawJSONScanner{dst: &bp.MasterOutline},
+		rawJSONScanner{dst: &bp.RelationGraph},
+		rawJSONScanner{dst: &bp.GlobalTimeline},
+		&bp.Status, &bp.Version, &bp.ReviewComment, &bp.ErrorMessage,
 		&bp.CreatedAt, &bp.UpdatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("create blueprint placeholder: %w", err)
+		return nil, "", fmt.Errorf("create blueprint placeholder: %w", err)
 	}
 	// On conflict, RETURNING gives us the existing row's id, not the new bpID.
 	bpID = bp.ID
 
-	// Launch background generation with a generous timeout (LLM calls can be slow).
-	genCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	go func() {
-		defer cancel()
-		if genErr := s.doGenerateWork(genCtx, projectID, bpID, runID, project, req); genErr != nil {
-			s.logger.Error("blueprint background generation failed",
-				zap.String("project_id", projectID),
-				zap.String("blueprint_id", bpID),
-				zap.Error(genErr))
-			s.db.Exec(genCtx,
-				`UPDATE book_blueprints SET status='failed', error_message=$1, updated_at=NOW() WHERE id=$2`,
-				genErr.Error(), bpID)
-		}
-	}()
-
 	s.logger.Info("blueprint generation queued",
 		zap.String("project_id", projectID),
 		zap.String("blueprint_id", bpID))
-	return &bp, nil
+	return &bp, runID, nil
+}
+
+// Generate is kept as a synchronous helper for tests and internal callers.
+func (s *BlueprintService) Generate(ctx context.Context, projectID string, req models.GenerateBlueprintRequest) (*models.BookBlueprint, error) {
+	bp, runID, err := s.PrepareGenerate(ctx, projectID, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.RunGenerateTask(ctx, projectID, bp.ID, runID, req); err != nil {
+		return bp, err
+	}
+	return s.Get(ctx, projectID)
+}
+
+func (s *BlueprintService) RunGenerateTask(ctx context.Context, projectID, bpID, runID string, req models.GenerateBlueprintRequest) error {
+	var project models.Project
+	err := s.db.QueryRow(ctx,
+		`SELECT id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words,
+		        COALESCE(project_type,'original'), continuation_ref_id, COALESCE(continuation_start_chapter,1)
+		 FROM projects WHERE id = $1`, projectID).Scan(
+		&project.ID, &project.Title, &project.Genre, &project.Description, &project.StyleDescription,
+		&project.Language,
+		&project.TargetWords, &project.ChapterWords,
+		&project.ProjectType, &project.ContinuationRefID, &project.ContinuationStartChapter)
+	if err != nil {
+		return fmt.Errorf("project not found: %w", err)
+	}
+	if _, err := s.db.Exec(ctx,
+		`UPDATE book_blueprints SET status='generating', error_message=NULL, updated_at=NOW() WHERE id=$1`,
+		bpID); err != nil {
+		return fmt.Errorf("mark blueprint generating: %w", err)
+	}
+	if err := s.doGenerateWork(ctx, projectID, bpID, runID, project, req); err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+		s.logger.Error("blueprint generation failed",
+			zap.String("project_id", projectID),
+			zap.String("blueprint_id", bpID),
+			zap.Error(err))
+		_, _ = s.db.Exec(context.Background(),
+			`UPDATE book_blueprints SET status='failed', error_message=$1, updated_at=NOW() WHERE id=$2`,
+			err.Error(), bpID)
+		return err
+	}
+	return nil
 }
 
 // doGenerateWork gathers all existing project assets, builds a context-rich prompt
@@ -238,6 +302,31 @@ func buildWorldBibleFieldsHint(genre string) string {
     "power_system": "力量体系",
     "core_conflict": "核心冲突"`
 	}
+}
+
+func writingLanguageInstruction(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "en", "en-us", "en_us", "english":
+		return "All creative assets, outlines, character profiles, and final prose must be written in English. Keep names, idioms, punctuation, dialogue style, and cultural references internally consistent with English-language fiction. Do not mix Chinese prose unless the user explicitly asks for bilingual text."
+	default:
+		return "所有创作资产、大纲、角色档案与最终正文必须使用简体中文。人名、地名、术语、标点、对白口吻保持中文小说语境一致；除非用户明确要求双语文本，不要混入英文叙述。"
+	}
+}
+
+func (s *BlueprintService) projectSnapshot(ctx context.Context, projectID string) (models.Project, error) {
+	var project models.Project
+	err := s.db.QueryRow(ctx,
+		`SELECT id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words,
+		        status, COALESCE(project_type,'original'), continuation_ref_id, COALESCE(continuation_start_chapter,1), created_at, updated_at
+		 FROM projects WHERE id = $1`, projectID).Scan(
+		&project.ID, &project.Title, &project.Genre, &project.Description, &project.StyleDescription,
+		&project.Language, &project.TargetWords, &project.ChapterWords, &project.Status,
+		&project.ProjectType, &project.ContinuationRefID, &project.ContinuationStartChapter,
+		&project.CreatedAt, &project.UpdatedAt)
+	if err != nil {
+		return models.Project{}, fmt.Errorf("project not found: %w", err)
+	}
+	return project, nil
 }
 
 // buildGenreConstraints returns genre-specific bullet-point constraints for the prompt.
@@ -367,8 +456,11 @@ func (s *BlueprintService) Get(ctx context.Context, projectID string) (*models.B
 	err := s.db.QueryRow(ctx,
 		`SELECT id, project_id, world_bible_ref, master_outline, relation_graph, global_timeline, status, version, review_comment, error_message, created_at, updated_at
 		 FROM book_blueprints WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1`,
-		projectID).Scan(&bp.ID, &bp.ProjectID, &bp.WorldBibleRef, &bp.MasterOutline, &bp.RelationGraph,
-		&bp.GlobalTimeline, &bp.Status, &bp.Version, &bp.ReviewComment, &bp.ErrorMessage,
+		projectID).Scan(&bp.ID, &bp.ProjectID, &bp.WorldBibleRef,
+		rawJSONScanner{dst: &bp.MasterOutline},
+		rawJSONScanner{dst: &bp.RelationGraph},
+		rawJSONScanner{dst: &bp.GlobalTimeline},
+		&bp.Status, &bp.Version, &bp.ReviewComment, &bp.ErrorMessage,
 		&bp.CreatedAt, &bp.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, database.ErrNoRows) {
@@ -411,8 +503,11 @@ func (s *BlueprintService) Update(ctx context.Context, id string, req models.Upd
 		           status, version, review_comment, error_message, created_at, updated_at`,
 		masterOutline, relationGraph, globalTimeline, id, req.Version,
 	).Scan(
-		&bp.ID, &bp.ProjectID, &bp.WorldBibleRef, &bp.MasterOutline, &bp.RelationGraph,
-		&bp.GlobalTimeline, &bp.Status, &bp.Version, &bp.ReviewComment, &bp.ErrorMessage,
+		&bp.ID, &bp.ProjectID, &bp.WorldBibleRef,
+		rawJSONScanner{dst: &bp.MasterOutline},
+		rawJSONScanner{dst: &bp.RelationGraph},
+		rawJSONScanner{dst: &bp.GlobalTimeline},
+		&bp.Status, &bp.Version, &bp.ReviewComment, &bp.ErrorMessage,
 		&bp.CreatedAt, &bp.UpdatedAt,
 	)
 	if err != nil {
@@ -791,6 +886,71 @@ func (s *BlueprintService) Export(ctx context.Context, projectID string) (*Bluep
 	}
 
 	return export, nil
+}
+
+func (s *BlueprintService) BlankTemplate(ctx context.Context, projectID string) (*BlueprintExport, error) {
+	project, err := s.projectSnapshot(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	chapterWords := project.ChapterWords
+	if chapterWords <= 0 {
+		chapterWords = 3000
+	}
+	targetWords := project.TargetWords
+	if targetWords <= 0 {
+		targetWords = 500000
+	}
+	estimatedChapters := targetWords / chapterWords
+	if estimatedChapters <= 0 {
+		estimatedChapters = 120
+	}
+	template := &BlueprintExport{
+		ExportedAt: time.Now(),
+		Version:    "1.0",
+		Blueprint: models.BookBlueprint{
+			ProjectID:      projectID,
+			MasterOutline:  json.RawMessage(`"第1卷:填写本卷主题、核心冲突、高潮点。第2卷:继续填写；可按需增删卷。"`),
+			RelationGraph:  json.RawMessage(`"主角-核心对手:填写关系变化;主角-盟友:填写关系变化"`),
+			GlobalTimeline: json.RawMessage(`"开篇:填写关键事件;第一卷末:填写转折;结局:填写终局状态"`),
+			Status:         "draft",
+			Version:        1,
+		},
+		WorldBible: &models.WorldBible{
+			ProjectID: projectID,
+			Content: json.RawMessage(`{
+  "world_view": "填写世界观总览",
+  "era_background": "填写时代背景",
+  "geography": "填写地理/舞台",
+  "power_system": "填写力量或职业体系",
+  "social_structure": "填写社会结构与势力",
+  "core_conflict": "填写全书核心冲突"
+}`),
+			Version: 1,
+		},
+		Volumes: []models.Volume{
+			{ProjectID: projectID, VolumeNum: 1, Title: "第一卷", ChapterStart: 1, ChapterEnd: estimatedChapters / 4, Status: "draft"},
+			{ProjectID: projectID, VolumeNum: 2, Title: "第二卷", ChapterStart: estimatedChapters/4 + 1, ChapterEnd: estimatedChapters / 2, Status: "draft"},
+			{ProjectID: projectID, VolumeNum: 3, Title: "第三卷", ChapterStart: estimatedChapters/2 + 1, ChapterEnd: estimatedChapters * 3 / 4, Status: "draft"},
+			{ProjectID: projectID, VolumeNum: 4, Title: "第四卷", ChapterStart: estimatedChapters*3/4 + 1, ChapterEnd: estimatedChapters, Status: "draft"},
+		},
+		ChapterOutlines: []models.Outline{
+			{ProjectID: projectID, Level: "chapter", OrderNum: 1, Title: "第一章标题", Content: json.RawMessage(`{"events":["填写本章事件1","填写本章事件2","填写本章断章点"]}`), TensionTarget: 0.5},
+		},
+		Characters: []models.Character{
+			{ProjectID: projectID, Name: "主角姓名", RoleType: "protagonist", Profile: json.RawMessage(`{"description":"填写当前身份、欲望、弱点、初始能力"}`), CurrentState: json.RawMessage(`{}`)},
+		},
+		Foreshadowings: []models.Foreshadowing{
+			{ProjectID: projectID, Content: "填写伏笔内容", EmbedMethod: "implicit", PlannedEmbedChapter: 3, PlannedResolveChapter: 20, Priority: 5, Status: "planned"},
+		},
+	}
+	if template.Volumes[0].ChapterEnd <= 0 {
+		template.Volumes[0].ChapterEnd = 30
+		template.Volumes[1].ChapterStart, template.Volumes[1].ChapterEnd = 31, 60
+		template.Volumes[2].ChapterStart, template.Volumes[2].ChapterEnd = 61, 90
+		template.Volumes[3].ChapterStart, template.Volumes[3].ChapterEnd = 91, 120
+	}
+	return template, nil
 }
 
 func (s *BlueprintService) Import(ctx context.Context, projectID string, data *BlueprintExport) error {

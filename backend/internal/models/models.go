@@ -11,6 +11,7 @@ type Project struct {
 	Genre                    string    `json:"genre" db:"genre"`
 	Description              string    `json:"description" db:"description"`
 	StyleDescription         string    `json:"style_description" db:"style_description"`
+	Language                 string    `json:"language" db:"language"` // zh-CN | en-US
 	TargetWords              int       `json:"target_words" db:"target_words"`
 	ChapterWords             int       `json:"chapter_words" db:"chapter_words"`
 	Status                   string    `json:"status" db:"status"`
@@ -215,6 +216,7 @@ type CreateProjectRequest struct {
 	Genre                    string  `json:"genre"`
 	Description              string  `json:"description"`
 	StyleDescription         string  `json:"style_description"`
+	Language                 string  `json:"language"`
 	TargetWords              int     `json:"target_words"`
 	ChapterWords             int     `json:"chapter_words"`
 	ProjectType              string  `json:"project_type"`               // optional: "original" (default) | "continuation"
@@ -228,6 +230,12 @@ type GenerateBlueprintRequest struct {
 	VolumeCount     int    `json:"volume_count"`
 	ChapterWordsMin int    `json:"chapter_words_min"`
 	ChapterWordsMax int    `json:"chapter_words_max"`
+}
+
+type BlueprintGenerateTaskPayload struct {
+	Request     GenerateBlueprintRequest `json:"request"`
+	BlueprintID string                   `json:"blueprint_id"`
+	RunID       string                   `json:"run_id"`
 }
 
 type UpdateBlueprintRequest struct {
@@ -267,6 +275,10 @@ type GenerateChapterRequest struct {
 	ContextHint string `json:"context_hint"`
 	// LLMConfig is populated internally by the handler via agent routing; not sent from the frontend.
 	LLMConfig map[string]interface{} `json:"llm_config,omitempty"`
+}
+
+type ProjectStateRequest struct {
+	Action string `json:"action" binding:"required"`
 }
 
 type ChapterGenerateTaskPayload struct {

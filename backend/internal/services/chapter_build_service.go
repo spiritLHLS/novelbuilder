@@ -351,6 +351,12 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		sb.WriteString(fmt.Sprintf("⚠️【字数硬约束 — 最高优先级】本章正文须控制在 %d～%d 字以内。当写作接近 %d 字时，无论剧情进展如何，必须立即执行断章收尾（用对话、动作或悬念断开），绝不允许超出 %d 字上限。超出字数上限是严重错误。⚠️\n\n", req.ChapterWordsMin, req.ChapterWordsMax, req.ChapterWordsMax, req.ChapterWordsMax))
 	}
 
+	var projectLanguage string
+	_ = s.db.QueryRow(ctx, `SELECT COALESCE(language, 'zh-CN') FROM projects WHERE id = $1`, projectID).Scan(&projectLanguage)
+	sb.WriteString("=== 写作语言 ===\n")
+	sb.WriteString(writingLanguageInstruction(projectLanguage))
+	sb.WriteString("\n\n")
+
 	sb.WriteString("=== 生成链路：证据包 → 场景卡 → 正文 ===\n")
 	sb.WriteString("请在内部完成三步，不要把过程输出给读者：\n")
 	sb.WriteString("1. 先读取本提示中的证据包：世界规则、角色状态、卷脉络、近期摘要、伏笔、术语表和本章大纲。\n")

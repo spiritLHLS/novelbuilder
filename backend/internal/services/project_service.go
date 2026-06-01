@@ -57,7 +57,7 @@ func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 	}
 
 	rows, err := s.db.Query(ctx,
-		`SELECT id, title, genre, description, style_description, target_words, chapter_words, status,
+		`SELECT id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
 		        COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
 		        created_at, updated_at
 		 FROM projects ORDER BY created_at DESC`)
@@ -71,6 +71,7 @@ func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 		var p models.Project
 		if err := rows.Scan(
 			&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
+			&p.Language,
 			&p.TargetWords, &p.ChapterWords, &p.Status,
 			&p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
 			&p.CreatedAt, &p.UpdatedAt,
@@ -95,6 +96,9 @@ func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectReq
 	if req.ProjectType == "" {
 		req.ProjectType = "original"
 	}
+	if req.Language == "" {
+		req.Language = "zh-CN"
+	}
 	if req.ProjectType == "continuation" && req.ContinuationStartChapter <= 0 {
 		req.ContinuationStartChapter = 1
 	}
@@ -107,6 +111,7 @@ func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectReq
 			Genre:                    req.Genre,
 			Description:              req.Description,
 			StyleDescription:         req.StyleDescription,
+			Language:                 req.Language,
 			TargetWords:              req.TargetWords,
 			ChapterWords:             req.ChapterWords,
 			Status:                   "draft",
@@ -124,16 +129,17 @@ func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectReq
 	}
 	var p models.Project
 	err := s.db.QueryRow(ctx,
-		`INSERT INTO projects (id, title, genre, description, style_description, target_words, chapter_words, status,
+		`INSERT INTO projects (id, title, genre, description, style_description, language, target_words, chapter_words, status,
 		                       project_type, continuation_ref_id, continuation_start_chapter, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', $8, $9, $10, NOW(), NOW())
-		 RETURNING id, title, genre, description, style_description, target_words, chapter_words, status,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9, $10, $11, NOW(), NOW())
+		 RETURNING id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
 		           COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
 		           created_at, updated_at`,
-		id, req.Title, req.Genre, req.Description, req.StyleDescription, req.TargetWords, req.ChapterWords,
+		id, req.Title, req.Genre, req.Description, req.StyleDescription, req.Language, req.TargetWords, req.ChapterWords,
 		req.ProjectType, req.ContinuationRefID, req.ContinuationStartChapter,
 	).Scan(
 		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
+		&p.Language,
 		&p.TargetWords, &p.ChapterWords, &p.Status,
 		&p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
 		&p.CreatedAt, &p.UpdatedAt,
@@ -160,12 +166,13 @@ func (s *ProjectService) Get(ctx context.Context, id string) (*models.Project, e
 
 	var p models.Project
 	err := s.db.QueryRow(ctx,
-		`SELECT id, title, genre, description, style_description, target_words, chapter_words, status,
+		`SELECT id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
 		        COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
 		        created_at, updated_at
 		 FROM projects WHERE id = $1`, id,
 	).Scan(
 		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
+		&p.Language,
 		&p.TargetWords, &p.ChapterWords, &p.Status,
 		&p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
 		&p.CreatedAt, &p.UpdatedAt,
@@ -180,11 +187,24 @@ func (s *ProjectService) Get(ctx context.Context, id string) (*models.Project, e
 }
 
 func (s *ProjectService) Update(ctx context.Context, id string, req models.CreateProjectRequest) (*models.Project, error) {
+	existing, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, fmt.Errorf("update project: not found")
+	}
 	if req.TargetWords <= 0 {
-		req.TargetWords = 500000
+		req.TargetWords = existing.TargetWords
 	}
 	if req.ChapterWords <= 0 {
-		req.ChapterWords = 3000
+		req.ChapterWords = existing.ChapterWords
+	}
+	if req.Language == "" {
+		req.Language = existing.Language
+	}
+	if req.Language == "" {
+		req.Language = "zh-CN"
 	}
 	if s.orm != nil {
 		updates := map[string]interface{}{
@@ -192,6 +212,7 @@ func (s *ProjectService) Update(ctx context.Context, id string, req models.Creat
 			"genre":             req.Genre,
 			"description":       req.Description,
 			"style_description": req.StyleDescription,
+			"language":          req.Language,
 			"target_words":      req.TargetWords,
 			"chapter_words":     req.ChapterWords,
 			"updated_at":        time.Now(),
@@ -206,18 +227,19 @@ func (s *ProjectService) Update(ctx context.Context, id string, req models.Creat
 		return s.Get(ctx, id)
 	}
 	var p models.Project
-	err := s.db.QueryRow(ctx,
+	err = s.db.QueryRow(ctx,
 		`UPDATE projects
 		 SET title = $1, genre = $2, description = $3, style_description = $4,
-		     target_words = $5, chapter_words = $6, updated_at = NOW()
-		 WHERE id = $7
-		 RETURNING id, title, genre, description, style_description, target_words, chapter_words, status,
+		     language = $5, target_words = $6, chapter_words = $7, updated_at = NOW()
+		 WHERE id = $8
+		 RETURNING id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
 		           COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
 		           created_at, updated_at`,
 		req.Title, req.Genre, req.Description, req.StyleDescription,
-		req.TargetWords, req.ChapterWords, id,
+		req.Language, req.TargetWords, req.ChapterWords, id,
 	).Scan(
 		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
+		&p.Language,
 		&p.TargetWords, &p.ChapterWords, &p.Status,
 		&p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
 		&p.CreatedAt, &p.UpdatedAt,
@@ -262,6 +284,30 @@ func (s *ProjectService) SetAutoWrite(ctx context.Context, id string, enabled bo
 		`UPDATE projects SET auto_write_enabled = $2, auto_write_interval = $3, updated_at = NOW() WHERE id = $1`,
 		id, enabled, intervalMinutes)
 	return err
+}
+
+func (s *ProjectService) SetStatus(ctx context.Context, id string, status string) error {
+	if s.orm != nil {
+		tx := s.orm.WithContext(ctx).Model(&database.ProjectSchema{}).Where("id = ?", id).Updates(map[string]interface{}{
+			"status":     status,
+			"updated_at": time.Now(),
+		})
+		if tx.Error != nil {
+			return fmt.Errorf("set project status: %w", tx.Error)
+		}
+		if tx.RowsAffected == 0 {
+			return fmt.Errorf("project not found")
+		}
+		return nil
+	}
+	tag, err := s.db.Exec(ctx, `UPDATE projects SET status = $2, updated_at = NOW() WHERE id = $1`, id, status)
+	if err != nil {
+		return fmt.Errorf("set project status: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("project not found")
+	}
+	return nil
 }
 
 // SetContinuationMode updates a project to continuation mode with the given reference ID and start chapter.
@@ -334,12 +380,17 @@ func projectSchemaToModel(row database.ProjectSchema) models.Project {
 	if startChapter <= 0 {
 		startChapter = 1
 	}
+	language := row.Language
+	if language == "" {
+		language = "zh-CN"
+	}
 	return models.Project{
 		ID:                       row.ID,
 		Title:                    row.Title,
 		Genre:                    row.Genre,
 		Description:              row.Description,
 		StyleDescription:         row.StyleDescription,
+		Language:                 language,
 		TargetWords:              row.TargetWords,
 		ChapterWords:             row.ChapterWords,
 		Status:                   row.Status,

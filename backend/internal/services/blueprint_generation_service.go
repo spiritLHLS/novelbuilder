@@ -255,6 +255,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 ## 当前项目信息
 - 小说标题：%s
 - 类型/流派：%s
+- 写作语言：%s
 - 核心创意：%s
 - 风格描述：%s
 - 计划卷数：%d卷（必须恰好 %d 卷，不得增减）
@@ -289,6 +290,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 
 **重要约束：**
 %s
+%s
 - %s
 - 各卷章节数由你根据剧情自由规划（可多可少），不要求相同
 - characters 中已存在角色无需重复，只列**新增**角色
@@ -320,6 +322,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 		continuationContextSection,
 		project.Title,
 		genre,
+		project.Language,
 		idea,
 		project.StyleDescription,
 		volumeCount, volumeCount,
@@ -331,6 +334,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 		volumeCount,
 		firstVolumeChapterStart+5, firstVolumeChapterStart+20,
 		worldBibleFields,
+		writingLanguageInstruction(project.Language),
 		buildGenreConstraints(genre, genreTemplate),
 		volumesConstraint,
 	)

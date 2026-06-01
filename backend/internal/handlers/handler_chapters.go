@@ -5,9 +5,12 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/workflow"
 	"go.uber.org/zap"
@@ -57,6 +60,110 @@ func (h *Handler) ListChapters(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"data": chapters})
+}
+
+type chapterJSONImportItem struct {
+	ChapterNum int    `json:"chapter_num"`
+	Title      string `json:"title"`
+	Content    string `json:"content"`
+	Summary    string `json:"summary"`
+	Status     string `json:"status"`
+}
+
+func (h *Handler) ExportChaptersJSON(c *gin.Context) {
+	projectID := c.Param("id")
+	chapters, err := h.chapters.List(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Content-Disposition", `attachment; filename="chapters.json"`)
+	c.JSON(200, gin.H{
+		"version":     "1.0",
+		"project_id":  projectID,
+		"exported_at": time.Now(),
+		"chapters":    chapters,
+	})
+}
+
+func (h *Handler) ImportChaptersJSON(c *gin.Context) {
+	projectID := c.Param("id")
+	var body struct {
+		Chapters []chapterJSONImportItem `json:"chapters" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if len(body.Chapters) == 0 {
+		c.JSON(400, gin.H{"error": "chapters must not be empty"})
+		return
+	}
+	if len(body.Chapters) > 1000 {
+		c.JSON(400, gin.H{"error": "too many chapters in one import"})
+		return
+	}
+	seen := map[int]bool{}
+	for _, ch := range body.Chapters {
+		if ch.ChapterNum <= 0 {
+			c.JSON(400, gin.H{"error": "chapter_num must be positive"})
+			return
+		}
+		if strings.TrimSpace(ch.Content) == "" {
+			c.JSON(400, gin.H{"error": "chapter content must not be empty"})
+			return
+		}
+		if seen[ch.ChapterNum] {
+			c.JSON(400, gin.H{"error": "duplicate chapter_num in import"})
+			return
+		}
+		seen[ch.ChapterNum] = true
+	}
+	tx, err := h.projects.DB().Begin(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback(c.Request.Context())
+
+	batch := &database.Batch{}
+	for _, item := range body.Chapters {
+		status := strings.TrimSpace(item.Status)
+		if status == "" {
+			status = "draft"
+		}
+		wordCount := utf8.RuneCountInString(item.Content)
+		genParams, _ := json.Marshal(map[string]string{"source": "chapter_json_import"})
+		batch.Queue(
+			`INSERT INTO chapters (id, project_id, chapter_num, title, content, word_count, summary, gen_params, status, version, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, NOW(), NOW())
+			 ON CONFLICT (project_id, chapter_num) DO UPDATE SET
+			     title = EXCLUDED.title,
+			     content = EXCLUDED.content,
+			     word_count = EXCLUDED.word_count,
+			     summary = EXCLUDED.summary,
+			     status = EXCLUDED.status,
+			     version = chapters.version + 1,
+			     updated_at = NOW()`,
+			uuid.New().String(), projectID, item.ChapterNum, item.Title, item.Content, wordCount, item.Summary, genParams, status)
+	}
+	br := tx.SendBatch(c.Request.Context(), batch)
+	for range body.Chapters {
+		if _, err := br.Exec(); err != nil {
+			br.Close()
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if err := br.Close(); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if err := tx.Commit(c.Request.Context()); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "imported", "count": len(body.Chapters)})
 }
 
 func (h *Handler) GenerateChapter(c *gin.Context) {

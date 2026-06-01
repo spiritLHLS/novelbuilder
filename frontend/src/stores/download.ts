@@ -9,7 +9,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { referenceApi } from '@/api'
 
-export type DownloadStatus = 'downloading' | 'completed' | 'failed'
+export type DownloadStatus = 'downloading' | 'paused' | 'completed' | 'failed'
 
 export interface DownloadTask {
   refId: string

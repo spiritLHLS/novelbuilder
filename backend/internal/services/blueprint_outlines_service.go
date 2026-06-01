@@ -17,8 +17,8 @@ func (s *BlueprintService) generateChapterOutlines(ctx context.Context, projectI
 	logger := s.logger.With(zap.String("project_id", projectID), zap.Int("volume_num", volumeNum), zap.Int("start_chapter", startChapter))
 
 	var project models.Project
-	if err := s.db.QueryRow(ctx, `SELECT id, title, genre, description, style_description FROM projects WHERE id = $1`, projectID).
-		Scan(&project.ID, &project.Title, &project.Genre, &project.Description, &project.StyleDescription); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT id, title, genre, description, style_description, COALESCE(language, 'zh-CN') FROM projects WHERE id = $1`, projectID).
+		Scan(&project.ID, &project.Title, &project.Genre, &project.Description, &project.StyleDescription, &project.Language); err != nil {
 		return fmt.Errorf("get project: %w", err)
 	}
 
@@ -58,7 +58,7 @@ func (s *BlueprintService) generateChapterOutlines(ctx context.Context, projectI
 				Title      string
 				Content    json.RawMessage
 			}
-			if err := rows.Scan(&outline.ChapterNum, &outline.Title, &outline.Content); err == nil {
+			if err := rows.Scan(&outline.ChapterNum, &outline.Title, rawJSONScanner{dst: &outline.Content}); err == nil {
 				existingOutlinesMap[outline.ChapterNum] = outline
 			}
 		}

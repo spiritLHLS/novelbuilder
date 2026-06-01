@@ -22,6 +22,7 @@ type ProjectSchema struct {
 	Genre                    string  `gorm:"type:varchar(50)"`
 	Description              string  `gorm:"type:text"`
 	StyleDescription         string  `gorm:"type:text"`
+	Language                 string  `gorm:"type:varchar(20);not null;default:zh-CN"`
 	TargetWords              int     `gorm:"not null;default:500000"`
 	ChapterWords             int     `gorm:"not null;default:3000"`
 	Status                   string  `gorm:"type:varchar(20);default:active"`

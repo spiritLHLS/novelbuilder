@@ -180,6 +180,7 @@ function statusLabel(status: string): string {
   const map: Record<string, string> = {
     processing: '处理中',
     analyzing: '分析中',
+    paused: '已暂停',
     completed: '已完成',
     failed: '失败',
   }
@@ -189,7 +190,7 @@ function statusLabel(status: string): string {
 function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
   if (status === 'completed') return 'success'
   if (status === 'failed') return 'danger'
-  if (status === 'analyzing') return 'warning'
+  if (status === 'analyzing' || status === 'paused') return 'warning'
   return 'warning'
 }
 

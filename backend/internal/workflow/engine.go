@@ -28,6 +28,34 @@ type Engine struct {
 	logger *zap.Logger
 }
 
+type rawJSONScanner struct {
+	dst *json.RawMessage
+}
+
+func (s rawJSONScanner) Scan(src interface{}) error {
+	if s.dst == nil {
+		return nil
+	}
+	switch v := src.(type) {
+	case nil:
+		*s.dst = nil
+	case []byte:
+		*s.dst = append((*s.dst)[:0], v...)
+	case string:
+		*s.dst = append((*s.dst)[:0], v...)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		*s.dst = append((*s.dst)[:0], b...)
+	}
+	if len(*s.dst) == 0 {
+		*s.dst = json.RawMessage(`null`)
+	}
+	return nil
+}
+
 func NewEngine(db *database.DB, logger *zap.Logger) *Engine {
 	return &Engine{db: db, logger: logger}
 }
@@ -485,7 +513,13 @@ func (e *Engine) GetSnapshot(ctx context.Context, runID, stepKey string) (*Snaps
 		`SELECT step_key, params, context_payload, output_payload, quality_payload
 		 FROM workflow_snapshots WHERE run_id = $1 AND step_key = $2
 		 ORDER BY created_at DESC LIMIT 1`,
-		runID, stepKey).Scan(&s.StepKey, &s.Params, &s.ContextPayload, &s.OutputPayload, &s.QualityPayload)
+		runID, stepKey).Scan(
+		&s.StepKey,
+		rawJSONScanner{dst: &s.Params},
+		rawJSONScanner{dst: &s.ContextPayload},
+		rawJSONScanner{dst: &s.OutputPayload},
+		rawJSONScanner{dst: &s.QualityPayload},
+	)
 	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
 	}

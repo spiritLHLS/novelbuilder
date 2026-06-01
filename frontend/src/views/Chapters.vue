@@ -7,6 +7,7 @@
           <el-icon><EditPen /></el-icon>生成新章节
         </el-button>
         <el-button style="margin-left: 8px" @click="showBatchDialog = true">批量生成</el-button>
+        <el-button style="margin-left: 8px" @click="triggerImport">导入章节JSON</el-button>
         <el-dropdown @command="handleExport" style="margin-left: 8px">
           <el-button>
             导出<el-icon class="el-icon--right"><ArrowDown /></el-icon>
@@ -16,9 +17,11 @@
               <el-dropdown-item command="txt">导出 TXT</el-dropdown-item>
               <el-dropdown-item command="markdown">导出 Markdown</el-dropdown-item>
               <el-dropdown-item command="epub">导出 EPUB</el-dropdown-item>
+              <el-dropdown-item command="json">导出 JSON</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <input ref="importInput" type="file" accept=".json,application/json" style="display:none" @change="handleImportFile" />
       </div>
     </div>
 
@@ -149,6 +152,7 @@ const projectId = route.params.projectId as string
 
 const loading = ref(false)
 const chapters = ref<any[]>([])
+const importInput = ref<HTMLInputElement | null>(null)
 const canGenerate = ref(true)
 const continuationStartChapter = ref(0)
 
@@ -235,13 +239,16 @@ function viewChapter(ch: any) {
   router.push({ name: 'chapter-detail', params: { projectId, chapterId: ch.id } })
 }
 
-async function handleExport(format: 'txt' | 'markdown' | 'epub') {
+async function handleExport(format: 'txt' | 'markdown' | 'epub' | 'json') {
   try {
     let res: any
     let ext: string
     if (format === 'epub') {
       res = await exportExtApi.epub(projectId)
       ext = 'epub'
+    } else if (format === 'json') {
+      res = await chapterApi.exportJson(projectId)
+      ext = 'json'
     } else if (format === 'txt') {
       res = await exportApi.txt(projectId)
       ext = 'txt'
@@ -249,7 +256,8 @@ async function handleExport(format: 'txt' | 'markdown' | 'epub') {
       res = await exportApi.markdown(projectId)
       ext = 'md'
     }
-    const url = URL.createObjectURL(new Blob([res.data]))
+    const data = format === 'json' ? JSON.stringify(res.data, null, 2) : res.data
+    const url = URL.createObjectURL(new Blob([data]))
     const a = document.createElement('a')
     a.href = url
     a.download = `novel_${projectId}.${ext}`
@@ -258,6 +266,26 @@ async function handleExport(format: 'txt' | 'markdown' | 'epub') {
     ElMessage.success('导出成功')
   } catch (e: any) {
     ElMessage.error(e.response?.data?.error || '导出失败')
+  }
+}
+
+function triggerImport() {
+  importInput.value?.click()
+}
+
+async function handleImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const parsed = JSON.parse(await file.text())
+    await chapterApi.importJson(projectId, parsed)
+    ElMessage.success('章节导入完成')
+    await fetchChapters()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '章节导入失败，请检查 JSON 格式')
+  } finally {
+    input.value = ''
   }
 }
 

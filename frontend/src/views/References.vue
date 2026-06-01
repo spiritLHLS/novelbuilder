@@ -60,14 +60,15 @@
             <span class="progress-text">{{ row.fetch_done }}/{{ row.fetch_total }}</span>
           </template>
           <el-tag v-else-if="row.fetch_status === 'completed'" type="success" size="small">已下载</el-tag>
+          <el-tag v-else-if="row.fetch_status === 'paused'" type="warning" size="small">已暂停</el-tag>
           <el-tag v-else-if="row.fetch_status === 'failed'" type="danger" size="small">下载失败</el-tag>
           <el-tag v-else type="info" size="small">—</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="status" label="分析状态" width="90">
         <template #default="{ row }">
-          <el-tag :type="row.status === 'completed' ? 'success' : 'info'" size="small">
-            {{ row.status === 'completed' ? '已分析' : '未分析' }}
+          <el-tag :type="referenceStatusType(row.status)" size="small">
+            {{ referenceStatusText(row.status) }}
           </el-tag>
         </template>
       </el-table-column>
@@ -501,6 +502,11 @@
               : '分析已取消'"
             :closable="false"
             style="margin-top:12px" />
+          <el-alert v-else-if="deepAnalysisJob.status === 'paused'"
+            type="warning"
+            title="深度分析已暂停，可在任务总控中继续"
+            :closable="false"
+            style="margin-top:12px" />
         </div>
         <div v-else class="da-empty">
           <p>点击「开始深度分析」将对整本参考书进行分块分析，自动提取人物设定、世界观和大纲，并可导入当前项目。</p>
@@ -647,6 +653,28 @@ const {
 
 // ─── reference CRUD ───────────────────────────────────────────────────────────
 onMounted(fetchRefs)
+
+function referenceStatusText(status: string) {
+  const map: Record<string, string> = {
+    pending: '待分析',
+    processing: '处理中',
+    analyzing: '分析中',
+    paused: '已暂停',
+    completed: '已分析',
+    failed: '失败',
+  }
+  return map[status] || '未分析'
+}
+
+function referenceStatusType(status: string) {
+  const map: Record<string, string> = {
+    analyzing: 'warning',
+    paused: 'warning',
+    completed: 'success',
+    failed: 'danger',
+  }
+  return (map[status] || 'info') as any
+}
 
 async function fetchRefs() {
   loading.value = true

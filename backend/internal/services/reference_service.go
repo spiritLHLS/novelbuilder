@@ -129,11 +129,14 @@ func (s *ReferenceService) Get(ctx context.Context, id string) (*models.Referenc
 		 FROM reference_materials WHERE id = $1`, id).Scan(
 		&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
 		&ref.SourceURL,
-		&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
-		&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
-		&ref.SampleTexts,
+		rawJSONScanner{dst: &ref.StyleLayer},
+		rawJSONScanner{dst: &ref.NarrativeLayer},
+		rawJSONScanner{dst: &ref.AtmosphereLayer},
+		rawJSONScanner{dst: &ref.MigrationConfig},
+		&ref.StyleCollection, &ref.Status, &ref.CreatedAt,
+		rawJSONScanner{dst: &ref.SampleTexts},
 		&ref.FetchStatus, &ref.FetchDone, &ref.FetchTotal,
-		&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, &ref.FetchChapterIDs)
+		&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, rawJSONScanner{dst: &ref.FetchChapterIDs})
 	if err != nil {
 		if errors.Is(err, database.ErrNoRows) {
 			return nil, nil
@@ -164,11 +167,14 @@ func (s *ReferenceService) List(ctx context.Context, projectID string) ([]models
 		var ref models.ReferenceMaterial
 		if err := rows.Scan(&ref.ID, &ref.ProjectID, &ref.Title, &ref.Author, &ref.Genre, &ref.FilePath,
 			&ref.SourceURL,
-			&ref.StyleLayer, &ref.NarrativeLayer, &ref.AtmosphereLayer,
-			&ref.MigrationConfig, &ref.StyleCollection, &ref.Status, &ref.CreatedAt,
-			&ref.SampleTexts,
+			rawJSONScanner{dst: &ref.StyleLayer},
+			rawJSONScanner{dst: &ref.NarrativeLayer},
+			rawJSONScanner{dst: &ref.AtmosphereLayer},
+			rawJSONScanner{dst: &ref.MigrationConfig},
+			&ref.StyleCollection, &ref.Status, &ref.CreatedAt,
+			rawJSONScanner{dst: &ref.SampleTexts},
 			&ref.FetchStatus, &ref.FetchDone, &ref.FetchTotal,
-			&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, &ref.FetchChapterIDs); err != nil {
+			&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, rawJSONScanner{dst: &ref.FetchChapterIDs}); err != nil {
 			return nil, err
 		}
 		refs = append(refs, ref)

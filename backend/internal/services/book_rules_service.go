@@ -60,6 +60,7 @@ func (s *BookRulesService) Upsert(ctx context.Context, projectID string, req mod
 	}
 
 	var r models.BookRules
+	var savedAntiAI, savedBanned json.RawMessage
 	now := time.Now()
 	err := s.db.QueryRow(ctx,
 		`INSERT INTO book_rules (project_id, rules_content, style_guide, anti_ai_wordlist, banned_patterns, created_at, updated_at)
@@ -73,10 +74,12 @@ func (s *BookRulesService) Upsert(ctx context.Context, projectID string, req mod
 		 RETURNING id, project_id, rules_content, style_guide, anti_ai_wordlist, banned_patterns, created_at, updated_at`,
 		projectID, req.RulesContent, req.StyleGuide, antiAIJSON, bannedJSON, now).
 		Scan(&r.ID, &r.ProjectID, &r.RulesContent, &r.StyleGuide,
-			&r.AntiAIWordlist, &r.BannedPatterns, &r.CreatedAt, &r.UpdatedAt)
+			rawJSONScanner{dst: &savedAntiAI}, rawJSONScanner{dst: &savedBanned}, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	r.AntiAIWordlist = savedAntiAI
+	r.BannedPatterns = savedBanned
 	return &r, nil
 }
 

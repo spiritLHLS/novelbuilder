@@ -19,8 +19,10 @@ import (
 // buildChapterUserPrompt constructs the user-facing generation prompt shared by
 // generateChapter and regenerateChapter.  outlineEvents should be the pre-formatted
 // list of outline events (e.g. "  1. 事件A\n  2. 事件B").
-func buildChapterUserPrompt(chapterNum int, req models.GenerateChapterRequest, outlineEvents string, wordsMin, wordsMax int) string {
-	prompt := fmt.Sprintf(`请生成第 %d 章的完整内容。
+func buildChapterUserPrompt(language string, chapterNum int, req models.GenerateChapterRequest, outlineEvents string, wordsMin, wordsMax int) string {
+	prompt := fmt.Sprintf(`%s
+
+请生成第 %d 章的完整内容。
 
 生成参数：
 - 叙事视角：%s
@@ -54,6 +56,7 @@ func buildChapterUserPrompt(chapterNum int, req models.GenerateChapterRequest, o
    - 正文中出现的有名有姓的角色必须来自系统提示中的【角色状态】列表或本章大纲事件
    - 任何武器/法宝/道具首次出场必须有明确来源（大纲事件获得/战利品/NPC赠予/购买/祖传）
    - 禁止凭空出现没有来源的角色或道具`,
+		writingLanguageInstruction(language),
 		chapterNum,
 		req.NarrativeOrder, req.POVCharacter, req.TargetPace,
 		req.EndHookType, req.EndHookStrength, req.TensionLevel,
@@ -146,7 +149,9 @@ func (s *ChapterService) generateChapter(ctx context.Context, projectID string, 
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
 
 	outlineEvents := s.loadOutlineEvents(ctx, projectID, chapterNum)
-	userPrompt := buildChapterUserPrompt(chapterNum, req, outlineEvents, wordsMin, wordsMax)
+	var projectLanguage string
+	_ = s.db.QueryRow(ctx, `SELECT COALESCE(language, 'zh-CN') FROM projects WHERE id = $1`, projectID).Scan(&projectLanguage)
+	userPrompt := buildChapterUserPrompt(projectLanguage, chapterNum, req, outlineEvents, wordsMin, wordsMax)
 
 	resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_generation",
@@ -200,8 +205,12 @@ func (s *ChapterService) generateChapter(ctx context.Context, projectID string, 
 		chID, projectID, volumeID, chapterNum, title, chapterContent, wordCount, summary, genParams,
 		totalInputTokens, totalOutputTokens).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
-		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
-		&ch.GenreComplianceScore, &ch.GenreViolations,
+		&ch.WordCount, &ch.Summary,
+		rawJSONScanner{dst: &ch.GenParams},
+		rawJSONScanner{dst: &ch.QualityReport},
+		&ch.OriginalityScore,
+		&ch.GenreComplianceScore,
+		rawJSONScanner{dst: &ch.GenreViolations},
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
 	if errors.Is(err, database.ErrNoRows) {
 		existing, qErr := s.GetByProjectAndNum(ctx, projectID, chapterNum)
@@ -313,7 +322,9 @@ func (s *ChapterService) regenerateChapter(ctx context.Context, id string, req m
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
 
 	outlineEvents := s.loadOutlineEvents(ctx, projectID, chapterNum)
-	userPrompt := buildChapterUserPrompt(chapterNum, req, outlineEvents, wordsMin, wordsMax)
+	var projectLanguage string
+	_ = s.db.QueryRow(ctx, `SELECT COALESCE(language, 'zh-CN') FROM projects WHERE id = $1`, projectID).Scan(&projectLanguage)
+	userPrompt := buildChapterUserPrompt(projectLanguage, chapterNum, req, outlineEvents, wordsMin, wordsMax)
 
 	resp, err := s.ai.ChatWithConfig(ctx, gateway.ChatRequest{
 		Task: "chapter_regeneration",

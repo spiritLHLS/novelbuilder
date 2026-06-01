@@ -89,8 +89,12 @@ func (s *ChapterService) List(ctx context.Context, projectID string) ([]models.C
 	for rows.Next() {
 		var ch models.Chapter
 		if err := rows.Scan(&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
-			&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
-			&ch.GenreComplianceScore, &ch.GenreViolations,
+			&ch.WordCount, &ch.Summary,
+			rawJSONScanner{dst: &ch.GenParams},
+			rawJSONScanner{dst: &ch.QualityReport},
+			&ch.OriginalityScore,
+			&ch.GenreComplianceScore,
+			rawJSONScanner{dst: &ch.GenreViolations},
 			&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -111,8 +115,12 @@ func (s *ChapterService) Get(ctx context.Context, id string) (*models.Chapter, e
 		 status, version, COALESCE(review_comment, ''), created_at, updated_at
 		 FROM chapters WHERE id = $1`, id).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
-		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
-		&ch.GenreComplianceScore, &ch.GenreViolations,
+		&ch.WordCount, &ch.Summary,
+		rawJSONScanner{dst: &ch.GenParams},
+		rawJSONScanner{dst: &ch.QualityReport},
+		&ch.OriginalityScore,
+		&ch.GenreComplianceScore,
+		rawJSONScanner{dst: &ch.GenreViolations},
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
 	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
@@ -172,8 +180,12 @@ func (s *ChapterService) GetByProjectAndNum(ctx context.Context, projectID strin
 		 status, version, COALESCE(review_comment, ''), created_at, updated_at
 		 FROM chapters WHERE project_id = $1 AND chapter_num = $2`, projectID, chapterNum).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
-		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
-		&ch.GenreComplianceScore, &ch.GenreViolations,
+		&ch.WordCount, &ch.Summary,
+		rawJSONScanner{dst: &ch.GenParams},
+		rawJSONScanner{dst: &ch.QualityReport},
+		&ch.OriginalityScore,
+		&ch.GenreComplianceScore,
+		rawJSONScanner{dst: &ch.GenreViolations},
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
 	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
@@ -289,7 +301,7 @@ func (s *ChapterService) ListSnapshots(ctx context.Context, chapterID string, li
 	for rows.Next() {
 		var it models.ChapterSnapshot
 		if err := rows.Scan(&it.ID, &it.ChapterID, &it.Version, &it.Title, &it.Content,
-			&it.WordCount, &it.Summary, &it.QualityReport, &it.OriginalityScore,
+			&it.WordCount, &it.Summary, rawJSONScanner{dst: &it.QualityReport}, &it.OriginalityScore,
 			&it.Source, &it.Note, &it.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -312,7 +324,7 @@ func (s *ChapterService) RestoreFromSnapshot(ctx context.Context, chapterID, sna
 		 FROM chapter_snapshots
 		 WHERE id = $1 AND chapter_id = $2`, snapshotID, chapterID).Scan(
 		&snapshot.ID, &snapshot.ChapterID, &snapshot.Version, &snapshot.Title,
-		&snapshot.Content, &snapshot.WordCount, &snapshot.Summary, &snapshot.QualityReport,
+		&snapshot.Content, &snapshot.WordCount, &snapshot.Summary, rawJSONScanner{dst: &snapshot.QualityReport},
 		&snapshot.OriginalityScore, &snapshot.Source, &snapshot.Note, &snapshot.CreatedAt)
 	if err != nil {
 		if errors.Is(err, database.ErrNoRows) {
@@ -351,8 +363,12 @@ func (s *ChapterService) RestoreFromSnapshot(ctx context.Context, chapterID, sna
 		snapshot.Title, snapshot.Content, snapshot.WordCount, snapshot.Summary,
 		snapshot.QualityReport, snapshot.OriginalityScore, chapterID).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
-		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
-		&ch.GenreComplianceScore, &ch.GenreViolations,
+		&ch.WordCount, &ch.Summary,
+		rawJSONScanner{dst: &ch.GenParams},
+		rawJSONScanner{dst: &ch.QualityReport},
+		&ch.OriginalityScore,
+		&ch.GenreComplianceScore,
+		rawJSONScanner{dst: &ch.GenreViolations},
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -390,8 +406,12 @@ func (s *ChapterService) UpdateContent(ctx context.Context, id, content, status 
 		           status, version, COALESCE(review_comment, ''), created_at, updated_at`,
 		content, wordCount, summary, status, id).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
-		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
-		&ch.GenreComplianceScore, &ch.GenreViolations,
+		&ch.WordCount, &ch.Summary,
+		rawJSONScanner{dst: &ch.GenParams},
+		rawJSONScanner{dst: &ch.QualityReport},
+		&ch.OriginalityScore,
+		&ch.GenreComplianceScore,
+		rawJSONScanner{dst: &ch.GenreViolations},
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -485,8 +505,12 @@ func (s *ChapterService) UpdateManualContent(ctx context.Context, id, title, con
 		title, content, wordCount, summary, id, version,
 	).Scan(
 		&ch.ID, &ch.ProjectID, &ch.VolumeID, &ch.ChapterNum, &ch.Title, &ch.Content,
-		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
-		&ch.GenreComplianceScore, &ch.GenreViolations,
+		&ch.WordCount, &ch.Summary,
+		rawJSONScanner{dst: &ch.GenParams},
+		rawJSONScanner{dst: &ch.QualityReport},
+		&ch.OriginalityScore,
+		&ch.GenreComplianceScore,
+		rawJSONScanner{dst: &ch.GenreViolations},
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt,
 	)
 	if err != nil {

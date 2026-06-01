@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -49,11 +50,13 @@ func (s *PromptPresetService) List(ctx context.Context, projectID *string) ([]mo
 	var presets []models.PromptPreset
 	for rows.Next() {
 		var p models.PromptPreset
+		var variables json.RawMessage
 		if err := rows.Scan(&p.ID, &p.ProjectID, &p.Name, &p.Description, &p.Category,
-			&p.Content, &p.Variables, &p.IsGlobal, &p.SortOrder,
+			&p.Content, rawJSONScanner{dst: &variables}, &p.IsGlobal, &p.SortOrder,
 			&p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
+		p.Variables = variables
 		presets = append(presets, p)
 	}
 	return presets, rows.Err()
@@ -61,11 +64,12 @@ func (s *PromptPresetService) List(ctx context.Context, projectID *string) ([]mo
 
 func (s *PromptPresetService) Get(ctx context.Context, id string) (*models.PromptPreset, error) {
 	var p models.PromptPreset
+	var variables json.RawMessage
 	err := s.db.QueryRow(ctx,
 		`SELECT id, project_id, name, description, category, content, variables, is_global, sort_order, created_at, updated_at
 		 FROM prompt_presets WHERE id = $1`, id).Scan(
 		&p.ID, &p.ProjectID, &p.Name, &p.Description, &p.Category,
-		&p.Content, &p.Variables, &p.IsGlobal, &p.SortOrder,
+		&p.Content, rawJSONScanner{dst: &variables}, &p.IsGlobal, &p.SortOrder,
 		&p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
@@ -73,6 +77,7 @@ func (s *PromptPresetService) Get(ctx context.Context, id string) (*models.Promp
 	if err != nil {
 		return nil, fmt.Errorf("get prompt_preset: %w", err)
 	}
+	p.Variables = variables
 	return &p, nil
 }
 
@@ -107,6 +112,7 @@ func (s *PromptPresetService) Update(ctx context.Context, id string, req models.
 	now := time.Now()
 
 	var p models.PromptPreset
+	var variables json.RawMessage
 	err := s.db.QueryRow(ctx,
 		`UPDATE prompt_presets SET
 		   name = COALESCE(NULLIF($1,''), name),
@@ -122,11 +128,12 @@ func (s *PromptPresetService) Update(ctx context.Context, id string, req models.
 		req.Name, req.Description, req.Category, req.Content,
 		req.Variables, req.IsGlobal, req.SortOrder, now, id).Scan(
 		&p.ID, &p.ProjectID, &p.Name, &p.Description, &p.Category,
-		&p.Content, &p.Variables, &p.IsGlobal, &p.SortOrder,
+		&p.Content, rawJSONScanner{dst: &variables}, &p.IsGlobal, &p.SortOrder,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("update prompt_preset: %w", err)
 	}
+	p.Variables = variables
 	return &p, nil
 }
 

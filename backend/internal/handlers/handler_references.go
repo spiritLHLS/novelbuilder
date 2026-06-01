@@ -351,23 +351,38 @@ func (h *Handler) FetchImportReference(c *gin.Context) {
 		return
 	}
 
-	// Respond immediately so the frontend can start polling.
+	payload, _ := json.Marshal(map[string]interface{}{
+		"ref_id":      ref.ID,
+		"site":        body.Site,
+		"book_id":     body.BookID,
+		"title":       body.Title,
+		"author":      body.Author,
+		"chapter_ids": body.ChapterIDs,
+	})
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+		ProjectID:   projectID,
+		TaskType:    "reference_fetch_import",
+		Payload:     payload,
+		Priority:    6,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		h.logger.Error("failed to enqueue reference download", zap.String("ref_id", ref.ID), zap.Error(err))
+		h.references.MarkFetchFailed(context.Background(), ref.ID, "failed to enqueue download task: "+err.Error()) //nolint
+		c.JSON(500, gin.H{"error": "failed to enqueue download task: " + err.Error()})
+		return
+	}
+	h.logger.Info("reference download task queued", zap.String("ref_id", ref.ID), zap.String("task_id", task.ID))
 	c.JSON(202, gin.H{
 		"ref_id":      ref.ID,
+		"task_id":     task.ID,
 		"status":      "downloading",
 		"fetch_total": len(body.ChapterIDs),
 	})
-
-	// Background goroutine: download chapters from sidecar, persist to DB.
-	sidecarURL := h.sidecar.BaseURL()
-	go h.runBackgroundDownload(ref.ID, sidecarURL, body.Site, body.BookID,
-		body.Title, body.Author, body.ChapterIDs)
 }
 
-// runBackgroundDownload calls the sidecar SSE stream and stores each chapter in the DB.
-func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, author string, chapterIDs []string) {
-	ctx := context.Background()
-
+// RunReferenceDownload calls the sidecar SSE stream and stores each chapter in the DB.
+func (h *Handler) RunReferenceDownload(ctx context.Context, refID, sidecarURL, site, bookID, title, author string, chapterIDs []string) error {
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"site":        site,
 		"book_id":     bookID,
@@ -380,7 +395,7 @@ func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, 
 	if err != nil {
 		h.logger.Error("runBackgroundDownload: build request", zap.String("ref_id", refID), zap.Error(err))
 		h.references.MarkFetchFailed(ctx, refID, "failed to build sidecar request: "+err.Error()) //nolint
-		return
+		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
@@ -388,13 +403,13 @@ func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, 
 	if err != nil {
 		h.logger.Error("runBackgroundDownload: sidecar unavailable", zap.String("ref_id", refID), zap.Error(err))
 		h.references.MarkFetchFailed(ctx, refID, "sidecar unavailable: "+err.Error()) //nolint
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		errBody, _ := io.ReadAll(resp.Body)
 		h.references.MarkFetchFailed(ctx, refID, string(errBody)) //nolint
-		return
+		return fmt.Errorf("sidecar download failed: %s", string(errBody))
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -470,7 +485,7 @@ func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, 
 				zap.Int("downloaded", totalDownloaded),
 				zap.Int("skipped", skipped),
 			)
-			return
+			return nil
 		case "error":
 			msg, _ := event["message"].(string)
 			h.references.MarkFetchFailed(ctx, refID, msg) //nolint
@@ -479,7 +494,10 @@ func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, 
 				zap.String("title", title),
 				zap.String("error", msg),
 			)
-			return
+			return fmt.Errorf("download stream error: %s", msg)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -488,7 +506,7 @@ func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, 
 			zap.Error(err),
 		)
 		h.references.MarkFetchFailed(ctx, refID, "stream read error: "+err.Error()) //nolint
-		return
+		return err
 	}
 
 	h.logger.Error("runBackgroundDownload: stream ended without terminal event",
@@ -496,6 +514,7 @@ func (h *Handler) runBackgroundDownload(refID, sidecarURL, site, bookID, title, 
 		zap.String("title", title),
 	)
 	h.references.MarkFetchFailed(ctx, refID, "download stream ended unexpectedly before completion") //nolint
+	return fmt.Errorf("download stream ended unexpectedly before completion")
 }
 
 // ResumeReferenceDownload restarts a failed or interrupted download for the remaining chapters.
@@ -542,15 +561,32 @@ func (h *Handler) ResumeReferenceDownload(c *gin.Context) {
 	h.references.UpdateFetchProgress(c.Request.Context(), refID, len(existing)) //nolint
 	h.references.SetFetchStatus(c.Request.Context(), refID, "downloading")      //nolint
 
+	payload, _ := json.Marshal(map[string]interface{}{
+		"ref_id":      refID,
+		"site":        ref.FetchSite,
+		"book_id":     ref.FetchBookID,
+		"title":       ref.Title,
+		"author":      ref.Author,
+		"chapter_ids": remaining,
+	})
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+		ProjectID:   ref.ProjectID,
+		TaskType:    "reference_fetch_import",
+		Payload:     payload,
+		Priority:    6,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		h.references.MarkFetchFailed(c.Request.Context(), refID, "failed to enqueue resume task: "+err.Error()) //nolint
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(202, gin.H{
 		"ref_id":    refID,
+		"task_id":   task.ID,
 		"status":    "downloading",
 		"remaining": len(remaining),
 	})
-
-	sidecarURL := h.sidecar.BaseURL()
-	go h.runBackgroundDownload(refID, sidecarURL, ref.FetchSite, ref.FetchBookID,
-		ref.Title, ref.Author, remaining)
 }
 
 // ListReferenceChapters lists non-deleted chapters of a reference book (without content).
@@ -688,46 +724,57 @@ func (h *Handler) AnalyzeReference(c *gin.Context) {
 		return
 	}
 
-	sidecarURL := h.sidecar.BaseURL()
+	// Persist 'analyzing' status immediately so the frontend (and page refresh) can see it.
+	h.references.SetStatus(c.Request.Context(), refID, "analyzing") //nolint
 
-	// For references imported via the download flow, chapters are stored in
-	// reference_book_chapters rather than a physical file. Assemble a temp file so the
-	// sidecar can analyze the content.
+	payload, _ := json.Marshal(map[string]string{"ref_id": refID})
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+		ProjectID:   ref.ProjectID,
+		TaskType:    "reference_analyze",
+		Payload:     payload,
+		Priority:    5,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		h.references.SetStatus(c.Request.Context(), refID, "failed") //nolint
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(202, gin.H{"ref_id": refID, "task_id": task.ID, "status": "analyzing"})
+}
+
+func (h *Handler) RunReferenceAnalyze(ctx context.Context, refID string) error {
+	ref, err := h.references.Get(ctx, refID)
+	if err != nil || ref == nil {
+		return fmt.Errorf("reference not found")
+	}
+	sidecarURL := h.sidecar.BaseURL()
 	analysisFilePath := ref.FilePath
 	var tempFilePath string
 	if analysisFilePath == "" {
-		text, err := h.references.GetChaptersContent(c.Request.Context(), refID)
+		text, err := h.references.GetChaptersContent(ctx, refID)
 		if err != nil || text == "" {
-			c.JSON(400, gin.H{"error": "no content to analyze: reference has no file and no downloaded chapters"})
-			return
+			h.references.SetStatus(ctx, refID, "failed") //nolint
+			return fmt.Errorf("no content to analyze: reference has no file and no downloaded chapters")
 		}
 		uploadDir := "/data/uploads"
 		if mkErr := os.MkdirAll(uploadDir, 0o755); mkErr != nil {
-			c.JSON(500, gin.H{"error": "failed to create upload directory: " + mkErr.Error()})
-			return
+			h.references.SetStatus(ctx, refID, "failed") //nolint
+			return fmt.Errorf("failed to create upload directory: %w", mkErr)
 		}
 		tmpPath := filepath.Join(uploadDir, "analyze_"+refID+".txt")
 		if writeErr := os.WriteFile(tmpPath, []byte(text), 0o644); writeErr != nil {
-			c.JSON(500, gin.H{"error": "failed to prepare analysis file: " + writeErr.Error()})
-			return
+			h.references.SetStatus(ctx, refID, "failed") //nolint
+			return fmt.Errorf("failed to prepare analysis file: %w", writeErr)
 		}
 		analysisFilePath = tmpPath
 		tempFilePath = tmpPath
 	}
-
-	// Persist 'analyzing' status immediately so the frontend (and page refresh) can see it.
-	h.references.SetStatus(c.Request.Context(), refID, "analyzing") //nolint
-
-	// Return 202 so the browser is not blocked.
-	c.JSON(202, gin.H{"ref_id": refID, "status": "analyzing"})
-
-	// Background goroutine: call the Python sidecar and update DB on completion.
-	go h.runBackgroundAnalyze(refID, ref.ProjectID, analysisFilePath, tempFilePath, sidecarURL)
+	return h.runReferenceAnalyze(ctx, refID, ref.ProjectID, analysisFilePath, tempFilePath, sidecarURL)
 }
 
-// runBackgroundAnalyze performs the actual sidecar call and DB update asynchronously.
-func (h *Handler) runBackgroundAnalyze(refID, projectID, analysisFilePath, tempFilePath, sidecarURL string) {
-	ctx := context.Background()
+// runReferenceAnalyze performs the actual sidecar call and DB update.
+func (h *Handler) runReferenceAnalyze(ctx context.Context, refID, projectID, analysisFilePath, tempFilePath, sidecarURL string) error {
 	if tempFilePath != "" {
 		defer os.Remove(tempFilePath) //nolint
 	}
@@ -742,7 +789,7 @@ func (h *Handler) runBackgroundAnalyze(refID, projectID, analysisFilePath, tempF
 	if err != nil {
 		h.logger.Error("runBackgroundAnalyze: build request failed", zap.String("ref_id", refID), zap.Error(err))
 		h.references.SetStatus(ctx, refID, "failed") //nolint
-		return
+		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
@@ -758,7 +805,7 @@ func (h *Handler) runBackgroundAnalyze(refID, projectID, analysisFilePath, tempF
 		narrativeJSON := json.RawMessage(`{"pov_type": "限制性第三人称"}`)
 		atmosphereJSON := json.RawMessage(`{"tone_descriptions": ["待分析"]}`)
 		h.references.UpdateAnalysis(ctx, refID, styleJSON, narrativeJSON, atmosphereJSON) //nolint
-		return
+		return nil
 	}
 
 	var analysisResult struct {
@@ -771,7 +818,7 @@ func (h *Handler) runBackgroundAnalyze(refID, projectID, analysisFilePath, tempF
 	if err := json.NewDecoder(resp.Body).Decode(&analysisResult); err != nil {
 		h.logger.Error("runBackgroundAnalyze: decode failed", zap.String("ref_id", refID), zap.Error(err))
 		h.references.SetStatus(ctx, refID, "failed") //nolint
-		return
+		return err
 	}
 
 	h.references.UpdateAnalysis(ctx, refID,
@@ -786,6 +833,7 @@ func (h *Handler) runBackgroundAnalyze(refID, projectID, analysisFilePath, tempF
 			h.logger.Warn("RAG ingest failed", zap.String("ref_id", refID), zap.Error(ingestErr))
 		}
 	}()
+	return nil
 }
 
 // ragRebuildState holds the mutable state of a single RAG rebuild job.
@@ -819,54 +867,38 @@ func (s *ragRebuildState) snapshot() (status string, rebuilt int, errMsg string)
 
 // ── RAG knowledge-base handlers ───────────────────────────────────────────────
 
-// RebuildRAG starts a background goroutine to re-index all project vectors and
+// RebuildRAG enqueues a tracked task to re-index all project vectors and
 // returns 202 immediately. The frontend should poll GET /projects/:id/rag/rebuild-status.
 func (h *Handler) RebuildRAG(c *gin.Context) {
 	projectID := c.Param("id")
-
-	// If a rebuild is already running for this project, return its current status.
-	if v, ok := h.ragRebuildJobs.Load(projectID); ok {
-		job := v.(*ragRebuildState)
-		status, rebuilt, errMsg := job.snapshot()
-		if status == "running" {
-			c.JSON(202, gin.H{"status": "running", "project_id": projectID})
-			return
-		}
-		// Previous run finished — a new click should start a fresh rebuild.
-		_ = rebuilt
-		_ = errMsg
+	task, err := h.taskQueue.Enqueue(c.Request.Context(), models.CreateTaskRequest{
+		ProjectID:   projectID,
+		TaskType:    "rag_rebuild",
+		Payload:     json.RawMessage(`{}`),
+		Priority:    4,
+		MaxAttempts: 1,
+	})
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
 	}
-
-	job := &ragRebuildState{status: "running"}
-	h.ragRebuildJobs.Store(projectID, job)
-
-	// Respond immediately so the browser is not blocked.
-	c.JSON(202, gin.H{"status": "running", "project_id": projectID})
-
-	go func() {
-		rebuilt, err := h.references.RebuildProject(context.Background(), projectID)
-		if err != nil {
-			h.logger.Error("RebuildRAG background failed",
-				zap.String("project_id", projectID), zap.Error(err))
-			job.markFailed(err.Error())
-		} else {
-			h.logger.Info("RebuildRAG background completed",
-				zap.String("project_id", projectID), zap.Int("rebuilt", rebuilt))
-			job.markDone(rebuilt)
-		}
-	}()
+	c.JSON(202, gin.H{"status": "running", "project_id": projectID, "task_id": task.ID})
 }
 
 // GetRebuildRAGStatus returns the current state of the most recent rebuild job.
 func (h *Handler) GetRebuildRAGStatus(c *gin.Context) {
 	projectID := c.Param("id")
-	if v, ok := h.ragRebuildJobs.Load(projectID); ok {
-		job := v.(*ragRebuildState)
-		status, rebuilt, errMsg := job.snapshot()
+	task, err := h.latestTaskByType(c.Request.Context(), projectID, "rag_rebuild")
+	if err == nil && task != nil {
+		status := task.Status
+		if status == "done" {
+			status = "completed"
+		}
 		c.JSON(200, gin.H{
 			"status":          status,
-			"rebuilt_sources": rebuilt,
-			"error":           errMsg,
+			"rebuilt_sources": 0,
+			"error":           task.ErrorMessage,
+			"task_id":         task.ID,
 		})
 		return
 	}
