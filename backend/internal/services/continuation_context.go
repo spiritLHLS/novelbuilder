@@ -3,8 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
-
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 )
 
 type ContinuationContext struct {
@@ -21,7 +20,7 @@ type ReferenceChapterSnippet struct {
 	Snippet   string
 }
 
-func loadContinuationContext(ctx context.Context, db *pgxpool.Pool, projectID string) (ContinuationContext, error) {
+func loadContinuationContext(ctx context.Context, db *database.DB, projectID string) (ContinuationContext, error) {
 	var out ContinuationContext
 	var isContinuation bool
 	var refID *string
@@ -58,7 +57,7 @@ func loadContinuationContext(ctx context.Context, db *pgxpool.Pool, projectID st
 	return out, nil
 }
 
-func nextWritableChapterNum(ctx context.Context, db *pgxpool.Pool, projectID string) (int, error) {
+func nextWritableChapterNum(ctx context.Context, db *database.DB, projectID string) (int, error) {
 	var maxChapter int
 	if err := db.QueryRow(ctx,
 		`SELECT COALESCE(MAX(chapter_num), 0) FROM chapters WHERE project_id = $1`,
@@ -77,7 +76,7 @@ func nextWritableChapterNum(ctx context.Context, db *pgxpool.Pool, projectID str
 	return next, nil
 }
 
-func loadContinuationTail(ctx context.Context, db *pgxpool.Pool, refID string, beforeChapter int, limit int, snippetRunes int) ([]ReferenceChapterSnippet, error) {
+func loadContinuationTail(ctx context.Context, db *database.DB, refID string, beforeChapter int, limit int, snippetRunes int) ([]ReferenceChapterSnippet, error) {
 	if refID == "" || beforeChapter <= 1 {
 		return nil, nil
 	}

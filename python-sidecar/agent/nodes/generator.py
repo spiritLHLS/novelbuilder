@@ -1,6 +1,6 @@
 """
-Generator Node — calls the LLM with Lost-in-Middle arranged context and
-produces a chapter draft.  Also generates a chapter summary for memory update.
+Generator Node — calls the LLM with the runtime evidence pack and produces a
+chapter draft. Also generates a chapter summary for memory update.
 """
 from __future__ import annotations
 
@@ -26,6 +26,10 @@ _SYSTEM = (
     "\n6. 心理描写必须先有触发源，再有情绪波动，最后落到判断、对话或动作，禁止空转式内心独白"
     "\n7. 每一个场景至少产生一种推进：信息揭示、风险升级、关系变化、目标受阻、代价落地"
     "\n8. 如需写环境、氛围、感官细节，必须让读者看见它如何改变人物的决定或下一步行动"
+    "\n9. 内部先拆1-3张场景卡（目标/障碍/信息增量/关系变化/承接证据/断章点），但不要输出场景卡"
+    "\n10. 避免AI指纹：看了一眼/心跳漏了一拍/眼眶红了，不是……是……，沉默/安静了X秒，空气中弥漫着XX气味，只剩空调/显示器/机器嗡鸣"
+    "\n11. 现代生活细节不能默认咖啡、星巴克、糖醋排骨、炖排骨、烤肉店、日料店；饮食、品牌、交通和空间细节必须服从人物地域、阶层、年龄和当时目的"
+    "\n12. 句首、代词、句长要有变化；允许角色自然暴露烦躁、疲惫、嫉妒、厌恶、尴尬、后悔等消极情绪"
     "\n\n【强制断章规范】"
     "\n章节必须在动作、对话或悬念的高点处戛然而止。"
     "\n严禁：总结段、展望段、升华段、情绪收束段、预告性句式（如'他知道...未来...'）。"
@@ -49,7 +53,7 @@ _SUMMARY_SYSTEM = (
 
 
 def _build_prompt(state: AgentState) -> str:
-    """Assemble the full prompt using Lost-in-Middle layout."""
+    """Assemble the full prompt using the runtime evidence pack."""
     anchor_top = state.get("anchor_top", "")
     context_middle = state.get("context_middle", "")
     anchor_bottom = state.get("anchor_bottom", "")

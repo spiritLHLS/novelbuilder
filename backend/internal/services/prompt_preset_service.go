@@ -7,18 +7,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
 
 type PromptPresetService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewPromptPresetService(db *pgxpool.Pool, logger *zap.Logger) *PromptPresetService {
+func NewPromptPresetService(db *database.DB, logger *zap.Logger) *PromptPresetService {
 	return &PromptPresetService{db: db, logger: logger}
 }
 
@@ -68,7 +67,7 @@ func (s *PromptPresetService) Get(ctx context.Context, id string) (*models.Promp
 		&p.ID, &p.ProjectID, &p.Name, &p.Description, &p.Category,
 		&p.Content, &p.Variables, &p.IsGlobal, &p.SortOrder,
 		&p.CreatedAt, &p.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

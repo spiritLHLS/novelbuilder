@@ -7,8 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -16,11 +15,11 @@ import (
 // ResourceLedgerService manages the story resource ledger inspired by InkOS particle_ledger.
 // It tracks named resources (items, currency, relationships, etc.) and their per-chapter deltas.
 type ResourceLedgerService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewResourceLedgerService(db *pgxpool.Pool, logger *zap.Logger) *ResourceLedgerService {
+func NewResourceLedgerService(db *database.DB, logger *zap.Logger) *ResourceLedgerService {
 	return &ResourceLedgerService{db: db, logger: logger}
 }
 
@@ -52,7 +51,7 @@ func (s *ResourceLedgerService) Get(ctx context.Context, id string) (*models.Sto
 		 FROM story_resources WHERE id = $1`, id).Scan(
 		&r.ID, &r.ProjectID, &r.Name, &r.Category,
 		&r.Quantity, &r.Unit, &r.Description, &r.Holder, &r.CreatedAt, &r.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

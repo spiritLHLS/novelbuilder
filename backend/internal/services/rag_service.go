@@ -5,11 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/novelbuilder/backend/internal/database"
+	"go.uber.org/zap"
 	"net/http"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-	"go.uber.org/zap"
 )
 
 // RAGService handles vector retrieval.
@@ -17,13 +16,13 @@ import (
 // Qdrant endpoints. The PostgreSQL vector_store table is kept for metadata
 // but vector operations no longer use pgvector.
 type RAGService struct {
-	db         *pgxpool.Pool
+	db         *database.DB
 	sidecarURL string
 	httpClient *http.Client
 	logger     *zap.Logger
 }
 
-func NewRAGService(db *pgxpool.Pool, sidecarURL string, logger *zap.Logger) *RAGService {
+func NewRAGService(db *database.DB, sidecarURL string, logger *zap.Logger) *RAGService {
 	return &RAGService{
 		db:         db,
 		sidecarURL: sidecarURL,

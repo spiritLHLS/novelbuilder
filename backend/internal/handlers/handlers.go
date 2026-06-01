@@ -137,6 +137,7 @@ func NewHandler(
 // the public auth endpoints (login/logout) which must be registered separately.
 func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFunc) {
 	api := r.Group("/api")
+	api.GET("/health", h.Health)
 	if len(authMiddleware) > 0 {
 		api.Use(authMiddleware...)
 	}
@@ -263,8 +264,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 	api.GET("/settings", h.GetSystemSettings)
 	api.PUT("/settings/:key", h.SetSystemSetting)
 	api.DELETE("/settings/:key", h.DeleteSystemSetting)
-
-	api.GET("/health", h.Health)
 
 	// Change propagation
 	api.POST("/projects/:id/change-events", h.CreateChangeEvent)

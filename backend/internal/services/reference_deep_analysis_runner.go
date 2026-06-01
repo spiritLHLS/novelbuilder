@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/retry"
 	"go.uber.org/zap"
@@ -237,7 +237,7 @@ func (s *ReferenceDeepAnalysisService) isJobCancelled(ctx context.Context, jobID
 	err := s.db.QueryRow(ctx,
 		`SELECT status FROM reference_analysis_jobs WHERE id=$1`, jobID).Scan(&status)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return true, nil
 		}
 		return false, err

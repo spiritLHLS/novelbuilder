@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
@@ -36,7 +36,7 @@ func buildChapterUserPrompt(chapterNum int, req models.GenerateChapterRequest, o
 
 硬性要求：
 1. ⚠️ 字数硬上限：正文不得超过 %d 字。当写作接近 %d 字时立即执行断章收尾；字数不足 %d 字时通过对话和动作细节充实。超出上限是严重错误。
-2. 本章只展开上方大纲列出的事件（最多3件），事件展开优先用**对话和动作**推进（不要大段景物描写）
+2. 内部先把本章拆成1～3个场景卡（目标/障碍/信息增量/关系变化/承接证据/断章点），但不要输出场景卡；正文只展开上方大纲列出的事件（最多3件），事件展开优先用**对话和动作**推进（不要大段景物描写）
 3. 从上一章结尾处自然承接，禁止复述前文，延续前一章的语言风格和叙述节奏
 4. 严格锁定指定POV视角，不写该角色感知不到的信息
 5. **强制断章要求**：章节必须在场景动作、对话或悬念的高点处戛然而止
@@ -44,7 +44,7 @@ func buildChapterUserPrompt(chapterNum int, req models.GenerateChapterRequest, o
    - 禁止预告句式：【他知道XXX】【未来XXX】【更大的XXX即将到来】
    - 最后一段不超过2句话，必须是未完成的动作/对话/悬念
    - 参考网文断章：在读者最想知道下文时立即断开
-6. 遵守系统提示中的全部反AI文风规则（禁用微微/缓缓/淡淡等）
+6. 遵守系统提示中的全部反AI文风和AI指纹规避规则：不要套用“看了一眼/心跳漏了一拍/眼眶红了”“空气中弥漫着XX气味”“只剩XX嗡鸣”“不是……是……”等固定模板
 7. **角色能力严格遵循时间线**：
    - 角色只能使用系统提示【角色状态】中已明确记载的能力/装备/身份
    - 禁止给角色突然出现未记录的新能力、新武器、新师承、新身份
@@ -142,7 +142,7 @@ func (s *ChapterService) generateChapter(ctx context.Context, projectID string, 
 	req.ChapterWordsMin = wordsMin
 	req.ChapterWordsMax = wordsMax
 
-	// Build system prompt using HEAD/MIDDLE/TAIL (Lost-in-Middle) layout
+	// Build system prompt as a runtime evidence pack.
 	systemPrompt := s.buildSystemPrompt(ctx, projectID, chapterNum, req)
 
 	outlineEvents := s.loadOutlineEvents(ctx, projectID, chapterNum)
@@ -203,7 +203,7 @@ func (s *ChapterService) generateChapter(ctx context.Context, projectID string, 
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
 		&ch.GenreComplianceScore, &ch.GenreViolations,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		existing, qErr := s.GetByProjectAndNum(ctx, projectID, chapterNum)
 		if qErr != nil || existing == nil {
 			return nil, fmt.Errorf("save chapter: conflict but fetch also failed: %w", qErr)
@@ -218,8 +218,10 @@ func (s *ChapterService) generateChapter(ctx context.Context, projectID string, 
 	}
 	_ = s.CreateSnapshot(ctx, ch.ID, "generated", "initial generated snapshot")
 
-	s.rdb.Set(ctx, fmt.Sprintf("chapter_summary:%s:%d", projectID, chapterNum), summary, 7*24*time.Hour)
-	s.rdb.Set(ctx, fmt.Sprintf("chapter_content:%s:%d", projectID, chapterNum), chapterContent, 24*time.Hour)
+	if s.rdb != nil {
+		s.rdb.Set(ctx, fmt.Sprintf("chapter_summary:%s:%d", projectID, chapterNum), summary, 7*24*time.Hour)
+		s.rdb.Set(ctx, fmt.Sprintf("chapter_content:%s:%d", projectID, chapterNum), chapterContent, 24*time.Hour)
+	}
 
 	go func(pid, cid, content string, cNum int) {
 		sCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -444,7 +446,7 @@ func (s *ChapterService) logChapterSimilarity(ctx context.Context, projectID, ch
 		return
 	}
 
-	batch := &pgx.Batch{}
+	batch := &database.Batch{}
 	for rows.Next() {
 		var prevID string
 		var prevNum int
@@ -457,11 +459,18 @@ func (s *ChapterService) logChapterSimilarity(ctx context.Context, projectID, ch
 			continue
 		}
 		sim := jaccardSimilarity(newGrams, prevGrams)
+		segments, _ := json.Marshal([]map[string]interface{}{
+			{
+				"detection_method": "ngram_jaccard",
+				"chapter_num":      chapterNum,
+				"similar_chapter":  prevNum,
+			},
+		})
 		batch.Queue(
-			`INSERT INTO chapter_similarity_log (project_id, chapter_a_id, chapter_b_id, similarity_score, detection_method, created_at)
-			 VALUES ($1, $2, $3, $4, 'ngram_jaccard', NOW())
+			`INSERT INTO chapter_similarity_log (project_id, chapter_id, similar_chapter_id, similarity_score, similar_segments, created_at)
+			 VALUES ($1, $2, $3, $4, $5, NOW())
 			 ON CONFLICT DO NOTHING`,
-			projectID, chapterID, prevID, sim)
+			projectID, chapterID, prevID, sim, segments)
 		if sim > 0.4 {
 			s.logger.Warn("high chapter similarity detected",
 				zap.String("project_id", projectID),

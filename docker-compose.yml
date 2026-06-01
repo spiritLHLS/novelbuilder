@@ -12,19 +12,18 @@ services:
       # All four are required; omitting any will cause data loss on recreation.
       - novelbuilder-pg:/var/lib/postgresql/data       # PostgreSQL: projects, chapters, characters...
       - novelbuilder-qdrant:/var/lib/qdrant            # Qdrant: vector index (RAG rebuild results)
-      - novelbuilder-neo4j:/opt/neo4j/data             # Neo4j: knowledge graph / agent long-term memory
+      - novelbuilder-neo4j:/opt/neo4j/data             # Neo4j: knowledge graph
       - novelbuilder-uploads:/data/uploads             # Uploaded reference books (txt/pdf files)
     restart: unless-stopped
-    # Optional env overrides — defaults are safe for single-container deployment.
-    # environment:
-    #   # ── Authentication ──────────────────────────────────────────────────────
-    #   ADMIN_USERNAME: spiritlhl          # login username (default: spiritlhl)
-    #   ADMIN_PASSWORD: spiritlhl136@136   # login password (change this!)
-    #   SESSION_TTL_HOURS: "24"            # session lifetime in hours (default: 24)
-    #   # ── Database (only needed when connecting to an external PG instance) ───
-    #   DB_PASSWORD: changeme
-    #   # ── Neo4j (only needed when connecting to an external Neo4j instance) ───
-    #   NEO4J_PASSWORD: changeme
+    environment:
+      APP_PROFILE: full
+      DB_DRIVER: postgres
+      # Optional overrides:
+      # ADMIN_USERNAME: spiritlhl
+      # ADMIN_PASSWORD: change-this
+      # SESSION_TTL_HOURS: "24"
+      # DB_PASSWORD: changeme
+      # NEO4J_PASSWORD: changeme
 
 volumes:
   novelbuilder-pg:

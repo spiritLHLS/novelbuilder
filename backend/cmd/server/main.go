@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/novelbuilder/backend/internal/middleware"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/services"
+	"github.com/novelbuilder/backend/internal/sessions"
 	"github.com/novelbuilder/backend/internal/workflow"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -65,6 +67,9 @@ func main() {
 		logger.Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer db.Close()
+	if err := database.AutoMigrate(context.Background(), db.GORM(), logger); err != nil {
+		logger.Fatal("failed to auto-migrate database schema", zap.Error(err))
+	}
 	if err := database.EnsureRuntimeSchema(context.Background(), db, logger); err != nil {
 		logger.Fatal("failed to ensure runtime database schema", zap.Error(err))
 	}
@@ -74,7 +79,10 @@ func main() {
 	if err != nil {
 		logger.Fatal("failed to connect to redis", zap.Error(err))
 	}
-	defer rdb.Close()
+	if rdb != nil {
+		defer rdb.Close()
+	}
+	sessionStore := sessions.NewStore(rdb, logger)
 
 	// Bootstrap system settings: auto-generate encryption key on first run.
 	// No ENCRYPTION_KEY env var is needed; the key is stored in system_settings.
@@ -82,6 +90,23 @@ func main() {
 	encryptionKey, err := sysSettings.BootstrapEncryptionKey(context.Background())
 	if err != nil {
 		logger.Fatal("failed to bootstrap encryption key", zap.Error(err))
+	}
+	if err := sysSettings.SyncDefaults(context.Background(), map[string]string{
+		"quality.ai_fingerprint_guard": "enabled",
+		"generation.context_policy":    "ledger-window-summary",
+		"generation.default_language":  "zh-CN",
+	}); err != nil {
+		logger.Fatal("failed to sync default settings", zap.Error(err))
+	}
+	if err := sysSettings.SyncRuntimeSnapshot(context.Background(), map[string]string{
+		"runtime.profile":         cfg.App.Profile,
+		"runtime.database_driver": cfg.Database.Driver,
+		"runtime.redis_enabled":   fmt.Sprintf("%t", rdb != nil),
+		"runtime.session_store":   sessionStore.Mode(),
+		"runtime.sidecar_url":     cfg.PythonSidecar.URL,
+		"runtime.task_workers":    fmt.Sprintf("%d", cfg.TaskQueue.Workers),
+	}); err != nil {
+		logger.Fatal("failed to sync runtime settings", zap.Error(err))
 	}
 
 	// All AI model config is stored in the database (llm_profiles table).
@@ -93,7 +118,7 @@ func main() {
 	wfEngine := workflow.NewEngine(db, logger)
 
 	// Initialize Services
-	projectService := services.NewProjectService(db, logger)
+	projectService := services.NewProjectService(db, db.GORM(), logger)
 	ragService := services.NewRAGService(db, cfg.PythonSidecar.URL, logger)
 	originalityService := services.NewOriginalityService(db, cfg.PythonSidecar.URL, logger)
 	propagationService := services.NewEditPropagationService(db, aiGateway, logger)
@@ -129,6 +154,9 @@ func main() {
 	characterInteractionService := services.NewCharacterInteractionService(db, logger)
 	radarService := services.NewRadarService(db, aiGateway, logger)
 	genreTemplateService := services.NewGenreTemplateService(db, logger)
+	if err := genreTemplateService.EnsureDefaults(context.Background()); err != nil {
+		logger.Warn("failed to seed genre templates", zap.Error(err))
+	}
 	blueprintService := services.NewBlueprintService(
 		db, aiGateway, wfEngine,
 		worldBibleService, characterService, foreshadowingService,
@@ -150,22 +178,23 @@ func main() {
 		logger,
 	)
 
-	// Start background task worker pool
-	taskQueueService.Start()
-	defer taskQueueService.Stop()
-
 	// ── Auto-Write background daemon ──────────────────────────────────────────────
 	// Every minute, enqueue generate_next_chapter for each project with auto_write_enabled.
 	serverCtx, serverCancel := context.WithCancel(context.Background())
 	defer serverCancel()
 	go func() {
+		lastRun := map[string]int64{}
+		var lastRunMu sync.Mutex
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
 				rows, qErr := db.Query(serverCtx,
-					`SELECT id, auto_write_interval FROM projects WHERE auto_write_enabled = TRUE AND status = 'active'`)
+					`SELECT id, auto_write_interval
+					   FROM projects
+					  WHERE auto_write_enabled = TRUE
+					    AND COALESCE(status, '') NOT IN ('completed', 'archived')`)
 				if qErr != nil {
 					logger.Warn("auto_write query failed", zap.Error(qErr))
 					continue
@@ -184,17 +213,30 @@ func main() {
 						// Check Redis to see when last auto-write ran for this project.
 						lastKey := fmt.Sprintf("auto_write_last:%s", pid)
 						var shouldEnqueue bool
-						lastVal, rErr := rdb.Get(serverCtx, lastKey).Int64()
-						if rErr != nil {
-							shouldEnqueue = true // never ran
+						if rdb != nil {
+							lastVal, rErr := rdb.Get(serverCtx, lastKey).Int64()
+							if rErr != nil {
+								shouldEnqueue = true // never ran
+							} else {
+								elapsed := time.Now().Unix() - lastVal
+								shouldEnqueue = elapsed >= int64(intervalMins)*60
+							}
 						} else {
-							elapsed := time.Now().Unix() - lastVal
-							shouldEnqueue = elapsed >= int64(intervalMins)*60
+							lastRunMu.Lock()
+							lastVal := lastRun[lastKey]
+							shouldEnqueue = lastVal == 0 || time.Now().Unix()-lastVal >= int64(intervalMins)*60
+							lastRunMu.Unlock()
 						}
 						if !shouldEnqueue {
 							continue
 						}
-						rdb.Set(serverCtx, lastKey, time.Now().Unix(), time.Duration(intervalMins*2)*time.Minute)
+						if rdb != nil {
+							rdb.Set(serverCtx, lastKey, time.Now().Unix(), time.Duration(intervalMins*2)*time.Minute)
+						} else {
+							lastRunMu.Lock()
+							lastRun[lastKey] = time.Now().Unix()
+							lastRunMu.Unlock()
+						}
 						if _, enqErr := taskQueueService.Enqueue(serverCtx, models.CreateTaskRequest{
 							TaskType:  "generate_next_chapter",
 							ProjectID: pid,
@@ -474,6 +516,12 @@ func main() {
 		return nil
 	})
 
+	// Start the worker pool only after every handler is registered. Starting it
+	// earlier can pick up pending rows and mark them failed before their handler
+	// exists.
+	taskQueueService.Start()
+	defer taskQueueService.Stop()
+
 	// Setup Gin router
 	r := gin.Default()
 
@@ -489,15 +537,53 @@ func main() {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger(logger))
 
+	r.GET("/api/setup/status", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+		sidecarStatus := gin.H{"ok": false}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.PythonSidecar.URL+"/runtime/capabilities", nil)
+		if err == nil {
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				sidecarStatus["error"] = err.Error()
+			} else {
+				defer resp.Body.Close()
+				sidecarStatus["ok"] = resp.StatusCode >= 200 && resp.StatusCode < 300
+				sidecarStatus["status_code"] = resp.StatusCode
+				var capabilities map[string]interface{}
+				if err := json.NewDecoder(resp.Body).Decode(&capabilities); err == nil {
+					sidecarStatus["capabilities"] = capabilities
+				}
+			}
+		} else {
+			sidecarStatus["error"] = err.Error()
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"initialized": true,
+			"profile":     cfg.App.Profile,
+			"backend": gin.H{
+				"database_driver": cfg.Database.Driver,
+				"session_store":   sessionStore.Mode(),
+				"redis_enabled":   rdb != nil,
+			},
+			"sidecar": sidecarStatus,
+			"next": gin.H{
+				"login_path": "/login",
+				"settings":   "/settings/llm",
+			},
+		})
+	})
+
 	// ── Authentication ────────────────────────────────────────────────────────
 	authHandler := handlers.NewAuthHandler(
 		cfg.Auth.Username,
 		cfg.Auth.Password,
-		rdb,
+		sessionStore,
 		cfg.Auth.SessionTTLHours,
 	)
 	sessionTTL := time.Duration(cfg.Auth.SessionTTLHours) * time.Hour
-	authMiddleware := middleware.RequireAuth(rdb, sessionTTL)
+	authMiddleware := middleware.RequireAuth(sessionStore, sessionTTL)
 
 	// Public auth endpoints — no token required.
 	r.POST("/api/auth/login", authHandler.Login)

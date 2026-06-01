@@ -4,18 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"strings"
-	"time"
-	"unicode/utf8"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/workflow"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+	"net/http"
+	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 // ============================================================
@@ -23,7 +21,7 @@ import (
 // ============================================================
 
 type ChapterService struct {
-	db          *pgxpool.Pool
+	db          *database.DB
 	rdb         *redis.Client
 	ai          *gateway.AIGateway
 	wf          *workflow.Engine
@@ -40,7 +38,7 @@ type ChapterService struct {
 var ErrOnlyLatestChapterDeletable = errors.New("only the latest chapter can be deleted")
 
 func NewChapterService(
-	db *pgxpool.Pool,
+	db *database.DB,
 	rdb *redis.Client,
 	ai *gateway.AIGateway,
 	wf *workflow.Engine,
@@ -69,6 +67,9 @@ func NewChapterService(
 }
 
 func (s *ChapterService) PingRedis(ctx context.Context) error {
+	if s.rdb == nil {
+		return fmt.Errorf("redis disabled")
+	}
 	return s.rdb.Ping(ctx).Err()
 }
 
@@ -113,7 +114,7 @@ func (s *ChapterService) Get(ctx context.Context, id string) (*models.Chapter, e
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
 		&ch.GenreComplianceScore, &ch.GenreViolations,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -174,7 +175,7 @@ func (s *ChapterService) GetByProjectAndNum(ctx context.Context, projectID strin
 		&ch.WordCount, &ch.Summary, &ch.GenParams, &ch.QualityReport, &ch.OriginalityScore,
 		&ch.GenreComplianceScore, &ch.GenreViolations,
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -214,7 +215,7 @@ func (s *ChapterService) Delete(ctx context.Context, id string) error {
 	var chapterNum int
 	err = tx.QueryRow(ctx,
 		`SELECT project_id, chapter_num FROM chapters WHERE id = $1`, id).Scan(&projectID, &chapterNum)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
@@ -314,7 +315,7 @@ func (s *ChapterService) RestoreFromSnapshot(ctx context.Context, chapterID, sna
 		&snapshot.Content, &snapshot.WordCount, &snapshot.Summary, &snapshot.QualityReport,
 		&snapshot.OriginalityScore, &snapshot.Source, &snapshot.Note, &snapshot.CreatedAt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -489,7 +490,7 @@ func (s *ChapterService) UpdateManualContent(ctx context.Context, id, title, con
 		&ch.Status, &ch.Version, &ch.ReviewComment, &ch.CreatedAt, &ch.UpdatedAt,
 	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, workflow.ErrOptimisticLock
 		}
 		return nil, err
@@ -552,4 +553,4 @@ func (s *ChapterService) Regenerate(ctx context.Context, id string, req models.G
 
 // settleChapterState performs post-generation state settlement in a background goroutine.
 // It makes a single LLM call to extract character state changes and foreshadowing resolutions
-// from the chapter content, then applies all updates in one pgx.Batch to avoid N+1 queries.
+// from the chapter content, then applies all updates in one database.Batch to avoid N+1 queries.

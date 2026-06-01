@@ -75,7 +75,7 @@ type AgentRunRequest struct {
 
 // BatchAgentRunRequest drives POST /agent/batch-run on the Python sidecar.
 // Chapters are generated sequentially so that memory from each chapter
-// feeds into the next (RecurrentGPT continuity requirement).
+// feeds into the next chapter's runtime evidence pack.
 type BatchAgentRunRequest struct {
 	ChapterNums  []int                  `json:"chapter_nums"`  // ordered list of chapter numbers
 	OutlineHints map[string]string      `json:"outline_hints"` // str(chapter_num) -> hint

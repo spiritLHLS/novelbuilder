@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
@@ -405,7 +405,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 	}
 
 	if len(parsed.Characters) > 0 {
-		chBatch := &pgx.Batch{}
+		chBatch := &database.Batch{}
 		for _, ch := range parsed.Characters {
 			profileJSON := ch.Profile
 			if len(profileJSON) == 0 {
@@ -437,7 +437,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 	}
 
 	if len(parsed.Foreshadowings) > 0 {
-		fsBatch := &pgx.Batch{}
+		fsBatch := &database.Batch{}
 		for _, fs := range parsed.Foreshadowings {
 			embedMethod := fs.EmbedMethod
 			if embedMethod == "" {
@@ -499,7 +499,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 			projectID, newVolumeCount); err != nil {
 			return fmt.Errorf("delete excess volumes: %w", err)
 		}
-		volBatch := &pgx.Batch{}
+		volBatch := &database.Batch{}
 		for i, vol := range parsed.Volumes {
 			title := vol.Title
 			if title == "" {
@@ -536,7 +536,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 			return fmt.Errorf("delete existing chapter outlines: %w", err)
 		}
 
-		outlineBatch := &pgx.Batch{}
+		outlineBatch := &database.Batch{}
 		for _, chOutline := range parsed.ChapterOutlines {
 			title := chOutline.Title
 			if title == "" {

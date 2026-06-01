@@ -10,12 +10,17 @@ import (
 // quality thresholds, encryption key, etc.) are stored in the system_settings
 // table and managed through the frontend UI.
 type Config struct {
+	App           AppConfig
 	Server        ServerConfig
 	Database      DatabaseConfig
 	Redis         RedisConfig
 	PythonSidecar PythonSidecarConfig
 	TaskQueue     TaskQueueConfig
 	Auth          AuthConfig
+}
+
+type AppConfig struct {
+	Profile string
 }
 
 type ServerConfig struct {
@@ -25,17 +30,20 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
+	Driver       string
 	Host         string
 	Port         int
 	User         string
 	Password     string
 	DBName       string
 	SSLMode      string
+	SQLitePath   string
 	MaxOpenConns int
 	MaxIdleConns int
 }
 
 type RedisConfig struct {
+	Enabled  bool
 	Addr     string
 	Password string
 	DB       int
@@ -75,27 +83,45 @@ func envInt(key string, def int) int {
 	return def
 }
 
+func envBool(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		switch v {
+		case "1", "true", "TRUE", "yes", "YES", "on", "ON":
+			return true
+		case "0", "false", "FALSE", "no", "NO", "off", "OFF":
+			return false
+		}
+	}
+	return def
+}
+
 // Load reads configuration exclusively from environment variables with
 // safe defaults that match the bundled single-container setup.
 // No config files are read; run `docker run -e DB_HOST=... novelbuilder` to override.
 func Load() *Config {
 	return &Config{
+		App: AppConfig{
+			Profile: envStr("APP_PROFILE", "full"),
+		},
 		Server: ServerConfig{
 			Host: envStr("SERVER_HOST", "0.0.0.0"),
 			Port: envInt("SERVER_PORT", 8080),
 			Mode: envStr("SERVER_MODE", "release"),
 		},
 		Database: DatabaseConfig{
+			Driver:       envStr("DB_DRIVER", "postgres"),
 			Host:         envStr("DB_HOST", "127.0.0.1"),
 			Port:         envInt("DB_PORT", 5432),
 			User:         envStr("DB_USER", "novelbuilder"),
 			Password:     envStr("DB_PASSWORD", "novelbuilder"),
 			DBName:       envStr("DB_NAME", "novelbuilder"),
 			SSLMode:      envStr("DB_SSLMODE", "disable"),
+			SQLitePath:   envStr("SQLITE_PATH", "/data/novelbuilder.db"),
 			MaxOpenConns: envInt("DB_MAX_OPEN_CONNS", 25),
 			MaxIdleConns: envInt("DB_MAX_IDLE_CONNS", 5),
 		},
 		Redis: RedisConfig{
+			Enabled:  envBool("REDIS_ENABLED", true),
 			Addr:     envStr("REDIS_ADDR", "127.0.0.1:6379"),
 			Password: envStr("REDIS_PASSWORD", ""),
 			DB:       envInt("REDIS_DB", 0),

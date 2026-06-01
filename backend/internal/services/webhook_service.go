@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -48,12 +48,12 @@ func isPrivateURL(rawURL string) bool {
 }
 
 type WebhookService struct {
-	db         *pgxpool.Pool
+	db         *database.DB
 	httpClient *http.Client
 	logger     *zap.Logger
 }
 
-func NewWebhookService(db *pgxpool.Pool, logger *zap.Logger) *WebhookService {
+func NewWebhookService(db *database.DB, logger *zap.Logger) *WebhookService {
 	return &WebhookService{
 		db:         db,
 		httpClient: &http.Client{Timeout: 10 * time.Second},

@@ -1,0 +1,8 @@
+ARG BASE_IMAGE=spiritlhl/novelbuilder:standard
+FROM ${BASE_IMAGE}
+
+ENV APP_PROFILE=no-redis
+ENV REDIS_ENABLED=false
+ENV REDIS_URL=""
+
+COPY docker/supervisord.no-redis.conf /etc/supervisor/conf.d/supervisord.conf

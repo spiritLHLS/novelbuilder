@@ -6,14 +6,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
+	"github.com/novelbuilder/backend/internal/sessions"
 )
 
-const sessionKeyPrefix = "session:"
-
-// RequireAuth validates the Bearer token stored in Redis.
+// RequireAuth validates the Bearer token stored in the configured session store.
 // Returns 401 when the token is missing, invalid, or expired.
-func RequireAuth(rdb *redis.Client, sessionTTL time.Duration) gin.HandlerFunc {
+func RequireAuth(store sessions.Store, sessionTTL time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var token string
 		header := c.GetHeader("Authorization")
@@ -29,15 +27,14 @@ func RequireAuth(rdb *redis.Client, sessionTTL time.Duration) gin.HandlerFunc {
 			return
 		}
 
-		key := sessionKeyPrefix + token
-		username, err := rdb.Get(context.Background(), key).Result()
+		username, err := store.Get(context.Background(), token)
 		if err != nil || username == "" {
 			c.AbortWithStatusJSON(401, gin.H{"error": "unauthorized"})
 			return
 		}
 
 		// Slide the expiry window on every successful request.
-		rdb.Expire(context.Background(), key, sessionTTL)
+		_ = store.Extend(context.Background(), token, sessionTTL)
 
 		c.Set("username", username)
 		c.Next()

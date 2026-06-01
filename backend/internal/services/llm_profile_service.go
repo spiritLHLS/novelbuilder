@@ -8,9 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/crypto"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -19,12 +18,12 @@ import (
 // All AI services resolve their model configuration through this service at runtime,
 // meaning a single profile with is_default=true is used for everything unless overridden.
 type LLMProfileService struct {
-	db            *pgxpool.Pool
+	db            *database.DB
 	encryptionKey string
 	logger        *zap.Logger
 }
 
-func NewLLMProfileService(db *pgxpool.Pool, encryptionKey string, logger *zap.Logger) *LLMProfileService {
+func NewLLMProfileService(db *database.DB, encryptionKey string, logger *zap.Logger) *LLMProfileService {
 	return &LLMProfileService{db: db, encryptionKey: encryptionKey, logger: logger}
 }
 
@@ -106,7 +105,7 @@ func (s *LLMProfileService) Get(ctx context.Context, id string) (*models.LLMProf
 		&p.OmitMaxTokens, &p.OmitTemperature, &p.APIStyle, &p.IsDefault,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get llm_profile: %w", err)
@@ -158,7 +157,7 @@ func (s *LLMProfileService) GetDefault(ctx context.Context) (*models.LLMProfileF
 		&p.OmitMaxTokens, &p.OmitTemperature, &p.APIStyle, &p.IsDefault,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, nil // no default profile configured yet
 		}
 		return nil, fmt.Errorf("get default llm_profile: %w", err)

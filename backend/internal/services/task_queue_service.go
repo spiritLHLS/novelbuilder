@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -22,7 +22,7 @@ import (
 type TaskHandler func(ctx context.Context, task models.TaskQueueItem) error
 
 type TaskQueueService struct {
-	db         *pgxpool.Pool
+	db         *database.DB
 	maxRetries int
 	workers    int
 	logger     *zap.Logger
@@ -35,7 +35,7 @@ type TaskQueueService struct {
 	wg         sync.WaitGroup
 }
 
-func NewTaskQueueService(db *pgxpool.Pool, workers, maxRetries int, logger *zap.Logger) *TaskQueueService {
+func NewTaskQueueService(db *database.DB, workers, maxRetries int, logger *zap.Logger) *TaskQueueService {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &TaskQueueService{
 		db:         db,
@@ -162,7 +162,7 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 		&task.Status, &task.Priority, &task.Attempts, &task.MaxAttempts,
 		&task.ErrorMessage, &task.ScheduledAt, &task.CreatedAt, &task.UpdatedAt)
 	if err != nil {
-		return err // pgx.ErrNoRows → nothing to do
+		return err // database.ErrNoRows → nothing to do
 	}
 
 	now := time.Now()
@@ -175,6 +175,18 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 		return err
 	}
 
+	started := time.Now()
+	logFields := []zap.Field{
+		zap.String("task_id", task.ID),
+		zap.String("task_type", task.TaskType),
+		zap.Int("attempt", task.Attempts+1),
+		zap.Int("max_attempts", task.MaxAttempts),
+	}
+	if task.ProjectID != nil {
+		logFields = append(logFields, zap.String("project_id", *task.ProjectID))
+	}
+	s.logger.Info("task started", logFields...)
+
 	// Run handler OUTSIDE the transaction
 	s.mu.RLock()
 	h, ok := s.handlers[task.TaskType]
@@ -184,13 +196,26 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 	if !ok {
 		handlerErr = fmt.Errorf("no handler registered for task type %q", task.TaskType)
 	} else {
-		handlerErr = h(ctx, task)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					handlerErr = fmt.Errorf("task handler panic: %v", r)
+					s.logger.Error("task handler panic",
+						append(logFields,
+							zap.Any("panic", r),
+							zap.ByteString("stack", debug.Stack()),
+						)...)
+				}
+			}()
+			handlerErr = h(ctx, task)
+		}()
 	}
 
 	if handlerErr == nil {
 		_, _ = s.db.Exec(ctx,
 			`UPDATE task_queue SET status='done', completed_at=$1, updated_at=$1 WHERE id=$2`,
 			time.Now(), task.ID)
+		s.logger.Info("task completed", append(logFields, zap.Duration("duration", time.Since(started)))...)
 		return nil
 	}
 
@@ -206,17 +231,28 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 		_, _ = s.db.Exec(ctx,
 			`UPDATE task_queue SET status='pending', error_message=$1, scheduled_at=$2, updated_at=$3 WHERE id=$4`,
 			handlerErr.Error(), time.Now().Add(backoff), time.Now(), task.ID)
+		s.logger.Warn("task failed; scheduled retry",
+			append(logFields,
+				zap.Duration("duration", time.Since(started)),
+				zap.Duration("backoff", backoff),
+				zap.Error(handlerErr),
+			)...)
 	} else {
 		_, _ = s.db.Exec(ctx,
 			`UPDATE task_queue SET status='failed', error_message=$1, updated_at=$2 WHERE id=$3`,
 			handlerErr.Error(), time.Now(), task.ID)
+		s.logger.Error("task failed permanently",
+			append(logFields,
+				zap.Duration("duration", time.Since(started)),
+				zap.Error(handlerErr),
+			)...)
 	}
 
 	return handlerErr
 }
 
 // Enqueue inserts a new task into the queue.
-// EnqueueBatch inserts all tasks in a single pgx batch (one round-trip).
+// EnqueueBatch inserts all tasks in a single database batch.
 // Returns the generated task IDs in the same order as reqs.
 func (s *TaskQueueService) EnqueueBatch(ctx context.Context, reqs []models.CreateTaskRequest) ([]string, error) {
 	if len(reqs) == 0 {
@@ -224,7 +260,7 @@ func (s *TaskQueueService) EnqueueBatch(ctx context.Context, reqs []models.Creat
 	}
 	now := time.Now()
 	ids := make([]string, len(reqs))
-	batch := &pgx.Batch{}
+	batch := &database.Batch{}
 	for i, req := range reqs {
 		id := uuid.New().String()
 		ids[i] = id
@@ -330,7 +366,7 @@ func (s *TaskQueueService) Get(ctx context.Context, id string) (*models.TaskQueu
 		&t.ID, &t.ProjectID, &t.TaskType, &t.Payload, &t.Status, &t.Priority,
 		&t.Attempts, &t.MaxAttempts, &t.ErrorMessage, &t.ScheduledAt,
 		&t.StartedAt, &t.CompletedAt, &t.CreatedAt, &t.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

@@ -41,6 +41,10 @@ export const authApi = {
   check: () => api.get('/auth/check'),
 }
 
+export const setupApi = {
+  status: () => api.get('/setup/status'),
+}
+
 // Projects
 export const projectApi = {
   list: () => api.get('/projects'),
@@ -539,8 +543,8 @@ export const agentApi = {
     task_type: string
     project_id: string
     chapter_num?: number
-    outline?: string
-    style?: string
+    outline_hint?: string
+    style_profile?: Record<string, any>
     llm_profile_id?: string
     [key: string]: any
   }) => api.post(`/projects/${projectId}/agent/run`, data),

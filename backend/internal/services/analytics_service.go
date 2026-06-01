@@ -3,18 +3,17 @@ package services
 import (
 	"context"
 	"fmt"
-
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"go.uber.org/zap"
 )
 
 // AnalyticsService aggregates project statistics for the analytics dashboard.
 type AnalyticsService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewAnalyticsService(db *pgxpool.Pool, logger *zap.Logger) *AnalyticsService {
+func NewAnalyticsService(db *database.DB, logger *zap.Logger) *AnalyticsService {
 	return &AnalyticsService{db: db, logger: logger}
 }
 

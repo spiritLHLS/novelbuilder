@@ -1,0 +1,25 @@
+services:
+  novelbuilder:
+    image: novelbuilder:sqlite
+    build:
+      context: .
+      dockerfile: Dockerfile.sqlite
+    container_name: nb-sqlite
+    ports:
+      - "8080:8080"
+    environment:
+      APP_PROFILE: sqlite
+      DB_DRIVER: sqlite
+      SQLITE_PATH: /data/novelbuilder.db
+      REDIS_ENABLED: "false"
+      REDIS_URL: ""
+      NEO4J_URI: ""
+      QDRANT_URL: ""
+    volumes:
+      - novelbuilder-sqlite-data:/data
+      - novelbuilder-sqlite-uploads:/data/uploads
+    restart: unless-stopped
+
+volumes:
+  novelbuilder-sqlite-data:
+  novelbuilder-sqlite-uploads:

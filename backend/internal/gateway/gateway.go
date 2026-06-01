@@ -523,6 +523,9 @@ func (gw *AIGateway) persistSessionMessages(sessionID string, current []ChatMess
 }
 
 func (gw *AIGateway) loadSessionState(ctx context.Context, sessionID string) (*chatSessionState, error) {
+	if gw.sessions == nil {
+		return nil, nil
+	}
 	raw, err := gw.sessions.Get(ctx, gw.chatSessionKey(sessionID)).Result()
 	if errors.Is(err, redis.Nil) {
 		return nil, nil
@@ -538,6 +541,9 @@ func (gw *AIGateway) loadSessionState(ctx context.Context, sessionID string) (*c
 }
 
 func (gw *AIGateway) saveSessionState(ctx context.Context, sessionID string, state *chatSessionState) error {
+	if gw.sessions == nil {
+		return nil
+	}
 	payload, err := json.Marshal(state)
 	if err != nil {
 		return err

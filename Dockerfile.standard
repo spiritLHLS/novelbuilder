@@ -1,0 +1,82 @@
+# ===========================================================
+# NovelBuilder — standard Docker image
+#
+# Keeps the web app, Go backend, Python sidecar, PostgreSQL and Redis.
+# Omits Neo4j, Qdrant and Playwright browser automation.
+# ===========================================================
+
+FROM golang:1.22-alpine AS go-builder
+
+RUN apk add --no-cache git gcc musl-dev
+
+WORKDIR /build/backend
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o /build/server ./cmd/server
+
+FROM node:20-alpine AS vue-builder
+
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install --legacy-peer-deps
+
+COPY frontend/ ./
+RUN npm run build
+
+FROM python:3.11.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gnupg curl lsb-release ca-certificates \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+       -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+       https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+       > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       postgresql-16 postgresql-16-pgvector postgresql-client-16 \
+       redis-server supervisor netcat-openbsd gosu \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/python-sidecar
+COPY python-sidecar/requirements.txt ./
+COPY python-sidecar/novel-downloader ./novel-downloader
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        pip install --no-cache-dir torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu; \
+    else \
+        pip install --no-cache-dir torch==2.5.1; \
+    fi
+RUN pip install --no-cache-dir -r requirements.txt
+RUN if [ -f "./novel-downloader/pyproject.toml" ]; then \
+        pip install --no-cache-dir ./novel-downloader; \
+    else \
+        echo "WARNING: novel-downloader submodule is empty; downloading from GitHub..." \
+        && curl -fsSL https://github.com/spiritLHLS/novel-downloader/archive/refs/heads/main.tar.gz \
+           | tar -xz -C /tmp \
+        && pip install --no-cache-dir /tmp/novel-downloader-main \
+        && rm -rf /tmp/novel-downloader-main; \
+    fi
+COPY python-sidecar/ ./
+
+COPY --from=go-builder /build/server /app/server
+COPY --from=vue-builder /build/frontend/dist /app/frontend/dist
+
+COPY docker/supervisord.standard.conf /etc/supervisor/conf.d/supervisord.conf
+COPY docker/wait-for-pg.sh /app/docker/wait-for-pg.sh
+COPY docker/wait-for-port.sh /app/docker/wait-for-port.sh
+COPY docker/docker-entrypoint.standard.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker/*.sh /app/docker-entrypoint.sh
+
+ENV APP_PROFILE=standard
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
+    CMD curl -f http://localhost:8080/api/health || exit 1
+
+EXPOSE 8080
+VOLUME ["/var/lib/postgresql/data", "/data/uploads"]
+
+WORKDIR /app
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

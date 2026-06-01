@@ -37,7 +37,7 @@ torch==2.5.1
 # ── OpenAI SDK (used by langchain-openai + graphiti) ─────────────────────────
 openai==1.58.1
 
-# Redis (short-term memory)
+# Redis (immediate continuity cache)
 redis==5.2.1
 
 # NLP / analysis (legacy analyzers)

@@ -16,6 +16,8 @@ Flow:
                                         ├─▶ generate  (if retry)
                                         └─▶ END        (if done)
 
+The current flow treats memory and retrieval as a runtime evidence pack:
+canon first, continuity evidence second, current chapter contract last.
 Node naming keeps one async context so the entire graph runs in a single
 asyncio event loop (FastAPI's event loop).
 """

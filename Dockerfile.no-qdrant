@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=spiritlhl/novelbuilder:full
+FROM ${BASE_IMAGE}
+
+ENV APP_PROFILE=no-qdrant
+ENV QDRANT_URL=""
+
+COPY docker/supervisord.no-qdrant.conf /etc/supervisor/conf.d/supervisord.conf

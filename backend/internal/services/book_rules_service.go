@@ -5,25 +5,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
+	"net/http"
+	"time"
 )
 
 // BookRulesService manages the book_rules table (style guide + anti-AI rules).
 type BookRulesService struct {
-	db         *pgxpool.Pool
+	db         *database.DB
 	sidecarURL string
 	httpClient *http.Client
 	logger     *zap.Logger
 }
 
-func NewBookRulesService(db *pgxpool.Pool, sidecarURL string, logger *zap.Logger) *BookRulesService {
+func NewBookRulesService(db *database.DB, sidecarURL string, logger *zap.Logger) *BookRulesService {
 	return &BookRulesService{
 		db:         db,
 		sidecarURL: sidecarURL,
@@ -41,7 +39,7 @@ func (s *BookRulesService) Get(ctx context.Context, projectID string) (*models.B
 		Scan(&r.ID, &r.ProjectID, &r.RulesContent, &r.StyleGuide,
 			&antiAIJSON, &bannedJSON, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if err == database.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err

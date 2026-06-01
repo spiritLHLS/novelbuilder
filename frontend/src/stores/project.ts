@@ -8,8 +8,12 @@ export interface Project {
   genre: string
   description: string
   target_words: number
+  chapter_words: number
   style_description: string
   status: string
+  project_type: 'original' | 'continuation'
+  continuation_ref_id?: string | null
+  continuation_start_chapter: number
   created_at: string
   updated_at: string
 }

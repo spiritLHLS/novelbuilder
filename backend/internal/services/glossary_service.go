@@ -7,17 +7,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
 
 type GlossaryService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewGlossaryService(db *pgxpool.Pool, logger *zap.Logger) *GlossaryService {
+func NewGlossaryService(db *database.DB, logger *zap.Logger) *GlossaryService {
 	return &GlossaryService{db: db, logger: logger}
 }
 

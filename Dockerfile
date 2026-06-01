@@ -1,9 +1,9 @@
 # ===========================================================
-# NovelBuilder — all-in-one Docker image
+# NovelBuilder — full Docker image
 #
 # Services inside the container
 #   PostgreSQL 16  :5432   — relational + pgvector
-#   Redis 7        :6379   — short-term RecurrentGPT memory
+#   Redis 7        :6379   — session, queue, rate-limit and continuity cache
 #   Neo4j 5 CE     :7687   — knowledge graph (Graphiti/LangGraph)
 #   Qdrant 1.12    :6333   — vector store (hybrid retrieval)
 #   Python sidecar :8081   — LangGraph agent + FastAPI

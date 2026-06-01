@@ -1,8 +1,7 @@
 package services
 
-// EditPropagationService implements a cascade-edit propagation pipeline inspired by
-// the Re3 (Retrieve-Rewrite-Rerank) and PEARL (Planning-Editing-And-Reviewing)
-// paradigms for maintaining narrative consistency across a novel.
+// EditPropagationService implements a cascade-edit propagation pipeline for
+// maintaining narrative consistency across a novel.
 //
 // High-level flow:
 //  1. When a chapter is generated, RecordChapterDependencies asynchronously records
@@ -27,8 +26,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
@@ -36,13 +34,13 @@ import (
 
 // EditPropagationService manages the change propagation pipeline.
 type EditPropagationService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	ai     *gateway.AIGateway
 	logger *zap.Logger
 }
 
 // NewEditPropagationService constructs the service.
-func NewEditPropagationService(db *pgxpool.Pool, ai *gateway.AIGateway, logger *zap.Logger) *EditPropagationService {
+func NewEditPropagationService(db *database.DB, ai *gateway.AIGateway, logger *zap.Logger) *EditPropagationService {
 	return &EditPropagationService{db: db, ai: ai, logger: logger}
 }
 
@@ -70,7 +68,7 @@ type impactResult struct {
 // freshly generated chapter used as context. Called in a goroutine after every
 // chapter save; errors are only logged, never propagated.
 func (s *EditPropagationService) RecordChapterDependencies(ctx context.Context, projectID, chapterID string) {
-	b := &pgx.Batch{}
+	b := &database.Batch{}
 
 	var wbID string
 	if s.db.QueryRow(ctx,
@@ -198,7 +196,7 @@ func (s *EditPropagationService) CreateChangeEventWithAnalysis(
 	}
 
 	if len(affected) > 0 {
-		itemBatch := &pgx.Batch{}
+		itemBatch := &database.Batch{}
 		for i, it := range affected {
 			itemBatch.Queue(
 				`INSERT INTO patch_items
@@ -588,8 +586,8 @@ func extractJSONArray(s string) string {
 	return s
 }
 
-// nullJSON converts an empty/null json.RawMessage to a nil interface{}
-// so pgx stores NULL instead of an empty string in JSONB columns.
+// nullJSON converts an empty/null json.RawMessage to nil so the database stores
+// NULL instead of an empty string in JSON columns.
 func nullJSON(v json.RawMessage) interface{} {
 	if len(v) == 0 || string(v) == "null" {
 		return nil

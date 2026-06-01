@@ -14,7 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"go.uber.org/zap"
 )
 
@@ -22,13 +22,13 @@ import (
 // It calls the Python sidecar /metrics endpoint for AI-probability scoring and
 // stores results in the originality_audits table.
 type OriginalityService struct {
-	db         *pgxpool.Pool
+	db         *database.DB
 	sidecarURL string
 	httpClient *http.Client
 	logger     *zap.Logger
 }
 
-func NewOriginalityService(db *pgxpool.Pool, sidecarURL string, logger *zap.Logger) *OriginalityService {
+func NewOriginalityService(db *database.DB, sidecarURL string, logger *zap.Logger) *OriginalityService {
 	return &OriginalityService{
 		db:         db,
 		sidecarURL: sidecarURL,

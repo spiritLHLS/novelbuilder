@@ -24,8 +24,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -167,7 +166,7 @@ func mergeStringListJSON(existingRaw, incomingRaw json.RawMessage) json.RawMessa
 // ── Deep Analysis Service ─────────────────────────────────────────────────────
 
 type ReferenceDeepAnalysisService struct {
-	db         *pgxpool.Pool
+	db         *database.DB
 	sidecarURL string
 	references *ReferenceService
 	characters *CharacterService
@@ -182,7 +181,7 @@ type ReferenceDeepAnalysisService struct {
 }
 
 func NewReferenceDeepAnalysisService(
-	db *pgxpool.Pool,
+	db *database.DB,
 	sidecarURL string,
 	references *ReferenceService,
 	characters *CharacterService,
@@ -496,7 +495,7 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 	}
 
 	if len(chars) > 0 {
-		b := &pgx.Batch{}
+		b := &database.Batch{}
 		for _, ch := range chars {
 			name, _ := ch["name"].(string)
 			if name == "" {
@@ -622,7 +621,7 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 			}
 
 			if len(relationSeeds) > 0 {
-				b := &pgx.Batch{}
+				b := &database.Batch{}
 				emptyInfo := json.RawMessage(`[]`)
 				for _, seed := range relationSeeds {
 					b.Queue(
@@ -713,7 +712,7 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 	}
 
 	if len(outlineNodes) > 0 {
-		b := &pgx.Batch{}
+		b := &database.Batch{}
 		orderNum := 0
 		for _, node := range outlineNodes {
 			title, _ := node["title"].(string)
@@ -767,7 +766,7 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 	if len(job.ExtractedGlossary) > 2 {
 		var terms []map[string]interface{}
 		if json.Unmarshal(job.ExtractedGlossary, &terms) == nil && len(terms) > 0 {
-			b := &pgx.Batch{}
+			b := &database.Batch{}
 			for _, t := range terms {
 				term, _ := t["term"].(string)
 				if term == "" {
@@ -801,7 +800,7 @@ func (s *ReferenceDeepAnalysisService) ImportResult(ctx context.Context, jobID, 
 	if len(job.ExtractedForeshadowings) > 2 {
 		var foreshadowings []map[string]interface{}
 		if json.Unmarshal(job.ExtractedForeshadowings, &foreshadowings) == nil && len(foreshadowings) > 0 {
-			b := &pgx.Batch{}
+			b := &database.Batch{}
 			for _, f := range foreshadowings {
 				content, _ := f["content"].(string)
 				if content == "" {

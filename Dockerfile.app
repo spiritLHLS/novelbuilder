@@ -1,0 +1,60 @@
+# ===========================================================
+# NovelBuilder — app-only Docker image
+#
+# For multi-container deployments. Contains Go backend, Python sidecar and Vue
+# assets only; PostgreSQL/Redis/Qdrant/Neo4j are external compose services.
+# ===========================================================
+
+FROM golang:1.22-alpine AS go-builder
+
+RUN apk add --no-cache git gcc musl-dev
+WORKDIR /build/backend
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o /build/server ./cmd/server
+
+FROM node:20-alpine AS vue-builder
+
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install --legacy-peer-deps
+COPY frontend/ ./
+RUN npm run build
+
+FROM python:3.11.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl netcat-openbsd supervisor \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/python-sidecar
+COPY python-sidecar/requirements.txt ./
+COPY python-sidecar/novel-downloader ./novel-downloader
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        pip install --no-cache-dir torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu; \
+    else \
+        pip install --no-cache-dir torch==2.5.1; \
+    fi
+RUN pip install --no-cache-dir -r requirements.txt
+RUN if [ -f "./novel-downloader/pyproject.toml" ]; then \
+        pip install --no-cache-dir ./novel-downloader; \
+    fi
+COPY python-sidecar/ ./
+
+COPY --from=go-builder /build/server /app/server
+COPY --from=vue-builder /build/frontend/dist /app/frontend/dist
+COPY docker/supervisord.app.conf /etc/supervisor/conf.d/supervisord.conf
+COPY docker/wait-for-port.sh /app/docker/wait-for-port.sh
+RUN chmod +x /app/docker/wait-for-port.sh
+
+ENV APP_PROFILE=multi
+ENV DB_DRIVER=postgres
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
+    CMD curl -f http://localhost:8080/api/health || exit 1
+
+EXPOSE 8080
+WORKDIR /app
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

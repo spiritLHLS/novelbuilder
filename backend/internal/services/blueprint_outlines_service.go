@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
@@ -457,7 +457,7 @@ func (s *BlueprintService) generateChapterOutlines(ctx context.Context, projectI
 	}
 	defer tx.Rollback(ctx)
 
-	batch := &pgx.Batch{}
+	batch := &database.Batch{}
 	for _, chOutline := range parsed.ChapterOutlines {
 		title := chOutline.Title
 		if title == "" {

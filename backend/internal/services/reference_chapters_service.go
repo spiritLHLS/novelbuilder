@@ -335,14 +335,28 @@ func (s *ReferenceService) ExportBundle(ctx context.Context, refIDs []string) (*
 	// ── 3. Assemble bundle preserving the requested order ─────────────────────
 	// Fetch the latest completed analysis job for each reference in one query.
 	analysisMap := make(map[string]*models.ReferenceAnalysisExport, len(refIDs))
-	anaRows, err := s.db.Query(ctx,
-		`SELECT DISTINCT ON (ref_id)
+	analysisQuery := `SELECT DISTINCT ON (ref_id)
 		        ref_id,
 		        extracted_characters, extracted_world, extracted_outline,
 		        extracted_glossary, extracted_foreshadowings
 		 FROM reference_analysis_jobs
 		 WHERE ref_id = ANY($1::uuid[]) AND status = 'completed'
-		 ORDER BY ref_id, updated_at DESC`, refIDs)
+		 ORDER BY ref_id, updated_at DESC`
+	if s.db.DriverName() == "sqlite" {
+		analysisQuery = `SELECT ref_id,
+		        extracted_characters, extracted_world, extracted_outline,
+		        extracted_glossary, extracted_foreshadowings
+		 FROM (
+		     SELECT ref_id,
+		            extracted_characters, extracted_world, extracted_outline,
+		            extracted_glossary, extracted_foreshadowings,
+		            ROW_NUMBER() OVER (PARTITION BY ref_id ORDER BY updated_at DESC) AS rn
+		     FROM reference_analysis_jobs
+		     WHERE ref_id = ANY($1::uuid[]) AND status = 'completed'
+		 ) latest
+		 WHERE rn = 1`
+	}
+	anaRows, err := s.db.Query(ctx, analysisQuery, refIDs)
 	if err == nil {
 		defer anaRows.Close()
 		for anaRows.Next() {

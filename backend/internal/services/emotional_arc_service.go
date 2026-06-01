@@ -6,17 +6,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"go.uber.org/zap"
 )
 
 // EmotionalArcService tracks per-character emotion states across chapters.
 type EmotionalArcService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewEmotionalArcService(db *pgxpool.Pool, logger *zap.Logger) *EmotionalArcService {
+func NewEmotionalArcService(db *database.DB, logger *zap.Logger) *EmotionalArcService {
 	return &EmotionalArcService{db: db, logger: logger}
 }
 

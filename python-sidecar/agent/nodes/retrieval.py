@@ -1,5 +1,5 @@
 """
-Retrieval Node — Hybrid retrieval combining:
+Retrieval Node — builds the retrieval part of the evidence pack:
   • Neo4j (structural / graph): characters, world rules, relationships
   • Qdrant (semantic / vector): similar style passages, chapter summaries
 
@@ -49,15 +49,18 @@ async def retrieve_world_node(state: AgentState) -> dict[str, Any]:
       - Constitution rules
       - Active foreshadowings
     """
-    from graph_store.neo4j_client import Neo4jClient
-
     project_id = state["project_id"]
-    client = Neo4jClient.get_instance()
 
     entities: list[GraphEntity] = []
     world_track = WorldContext()
 
     try:
+        if "NEO4J_URI" in os.environ and not os.getenv("NEO4J_URI", "").strip():
+            logger.warning("Neo4j retrieval skipped: disabled by deployment profile")
+            return {"long_term_facts": entities, "world_context": world_track}
+        from graph_store.neo4j_client import Neo4jClient
+        client = Neo4jClient.get_instance()
+
         # Single Cypher — characters + relations (no N+1)
         char_results = await client.query(
             """
@@ -143,11 +146,8 @@ async def retrieve_narrative_node(state: AgentState) -> dict[str, Any]:
       - Style samples from reference material
     Collections queried: chapter_summaries, style_samples
     """
-    from vector_store.qdrant_store import QdrantStore
-
     project_id = state["project_id"]
     query = state.get("user_prompt", "") + " " + state.get("outline_hint", "")
-    store = QdrantStore.get_instance()
     short_term = state.get("short_term_paragraphs", [])
     summary_limit = 3 if short_term else 4
 
@@ -155,6 +155,12 @@ async def retrieve_narrative_node(state: AgentState) -> dict[str, Any]:
     hits: list[VectorHit] = []
 
     try:
+        if "QDRANT_URL" in os.environ and not os.getenv("QDRANT_URL", "").strip():
+            logger.warning("Qdrant retrieval skipped: disabled by deployment profile")
+            return {"retrieved_chunks": hits, "narrative_context": narrative_track}
+        from vector_store.qdrant_store import QdrantStore
+        store = QdrantStore.get_instance()
+
         # Summary retrieval — top 5 most relevant recent chapter summaries
         summary_hits = await store.search(
             project_id=project_id,

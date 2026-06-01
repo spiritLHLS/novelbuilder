@@ -1,15 +1,13 @@
 """
-Context Assembler Node — Re³ Dual-Track + Lost-in-Middle arrangement.
+Context Assembler Node — builds the runtime evidence pack.
 
-Lost-in-Middle strategy:
-  ANCHOR_TOP    → World constitution rules + character cores  (most critical)
-  CONTEXT_MID   → Retrieved summaries, style samples, graph entities (secondary)
-  ANCHOR_BOTTOM → Current chapter outline + writing style instruction  (most critical)
+The evidence pack is arranged as:
+  ANCHOR_TOP    → durable canon: world rules + character cores
+  CONTEXT_MID   → continuity evidence: summaries, style samples, graph facts
+  ANCHOR_BOTTOM → current chapter contract + craft constraints
 
-Research: LLMs attend most strongly to the start and end of the context window;
-content buried in the middle suffers from reduced attention ("lost in the middle").
-By anchoring the must-follow rules at top and the immediate task at bottom,
-we maximise compliance with both world rules and generation instructions.
+This replaces the older paragraph-cache/two-lane framing with one contract:
+every generated scene must cite canon, continuity, and the current outline.
 """
 from __future__ import annotations
 
@@ -127,7 +125,7 @@ def _fmt_list(items: list[str], prefix: str = "• ") -> str:
 
 def assemble_context_node(state: AgentState) -> dict[str, Any]:
     """
-    Assemble Re³ dual-track context using Lost-in-Middle ordering.
+    Assemble the runtime evidence pack.
     Populates anchor_top, context_middle, anchor_bottom.
     """
     world: WorldContext = state.get("world_track", {})
@@ -144,7 +142,7 @@ def assemble_context_node(state: AgentState) -> dict[str, Any]:
     middle_budget = max(3500, int(total_budget * 0.38))
     bottom_budget = max(2800, total_budget - top_budget - middle_budget)
 
-    # ── TRACK-1: World knowledge (anchor top) ────────────────────────────────
+    # ── durable canon (anchor top) ───────────────────────────────────────────
     top_parts: list[str] = []
 
     rules = _compress_ranked_items(
@@ -176,7 +174,7 @@ def assemble_context_node(state: AgentState) -> dict[str, Any]:
 
     anchor_top = _take_with_budget(top_parts, top_budget)
 
-    # ── TRACK-2: Narrative continuity (context middle) ────────────────────────
+    # ── narrative continuity evidence (context middle) ───────────────────────
     mid_parts: list[str] = []
 
     # Volume arc summary (long-term coherence, compressed)
@@ -238,6 +236,7 @@ def assemble_context_node(state: AgentState) -> dict[str, Any]:
 
     bottom_parts.append(
         "【生成要求】\n"
+        "- 内部先拆成1-3张场景卡：目标、障碍、信息增量、关系变化、承接证据、断章点；不要输出场景卡\n"
         "- **严格按照【本章大纲】编排情节，不得偏离大纲内容和顺序**\n"
         "- 严格遵守世界宪法中的不变规则\n"
         "- 人物行为必须符合角色设定\n"
@@ -250,6 +249,9 @@ def assemble_context_node(state: AgentState) -> dict[str, Any]:
         "- 单段连续纯景物/心理描写不超过120字；超过时必须插入新的信息增量、关系变化或风险升级\n"
         "- 每个场景都必须产生有效推进：信息揭示、目标受阻、关系变化、冲突升级、代价落地至少其一\n"
         "- 章节必须在悬念/动作/对话高点处断章，禁止写总结段或展望段\n"
+        "- 避免AI指纹：看了一眼/心跳漏了一拍/眼眶红了、不是……是……、沉默/安静了X秒、空气中弥漫着XX气味、只剩机器嗡鸣\n"
+        "- 不默认咖啡、星巴克、糖醋排骨、炖排骨、烤肉店、日料店；生活细节必须匹配人物地域、收入、年龄和场景目的\n"
+        "- 代词、句首、句长要变化；允许自然的烦躁、疲惫、尴尬、厌恶、后悔等负面情绪\n"
         "- 用中文写作，风格流畅，情节张力充足"
     )
 

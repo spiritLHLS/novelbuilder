@@ -23,6 +23,10 @@
           <div class="card-body">
             <el-tag :type="genreTagType(project.genre)" size="small">{{ project.genre }}</el-tag>
             <p class="target-words">目标字数: {{ formatNumber(project.target_words) }}</p>
+            <p class="target-words">单章字数: {{ formatNumber(project.chapter_words || 3000) }}</p>
+            <p class="style-desc" v-if="project.description">
+              {{ project.description }}
+            </p>
             <p class="style-desc" v-if="project.style_description">
               {{ project.style_description }}
             </p>
@@ -67,6 +71,17 @@
         <el-form-item label="目标字数">
           <el-input-number v-model="form.target_words" :min="10000" :max="10000000" :step="10000" />
         </el-form-item>
+        <el-form-item label="单章字数">
+          <el-input-number v-model="form.chapter_words" :min="500" :max="20000" :step="500" />
+        </el-form-item>
+        <el-form-item label="项目简介">
+          <el-input
+            v-model="form.description"
+            type="textarea"
+            :rows="3"
+            placeholder="一句话说明题材、主角、核心冲突"
+          />
+        </el-form-item>
         <el-form-item label="风格描述">
           <el-input
             v-model="form.style_description"
@@ -102,7 +117,9 @@ const saving = ref(false)
 const form = ref({
   title: '',
   genre: '玄幻',
+  description: '',
   target_words: 500000,
+  chapter_words: 3000,
   style_description: '',
 })
 
@@ -131,15 +148,22 @@ function editProject(project: Project) {
   form.value = {
     title: project.title,
     genre: project.genre,
+    description: project.description || '',
     target_words: project.target_words,
+    chapter_words: project.chapter_words || 3000,
     style_description: project.style_description,
   }
   showCreateDialog.value = true
 }
 
 async function handleSave() {
+  form.value.title = form.value.title.trim()
   if (!form.value.title) {
     ElMessage.warning('请输入项目名称')
+    return
+  }
+  if (form.value.chapter_words < 500 || form.value.chapter_words > 20000) {
+    ElMessage.warning('单章字数应在 500 到 20000 之间')
     return
   }
   saving.value = true
@@ -174,7 +198,7 @@ async function confirmDelete(project: Project) {
 
 function resetForm() {
   editingProject.value = null
-  form.value = { title: '', genre: '玄幻', target_words: 500000, style_description: '' }
+  form.value = { title: '', genre: '玄幻', description: '', target_words: 500000, chapter_words: 3000, style_description: '' }
 }
 
 function formatNumber(n: number) {
@@ -195,14 +219,14 @@ function genreTagType(genre: string) {
 
 function statusTagType(status: string) {
   const map: Record<string, string> = {
-    draft: 'info', in_progress: '', completed: 'success',
+    draft: 'info', active: '', in_progress: '', completed: 'success',
   }
   return (map[status] || 'info') as any
 }
 
 function statusLabel(status: string) {
   const map: Record<string, string> = {
-    draft: '草稿', in_progress: '进行中', completed: '已完成',
+    draft: '草稿', active: '创作中', in_progress: '进行中', completed: '已完成',
   }
   return map[status] || status
 }

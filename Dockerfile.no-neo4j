@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=spiritlhl/novelbuilder:full
+FROM ${BASE_IMAGE}
+
+ENV APP_PROFILE=no-neo4j
+ENV NEO4J_URI=""
+
+COPY docker/supervisord.no-neo4j.conf /etc/supervisor/conf.d/supervisord.conf

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
@@ -145,8 +145,8 @@ func (s *ChapterService) settleChapterState(ctx context.Context, projectID, chap
 		fsByContent[f.content] = f.id
 	}
 
-	// ── 5. Apply all updates in a single pgx.Batch (one short transaction) ───
-	batch := &pgx.Batch{}
+	// ── 5. Apply all updates in a single database.Batch (one short transaction) ───
+	batch := &database.Batch{}
 	for _, cs := range settlement.CharacterStates {
 		cid, ok := charByName[cs.Name]
 		if !ok || cs.CurrentState == "" {
@@ -286,10 +286,63 @@ func (s *ChapterService) updateVolumeArcSummary(ctx context.Context, projectID, 
 		projectID, volumeID, fmt.Sprintf("第%d章：%s", chapterNum, summary), chapterNum)
 }
 
-// buildSystemPrompt constructs the system prompt using the Lost-in-Middle layout:
-// HEAD: world bible + constitution + character states (high attention)
-// MIDDLE: previous summaries + foreshadowing status (lower attention)
-// TAIL: current outline + tension target + generation params (high attention)
+func (s *ChapterService) buildBookRulesPromptBlock(ctx context.Context, projectID string) string {
+	var rulesContent, styleGuide string
+	var antiAIJSON, bannedJSON json.RawMessage
+	if err := s.db.QueryRow(ctx,
+		`SELECT rules_content, style_guide, anti_ai_wordlist, banned_patterns
+		 FROM book_rules WHERE project_id = $1`,
+		projectID).Scan(&rulesContent, &styleGuide, &antiAIJSON, &bannedJSON); err != nil {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("=== 项目级创作规则 ===\n")
+	if strings.TrimSpace(rulesContent) != "" {
+		sb.WriteString("【故事规则】\n")
+		sb.WriteString(strings.TrimSpace(rulesContent))
+		sb.WriteString("\n")
+	}
+	if strings.TrimSpace(styleGuide) != "" {
+		sb.WriteString("【风格指南】\n")
+		sb.WriteString(strings.TrimSpace(styleGuide))
+		sb.WriteString("\n")
+	}
+	if words := decodeStringList(antiAIJSON); len(words) > 0 {
+		sb.WriteString("【项目禁用/慎用AI词】")
+		sb.WriteString(strings.Join(words, "、"))
+		sb.WriteString("\n")
+	}
+	if patterns := decodeStringList(bannedJSON); len(patterns) > 0 {
+		sb.WriteString("【项目禁用句式/模式】")
+		sb.WriteString(strings.Join(patterns, "；"))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("以上项目规则优先级高于通用风格样本，正文必须遵守。\n\n")
+	return sb.String()
+}
+
+func decodeStringList(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var items []string
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// buildSystemPrompt constructs the chapter runtime prompt as an evidence pack:
+// durable canon first, retrieved continuity next, and the current chapter
+// contract plus craft constraints at the end.
 func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string, chapterNum int, req models.GenerateChapterRequest) string {
 	var sb strings.Builder
 
@@ -297,6 +350,13 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	if req.ChapterWordsMin > 0 && req.ChapterWordsMax > 0 {
 		sb.WriteString(fmt.Sprintf("⚠️【字数硬约束 — 最高优先级】本章正文须控制在 %d～%d 字以内。当写作接近 %d 字时，无论剧情进展如何，必须立即执行断章收尾（用对话、动作或悬念断开），绝不允许超出 %d 字上限。超出字数上限是严重错误。⚠️\n\n", req.ChapterWordsMin, req.ChapterWordsMax, req.ChapterWordsMax, req.ChapterWordsMax))
 	}
+
+	sb.WriteString("=== 生成链路：证据包 → 场景卡 → 正文 ===\n")
+	sb.WriteString("请在内部完成三步，不要把过程输出给读者：\n")
+	sb.WriteString("1. 先读取本提示中的证据包：世界规则、角色状态、卷脉络、近期摘要、伏笔、术语表和本章大纲。\n")
+	sb.WriteString("2. 再将本章拆成1～3张场景卡：每张卡必须有目标、障碍、信息增量、人物关系变化、承接证据和断章风险点。\n")
+	sb.WriteString("3. 最后只输出章节正文。正文必须逐场景兑现大纲，不输出场景卡、分析、解释或任何元数据。\n")
+	sb.WriteString("如果大纲、世界规则、角色状态互相冲突，优先级为：世界宪法 > 角色当前状态 > 本章大纲 > 风格样本 > 即兴发挥。\n\n")
 
 	// ===== HEAD: World Bible + Constitution + Character States =====
 	sb.WriteString("=== 世界观设定 ===\n")
@@ -359,6 +419,10 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		sb.WriteString("\n\n")
 	}
 
+	if rulesBlock := s.buildBookRulesPromptBlock(ctx, projectID); rulesBlock != "" {
+		sb.WriteString(rulesBlock)
+	}
+
 	// Character states
 	sb.WriteString("=== 角色状态 ===\n")
 	if charRows, charErr := s.db.Query(ctx,
@@ -378,8 +442,8 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	}
 	sb.WriteString("\n")
 
-	// ===== MIDDLE: Previous Summaries (RecurrentGPT sliding window) =====
-	sb.WriteString("=== 前文摘要（记忆窗口）===\n")
+	// ===== CONTINUITY: Previous summaries and retrieved context =====
+	sb.WriteString("=== 上下文证据包：前文承接 ===\n")
 	windowSize := 5
 	startChapter := chapterNum - windowSize
 	if startChapter < 1 {
@@ -401,7 +465,7 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		}
 	}
 
-	if startChapter < chapterNum {
+	if startChapter < chapterNum && s.rdb != nil {
 		// Use MGET to fetch all window summaries in a single Redis round trip (no N+1).
 		summaryKeys := make([]string, 0, chapterNum-startChapter)
 		for i := startChapter; i < chapterNum; i++ {
@@ -734,8 +798,8 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	sb.WriteString("- 如本章无获得事件，严格禁止在描写中暗示角色拥有新能力/装备\n")
 	sb.WriteString("\n")
 
-	// Previous chapter's last paragraph (Re3 dual-track context)
-	if chapterNum > 1 {
+	// Previous chapter's last paragraph for immediate continuity.
+	if chapterNum > 1 && s.rdb != nil {
 		prevContentKey := fmt.Sprintf("chapter_content:%s:%d", projectID, chapterNum-1)
 		prevContent, err := s.rdb.Get(ctx, prevContentKey).Result()
 		if err == nil && len(prevContent) > 0 {
@@ -803,6 +867,8 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 		sb.WriteString(narrativeSection.String())
 		sb.WriteString("\n\n")
 	}
+
+	sb.WriteString(antiAIFingerprintPromptBlock(projectGenre))
 
 	// ===== Glossary injection (InkOS-inspired) =====
 	if s.glossary != nil {
@@ -915,24 +981,4 @@ func (s *ChapterService) generateTitle(ctx context.Context, content string, chap
 		return fmt.Sprintf("第%d章", chapterNum)
 	}
 	return title
-}
-
-func extractJSON(text string) string {
-	start := strings.Index(text, "{")
-	if start == -1 {
-		return text
-	}
-	depth := 0
-	for i := start; i < len(text); i++ {
-		switch text[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return text[start : i+1]
-			}
-		}
-	}
-	return text[start:]
 }

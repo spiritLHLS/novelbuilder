@@ -6,8 +6,6 @@ import os
 import re
 
 import httpx
-import psycopg2
-import psycopg2.extras
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -47,6 +45,9 @@ def put_db(conn):
 
 
 def get_qdrant():
+    from main import qdrant_enabled
+    if not qdrant_enabled():
+        raise HTTPException(status_code=503, detail="Qdrant is disabled for this deployment profile")
     from vector_store.qdrant_store import QdrantStore
     return QdrantStore.get_instance()
 

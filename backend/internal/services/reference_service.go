@@ -15,8 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -94,13 +93,13 @@ func isTextContentType(ct string) bool {
 // ============================================================
 
 type ReferenceService struct {
-	db         *pgxpool.Pool
+	db         *database.DB
 	sidecarURL string
 	rag        *RAGService
 	logger     *zap.Logger
 }
 
-func NewReferenceService(db *pgxpool.Pool, sidecarURL string, rag *RAGService, logger *zap.Logger) *ReferenceService {
+func NewReferenceService(db *database.DB, sidecarURL string, rag *RAGService, logger *zap.Logger) *ReferenceService {
 	return &ReferenceService{db: db, sidecarURL: sidecarURL, rag: rag, logger: logger}
 }
 
@@ -136,7 +135,7 @@ func (s *ReferenceService) Get(ctx context.Context, id string) (*models.Referenc
 		&ref.FetchStatus, &ref.FetchDone, &ref.FetchTotal,
 		&ref.FetchError, &ref.FetchSite, &ref.FetchBookID, &ref.FetchChapterIDs)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err

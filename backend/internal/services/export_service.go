@@ -5,21 +5,20 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/novelbuilder/backend/internal/database"
+	"go.uber.org/zap"
 	"html"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-	"go.uber.org/zap"
 )
 
 // ExportService builds plain-text and Markdown exports of an entire project.
 type ExportService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewExportService(db *pgxpool.Pool, logger *zap.Logger) *ExportService {
+func NewExportService(db *database.DB, logger *zap.Logger) *ExportService {
 	return &ExportService{db: db, logger: logger}
 }
 

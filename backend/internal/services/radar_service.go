@@ -7,19 +7,19 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"go.uber.org/zap"
 )
 
 // RadarService uses LLM to analyze genre trends and produce recommendations.
 type RadarService struct {
-	db        *pgxpool.Pool
+	db        *database.DB
 	aiGateway *gateway.AIGateway
 	logger    *zap.Logger
 }
 
-func NewRadarService(db *pgxpool.Pool, aiGateway *gateway.AIGateway, logger *zap.Logger) *RadarService {
+func NewRadarService(db *database.DB, aiGateway *gateway.AIGateway, logger *zap.Logger) *RadarService {
 	return &RadarService{db: db, aiGateway: aiGateway, logger: logger}
 }
 

@@ -1,0 +1,8 @@
+ARG BASE_IMAGE=spiritlhl/novelbuilder:standard
+FROM ${BASE_IMAGE}
+
+ENV APP_PROFILE=no-graph-vector
+ENV NEO4J_URI=""
+ENV QDRANT_URL=""
+
+COPY docker/supervisord.no-graph-vector.conf /etc/supervisor/conf.d/supervisord.conf

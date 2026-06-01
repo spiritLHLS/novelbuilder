@@ -10,6 +10,10 @@ import (
 )
 
 func NewRedis(cfg config.RedisConfig, logger *zap.Logger) (*redis.Client, error) {
+	if !cfg.Enabled {
+		logger.Warn("Redis disabled by REDIS_ENABLED=false; using degraded in-process fallbacks")
+		return nil, nil
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,

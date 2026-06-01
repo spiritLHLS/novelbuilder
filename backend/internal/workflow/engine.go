@@ -8,8 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"go.uber.org/zap"
 )
 
@@ -25,11 +24,11 @@ var (
 )
 
 type Engine struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewEngine(db *pgxpool.Pool, logger *zap.Logger) *Engine {
+func NewEngine(db *database.DB, logger *zap.Logger) *Engine {
 	return &Engine{db: db, logger: logger}
 }
 
@@ -61,7 +60,7 @@ func (e *Engine) ResumeOrCreateRun(ctx context.Context, projectID string, strict
 			zap.String("run_id", runID))
 		return runID, true, nil
 	}
-	if !errors.Is(qErr, pgx.ErrNoRows) {
+	if !errors.Is(qErr, database.ErrNoRows) {
 		return "", false, fmt.Errorf("check active run: %w", qErr)
 	}
 
@@ -337,7 +336,7 @@ func (e *Engine) CheckIdempotency(ctx context.Context, key, action string) (bool
 		`SELECT response_body FROM idempotency_keys WHERE idempotency_key = $1 AND action = $2`,
 		key, action).Scan(&responseBody)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return false, nil, nil
 		}
 		return false, nil, fmt.Errorf("check idempotency: %w", err)
@@ -487,7 +486,7 @@ func (e *Engine) GetSnapshot(ctx context.Context, runID, stepKey string) (*Snaps
 		 FROM workflow_snapshots WHERE run_id = $1 AND step_key = $2
 		 ORDER BY created_at DESC LIMIT 1`,
 		runID, stepKey).Scan(&s.StepKey, &s.Params, &s.ContextPayload, &s.OutputPayload, &s.QualityPayload)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

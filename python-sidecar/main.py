@@ -14,8 +14,6 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
-import psycopg2
-import psycopg2.extras
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -28,33 +26,33 @@ from analyzers.atmosphere_analyzer import AtmosphereAnalyzer
 from analyzers.plot_extractor import PlotExtractor
 from humanizer.pipeline import HumanizationPipeline
 from humanizer.metrics import PerplexityBurstinessEstimator
+from app_config import parse_allowed_origins
+from db_compat import SQLiteCompatConnection
+from runtime_capabilities import detect_accelerators
+
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:  # PostgreSQL is optional in the SQLite profile.
+    psycopg2 = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("python-agent")
 # Suppress benign Neo4j schema-discovery warnings (empty DB, missing labels/props)
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
-
-def _parse_allowed_origins() -> list[str]:
-    raw = os.getenv(
-        "ALLOWED_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000,http://127.0.0.1:3000",
-    ).strip()
-    if raw == "*":
-        return ["*"]
-
-    origins: list[str] = []
-    for item in raw.split(","):
-        origin = item.strip()
-        if origin and origin not in origins:
-            origins.append(origin)
-    return origins or ["http://localhost:5173", "http://127.0.0.1:5173"]
-
 # ── DB connection pool (for legacy analyze endpoint) ──────────────────────────
 _db_pool = None
 
+def _db_driver() -> str:
+    return os.getenv("DB_DRIVER", "postgres").strip().lower()
+
 def get_db():
     global _db_pool
+    if _db_driver() in ("sqlite", "sqlite3"):
+        return SQLiteCompatConnection(os.getenv("SQLITE_PATH", "/data/novelbuilder.db"))
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 is required when DB_DRIVER=postgres")
     if _db_pool is None:
         from psycopg2 import pool as pg_pool
         _db_pool = pg_pool.ThreadedConnectionPool(
@@ -71,6 +69,9 @@ def get_db():
 
 def put_db(conn):
     global _db_pool
+    if _db_driver() in ("sqlite", "sqlite3"):
+        conn.close()
+        return
     if _db_pool is not None:
         _db_pool.putconn(conn)
 
@@ -78,7 +79,21 @@ def put_db(conn):
 _neo4j_client = None
 _qdrant_store = None
 
+def _service_enabled(env_name: str) -> bool:
+    if env_name not in os.environ:
+        return True
+    raw = os.getenv(env_name, "").strip().lower()
+    return raw not in ("", "0", "false", "off", "none", "disabled")
+
+def neo4j_enabled() -> bool:
+    return _service_enabled("NEO4J_URI")
+
+def qdrant_enabled() -> bool:
+    return _service_enabled("QDRANT_URL")
+
 def get_neo4j():
+    if not neo4j_enabled():
+        raise HTTPException(status_code=503, detail="Neo4j is disabled for this deployment profile")
     global _neo4j_client
     if _neo4j_client is None:
         from graph_store.neo4j_client import Neo4jClient
@@ -86,6 +101,8 @@ def get_neo4j():
     return _neo4j_client
 
 def get_qdrant():
+    if not qdrant_enabled():
+        raise HTTPException(status_code=503, detail="Qdrant is disabled for this deployment profile")
     global _qdrant_store
     if _qdrant_store is None:
         from vector_store.qdrant_store import QdrantStore
@@ -133,14 +150,18 @@ async def _session_cleanup_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Agent service starting up...")
+    logger.info("runtime accelerator selection: %s", json.dumps(detect_accelerators(), ensure_ascii=False))
     cleanup_task = asyncio.create_task(_session_cleanup_loop())
     # Warm up Neo4j schema
-    try:
-        neo4j = get_neo4j()
-        await neo4j.ensure_schema()
-        logger.info("Neo4j schema ensured")
-    except Exception as exc:
-        logger.warning("Neo4j schema init failed (may retry): %s", repr(exc), exc_info=True)
+    if neo4j_enabled():
+        try:
+            neo4j = get_neo4j()
+            await neo4j.ensure_schema()
+            logger.info("Neo4j schema ensured")
+        except Exception as exc:
+            logger.warning("Neo4j schema init failed (may retry): %s", repr(exc), exc_info=True)
+    else:
+        logger.warning("Neo4j disabled by deployment profile")
     yield
     logger.info("Agent service shutting down...")
     cleanup_task.cancel()
@@ -157,13 +178,19 @@ async def lifespan(app: FastAPI):
     # Close DB pool
     global _db_pool
     if _db_pool is not None:
-        _db_pool.closeall()
+        if hasattr(_db_pool, "closeall"):
+            _db_pool.closeall()
         _db_pool = None
 
 app = FastAPI(title="NovelBuilder Agent Service", version="2.0.0", lifespan=lifespan)
+
+
+@app.get("/runtime/capabilities")
+async def runtime_capabilities():
+    return detect_accelerators()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_parse_allowed_origins(),
+    allow_origins=parse_allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -492,7 +519,7 @@ class BatchAgentRunRequest(BaseModel):
     """Request body for POST /agent/batch-run.
 
     Chapters are generated *sequentially* in the order given so that each
-    chapter's memory update feeds into the next one (RecurrentGPT continuity).
+    chapter's summary and state update feed into the next runtime evidence pack.
     """
     project_id: str
     chapter_nums: list[int]       # ordered list of chapter numbers to generate
@@ -727,7 +754,7 @@ async def graph_sync_project(project_id: str):
     synced = {"characters": 0, "rules": 0, "foreshadowings": 0, "errors": []}
 
     try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor if psycopg2 else None)
 
         # Upsert project node
         cur.execute("SELECT title, genre FROM projects WHERE id = %s", (project_id,))

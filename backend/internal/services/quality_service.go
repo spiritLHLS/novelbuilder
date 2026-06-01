@@ -4,17 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/novelbuilder/backend/internal/database"
+	"github.com/novelbuilder/backend/internal/gateway"
+	"github.com/novelbuilder/backend/internal/models"
+	"go.uber.org/zap"
 	"math"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/novelbuilder/backend/internal/gateway"
-	"github.com/novelbuilder/backend/internal/models"
-	"go.uber.org/zap"
 )
 
 // ============================================================
@@ -22,12 +21,12 @@ import (
 // ============================================================
 
 type QualityService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	ai     *gateway.AIGateway
 	logger *zap.Logger
 }
 
-func NewQualityService(db *pgxpool.Pool, ai *gateway.AIGateway, logger *zap.Logger) *QualityService {
+func NewQualityService(db *database.DB, ai *gateway.AIGateway, logger *zap.Logger) *QualityService {
 	return &QualityService{db: db, ai: ai, logger: logger}
 }
 
@@ -65,6 +64,9 @@ func (s *QualityService) RunFullCheck(ctx context.Context, chapterID string) (*m
 	// Role 4: Anti-AI Expert (AI detection)
 	aiIssues, aiScore := s.reviewAsAntiAIExpert(ctx, content)
 	report.Issues = append(report.Issues, aiIssues...)
+	fingerprintIssues, fingerprintPenalty := detectAIFingerprintIssues(content, 8)
+	report.Issues = append(report.Issues, fingerprintIssues...)
+	aiScore = math.Min(100, aiScore+fingerprintPenalty*8)
 	report.AIScoreEstimate = aiScore
 	report.AIProbability = clampProbability(aiScore / 100.0)
 	report.EstimatedBurstiness = estimateBurstiness(content)
@@ -230,9 +232,12 @@ func (s *QualityService) reviewAsAntiAIExpert(ctx context.Context, content strin
 4. **对话特征**：对话是否每句完整（AI）vs有省略打断（人类）
 5. **AI高频词检测**：统计"不禁""微微""缓缓""淡淡""默默"出现次数，每个词超过1次即扣分
 6. **AI句式检测**："一股XXX涌上心头""心中暗道""嘴角勾起一抹弧度""眼中闪过一丝XXX"等
-7. **章节结尾检测**：结尾是否有总结段/展望段/预告式升华（"他知道这只是开始""更大的风暴即将来临"）
-8. **视角一致性**：是否存在POV角色不可能知道的信息泄露
-9. **标记段落**：标出AI特征最明显的具体段落
+7. **中文网文AI指纹**：是否出现"看了一眼/心跳漏了一拍/眼眶红了"三件套；"不是……是……"模板；"沉默/安静了X秒/愣了一下"机械停顿；"空气中弥漫着XX气味"和"空调/显示器嗡鸣"空镜套话
+8. **生活细节偏置**：现代中国场景是否默认咖啡/星巴克、糖醋排骨/炖排骨、烤肉店/日料店，而缺少与人物地域、阶层、年龄匹配的本土细节
+9. **情绪偏置**：是否过度积极、始终体面从容，缺少烦躁、厌恶、疲惫、尴尬、后悔等自然负面情绪
+10. **章节结尾检测**：结尾是否有总结段/展望段/预告式升华（"他知道这只是开始""更大的风暴即将来临"）
+11. **视角一致性**：是否存在POV角色不可能知道的信息泄露
+12. **标记段落**：标出AI特征最明显的具体段落
 
 返回格式（必须严格JSON）：
 {

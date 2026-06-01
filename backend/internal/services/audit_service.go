@@ -5,26 +5,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
+	"net/http"
+	"time"
 )
 
 // AuditService runs multi-dimension chapter audits via the Python sidecar
 // and persists results to the audit_reports table.
 type AuditService struct {
-	db         *pgxpool.Pool
+	db         *database.DB
 	sidecarURL string
 	httpClient *http.Client
 	logger     *zap.Logger
 }
 
-func NewAuditService(db *pgxpool.Pool, sidecarURL string, logger *zap.Logger) *AuditService {
+func NewAuditService(db *database.DB, sidecarURL string, logger *zap.Logger) *AuditService {
 	return &AuditService{
 		db:         db,
 		sidecarURL: sidecarURL,
@@ -148,7 +146,7 @@ func (s *AuditService) GetLatestReport(ctx context.Context, chapterID string) (*
 			&r.OverallScore, &r.Passed, &r.AIProbability, &issuesJSON,
 			&r.RevisionCount, &r.CreatedAt)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if err == database.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err

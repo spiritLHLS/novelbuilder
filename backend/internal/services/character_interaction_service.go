@@ -4,19 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"go.uber.org/zap"
+	"time"
 )
 
 // CharacterInteractionService tracks which characters have met and what they know.
 type CharacterInteractionService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewCharacterInteractionService(db *pgxpool.Pool, logger *zap.Logger) *CharacterInteractionService {
+func NewCharacterInteractionService(db *database.DB, logger *zap.Logger) *CharacterInteractionService {
 	return &CharacterInteractionService{db: db, logger: logger}
 }
 

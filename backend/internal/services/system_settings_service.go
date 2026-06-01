@@ -5,8 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"go.uber.org/zap"
 )
 
@@ -14,11 +13,11 @@ import (
 // system_settings table. On first boot it auto-generates and stores an AES-256
 // encryption key so that no ENCRYPTION_KEY env-var is ever needed.
 type SystemSettingsService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewSystemSettingsService(db *pgxpool.Pool, logger *zap.Logger) *SystemSettingsService {
+func NewSystemSettingsService(db *database.DB, logger *zap.Logger) *SystemSettingsService {
 	return &SystemSettingsService{db: db, logger: logger}
 }
 
@@ -82,6 +81,68 @@ func (s *SystemSettingsService) Set(ctx context.Context, key, value string) erro
 		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
 		key, value)
 	return err
+}
+
+// SyncDefaults mirrors code/env defaults into system_settings without
+// overwriting values edited from the UI. The batch keeps startup to one
+// round-trip and avoids an N+1 chain of individual upserts.
+func (s *SystemSettingsService) SyncDefaults(ctx context.Context, defaults map[string]string) error {
+	if len(defaults) == 0 {
+		return nil
+	}
+	batch := &database.Batch{}
+	for key, value := range defaults {
+		if key == "encryption_key" {
+			continue
+		}
+		batch.Queue(
+			`INSERT INTO system_settings (key, value)
+			 VALUES ($1, $2)
+			 ON CONFLICT (key) DO NOTHING`,
+			key, value,
+		)
+	}
+	if batch.Len() == 0 {
+		return nil
+	}
+	br := s.db.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("sync default setting: %w", err)
+		}
+	}
+	return nil
+}
+
+// SyncRuntimeSnapshot stores non-secret infrastructure facts that help the UI
+// and diagnostics explain which deployment profile is active. These keys are
+// intentionally overwritten on every boot because they describe the current
+// process, not user preferences.
+func (s *SystemSettingsService) SyncRuntimeSnapshot(ctx context.Context, values map[string]string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	batch := &database.Batch{}
+	for key, value := range values {
+		if key == "encryption_key" {
+			continue
+		}
+		batch.Queue(
+			`INSERT INTO system_settings (key, value)
+			 VALUES ($1, $2)
+			 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+			key, value,
+		)
+	}
+	br := s.db.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("sync runtime setting: %w", err)
+		}
+	}
+	return nil
 }
 
 // Delete removes a setting. The encryption_key setting is delete-protected.

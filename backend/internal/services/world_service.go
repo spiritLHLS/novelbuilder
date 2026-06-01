@@ -8,8 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
@@ -20,12 +19,12 @@ import (
 // ============================================================
 
 type WorldBibleService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	ai     *gateway.AIGateway
 	logger *zap.Logger
 }
 
-func NewWorldBibleService(db *pgxpool.Pool, ai *gateway.AIGateway, logger *zap.Logger) *WorldBibleService {
+func NewWorldBibleService(db *database.DB, ai *gateway.AIGateway, logger *zap.Logger) *WorldBibleService {
 	return &WorldBibleService{db: db, ai: ai, logger: logger}
 }
 
@@ -36,7 +35,7 @@ func (s *WorldBibleService) Get(ctx context.Context, projectID string) (*models.
 		 FROM world_bibles WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1`,
 		projectID).Scan(&wb.ID, &wb.ProjectID, &wb.Content, &wb.MigrationSource,
 		&wb.Version, &wb.CreatedAt, &wb.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
 	}
 	return &wb, err
@@ -146,7 +145,7 @@ func (s *WorldBibleService) GetConstitution(ctx context.Context, projectID strin
 		 FROM world_bible_constitutions WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1`,
 		projectID).Scan(&wbc.ID, &wbc.ProjectID, &wbc.ImmutableRules, &wbc.MutableRules,
 		&wbc.ForbiddenAnchors, &wbc.Version, &wbc.CreatedAt, &wbc.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, nil
 	}
 	return &wbc, err
@@ -174,12 +173,12 @@ func (s *WorldBibleService) UpdateConstitution(ctx context.Context, projectID st
 // ============================================================
 
 type CharacterService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	ai     *gateway.AIGateway
 	logger *zap.Logger
 }
 
-func NewCharacterService(db *pgxpool.Pool, ai *gateway.AIGateway, logger *zap.Logger) *CharacterService {
+func NewCharacterService(db *database.DB, ai *gateway.AIGateway, logger *zap.Logger) *CharacterService {
 	return &CharacterService{db: db, ai: ai, logger: logger}
 }
 
@@ -216,7 +215,7 @@ func (s *CharacterService) Get(ctx context.Context, id string) (*models.Characte
 		&c.ID, &c.ProjectID, &c.Name, &c.RoleType, &c.Profile,
 		&c.CurrentState, &c.VoiceCollection, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -257,12 +256,12 @@ func (s *CharacterService) Delete(ctx context.Context, id string) error {
 // ============================================================
 
 type OutlineService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	ai     *gateway.AIGateway
 	logger *zap.Logger
 }
 
-func NewOutlineService(db *pgxpool.Pool, ai *gateway.AIGateway, logger *zap.Logger) *OutlineService {
+func NewOutlineService(db *database.DB, ai *gateway.AIGateway, logger *zap.Logger) *OutlineService {
 	return &OutlineService{db: db, ai: ai, logger: logger}
 }
 
@@ -292,7 +291,7 @@ func (s *OutlineService) List(ctx context.Context, projectID string) ([]models.O
 
 // ListChapterOutlines returns chapter-level outlines, optionally filtered by volume number.
 func (s *OutlineService) ListChapterOutlines(ctx context.Context, projectID string, volumeNum *int) ([]models.Outline, error) {
-	var rows pgx.Rows
+	var rows *database.Rows
 	var err error
 
 	if volumeNum != nil {
@@ -374,11 +373,11 @@ func (s *OutlineService) Delete(ctx context.Context, id string) error {
 // ============================================================
 
 type ForeshadowingService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewForeshadowingService(db *pgxpool.Pool, logger *zap.Logger) *ForeshadowingService {
+func NewForeshadowingService(db *database.DB, logger *zap.Logger) *ForeshadowingService {
 	return &ForeshadowingService{db: db, logger: logger}
 }
 
@@ -474,11 +473,11 @@ func (s *ForeshadowingService) Delete(ctx context.Context, id string) error {
 // ============================================================
 
 type VolumeService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewVolumeService(db *pgxpool.Pool, logger *zap.Logger) *VolumeService {
+func NewVolumeService(db *database.DB, logger *zap.Logger) *VolumeService {
 	return &VolumeService{db: db, logger: logger}
 }
 
@@ -515,7 +514,7 @@ func (s *VolumeService) Get(ctx context.Context, id string) (*models.Volume, err
 		 FROM volumes WHERE id = $1`, id,
 	).Scan(&v.ID, &v.ProjectID, &v.VolumeNum, &v.Title, &v.BlueprintID,
 		&v.Status, &v.ChapterStart, &v.ChapterEnd, &v.ReviewComment, &v.CreatedAt, &v.UpdatedAt)
-	if err == pgx.ErrNoRows {
+	if err == database.ErrNoRows {
 		return nil, nil
 	}
 	return &v, err

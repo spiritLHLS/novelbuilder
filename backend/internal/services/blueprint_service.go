@@ -9,8 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/workflow"
@@ -22,7 +21,7 @@ import (
 // ============================================================
 
 type BlueprintService struct {
-	db             *pgxpool.Pool
+	db             *database.DB
 	ai             *gateway.AIGateway
 	wf             *workflow.Engine
 	worldBibles    *WorldBibleService
@@ -36,7 +35,7 @@ type BlueprintService struct {
 }
 
 func NewBlueprintService(
-	db *pgxpool.Pool,
+	db *database.DB,
 	ai *gateway.AIGateway,
 	wf *workflow.Engine,
 	worldBibles *WorldBibleService,
@@ -372,7 +371,7 @@ func (s *BlueprintService) Get(ctx context.Context, projectID string) (*models.B
 		&bp.GlobalTimeline, &bp.Status, &bp.Version, &bp.ReviewComment, &bp.ErrorMessage,
 		&bp.CreatedAt, &bp.UpdatedAt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -417,7 +416,7 @@ func (s *BlueprintService) Update(ctx context.Context, id string, req models.Upd
 		&bp.CreatedAt, &bp.UpdatedAt,
 	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, workflow.ErrOptimisticLock
 		}
 		return nil, fmt.Errorf("update blueprint: %w", err)
@@ -610,7 +609,7 @@ func (s *BlueprintService) autoAssignForeshadowingTimings(ctx context.Context, p
 	}
 
 	// 5. Batch update — short, no explicit transaction needed for individual row updates.
-	updateBatch := &pgx.Batch{}
+	updateBatch := &database.Batch{}
 	for _, a := range result.Assignments {
 		if a.Idx < 0 || a.Idx >= len(unassigned) {
 			continue
@@ -818,7 +817,7 @@ func (s *BlueprintService) Import(ctx context.Context, projectID string, data *B
 
 	// Import characters
 	if len(data.Characters) > 0 {
-		chBatch := &pgx.Batch{}
+		chBatch := &database.Batch{}
 		for _, ch := range data.Characters {
 			chBatch.Queue(
 				`INSERT INTO characters (id, project_id, name, role_type, profile, current_state, created_at, updated_at)
@@ -848,7 +847,7 @@ func (s *BlueprintService) Import(ctx context.Context, projectID string, data *B
 		if _, err := tx.Exec(ctx, `DELETE FROM foreshadowings WHERE project_id = $1`, projectID); err != nil {
 			return fmt.Errorf("clear foreshadowings: %w", err)
 		}
-		fsBatch := &pgx.Batch{}
+		fsBatch := &database.Batch{}
 		for _, fs := range data.Foreshadowings {
 			fsBatch.Queue(
 				`INSERT INTO foreshadowings (id, project_id, content, embed_chapter_id, resolve_chapter_id, embed_method, resolve_method, planned_embed_chapter, planned_resolve_chapter, priority, status, tags, created_at, updated_at)
@@ -896,7 +895,7 @@ func (s *BlueprintService) Import(ctx context.Context, projectID string, data *B
 		if _, err := tx.Exec(ctx, `DELETE FROM volumes WHERE project_id = $1`, projectID); err != nil {
 			return fmt.Errorf("clear volumes: %w", err)
 		}
-		volBatch := &pgx.Batch{}
+		volBatch := &database.Batch{}
 		for _, vol := range data.Volumes {
 			volBatch.Queue(
 				`INSERT INTO volumes (id, project_id, volume_num, title, blueprint_id, chapter_start, chapter_end, status, created_at, updated_at)
@@ -921,7 +920,7 @@ func (s *BlueprintService) Import(ctx context.Context, projectID string, data *B
 		if _, err := tx.Exec(ctx, `DELETE FROM outlines WHERE project_id = $1 AND level = 'chapter'`, projectID); err != nil {
 			return fmt.Errorf("clear chapter outlines: %w", err)
 		}
-		outlineBatch := &pgx.Batch{}
+		outlineBatch := &database.Batch{}
 		for _, outline := range data.ChapterOutlines {
 			outlineBatch.Queue(
 				`INSERT INTO outlines (id, project_id, level, order_num, title, content, tension_target, created_at, updated_at)

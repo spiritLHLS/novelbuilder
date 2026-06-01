@@ -1,0 +1,12 @@
+ARG BASE_IMAGE=spiritlhl/novelbuilder:app
+FROM ${BASE_IMAGE}
+
+ENV APP_PROFILE=sqlite
+ENV DB_DRIVER=sqlite
+ENV SQLITE_PATH=/data/novelbuilder.db
+ENV REDIS_ENABLED=false
+ENV REDIS_URL=""
+ENV NEO4J_URI=""
+ENV QDRANT_URL=""
+
+VOLUME ["/data", "/data/uploads"]

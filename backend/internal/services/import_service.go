@@ -10,9 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/novelbuilder/backend/internal/crypto"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
 )
@@ -20,12 +19,12 @@ import (
 // AgentRoutingService manages the agent_model_routes table.
 // It allows different agents to use different LLM profiles.
 type AgentRoutingService struct {
-	db            *pgxpool.Pool
+	db            *database.DB
 	encryptionKey string
 	logger        *zap.Logger
 }
 
-func NewAgentRoutingService(db *pgxpool.Pool, encryptionKey string, logger *zap.Logger) *AgentRoutingService {
+func NewAgentRoutingService(db *database.DB, encryptionKey string, logger *zap.Logger) *AgentRoutingService {
 	return &AgentRoutingService{db: db, encryptionKey: encryptionKey, logger: logger}
 }
 
@@ -132,7 +131,7 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 		`SELECT llm_profile_id FROM agent_model_routes WHERE agent_type = $1 AND project_id = $2`,
 		agentType, projectID,
 	).Scan(&profileID)
-	if err == pgx.ErrNoRows {
+	if err == database.ErrNoRows {
 		// Try global
 		err = s.db.QueryRow(ctx,
 			`SELECT llm_profile_id FROM agent_model_routes WHERE agent_type = $1 AND project_id IS NULL`,
@@ -140,7 +139,7 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 		).Scan(&profileID)
 	}
 
-	if err != nil && err != pgx.ErrNoRows {
+	if err != nil && err != database.ErrNoRows {
 		return nil, err
 	}
 
@@ -235,13 +234,13 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 
 // ImportService manages chapter_imports: parse source text, call sidecar, insert chapters.
 type ImportService struct {
-	db         *pgxpool.Pool
+	db         *database.DB
 	sidecarURL string
 	httpClient *http.Client
 	logger     *zap.Logger
 }
 
-func NewImportService(db *pgxpool.Pool, sidecarURL string, logger *zap.Logger) *ImportService {
+func NewImportService(db *database.DB, sidecarURL string, logger *zap.Logger) *ImportService {
 	return &ImportService{
 		db:         db,
 		sidecarURL: sidecarURL,
@@ -423,7 +422,7 @@ func (s *ImportService) ingestReverseEngineered(ctx context.Context, projectID s
 
 	// Characters
 	if len(re.Characters) > 0 {
-		b := &pgx.Batch{}
+		b := &database.Batch{}
 		for _, ch := range re.Characters {
 			roleType := ch.RoleType
 			if roleType == "" {
@@ -451,7 +450,7 @@ func (s *ImportService) ingestReverseEngineered(ctx context.Context, projectID s
 
 	// Foreshadowings
 	if len(re.Foreshadowings) > 0 {
-		b := &pgx.Batch{}
+		b := &database.Batch{}
 		for _, fs := range re.Foreshadowings {
 			method := fs.EmbedMethod
 			if method == "" {
@@ -478,7 +477,7 @@ func (s *ImportService) ingestReverseEngineered(ctx context.Context, projectID s
 
 	// Glossary
 	if len(re.Glossary) > 0 {
-		b := &pgx.Batch{}
+		b := &database.Batch{}
 		for _, g := range re.Glossary {
 			cat := g.Category
 			if cat == "" {
@@ -525,7 +524,7 @@ func (s *ImportService) bulkInsertChapters(ctx context.Context, projectID string
 		Scan(&maxSeq)
 
 	// Build batch insert
-	b := &pgx.Batch{}
+	b := &database.Batch{}
 	for i, ch := range chapters {
 		title, _ := ch["title"].(string)
 		content, _ := ch["content"].(string)

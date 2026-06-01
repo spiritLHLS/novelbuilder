@@ -39,6 +39,14 @@ _AI_ENDING_PATTERNS = [
 ]
 _AI_ENDING_RE = [re.compile(p) for p in _AI_ENDING_PATTERNS]
 
+_AI_FINGERPRINT_PATTERNS = [
+    (re.compile(r"看了一眼|心跳漏了一拍|眼眶红了|眼眶一红"), "三件套情绪反应"),
+    (re.compile(r"不是[………\.]{1,3}是|不是[^。！？]{0,12}而是"), "不是……是……模板"),
+    (re.compile(r"(?:沉默|安静)[了得]?[\d一二三四五六七八九十半两]*秒|愣了一下"), "机械停顿"),
+    (re.compile(r"空气中弥漫着.{0,16}(?:气味|味道|香气)|(?:空调|显示器|机械|冰箱|机器).{0,12}(?:嗡鸣|嗡嗡)"), "环境套话"),
+    (re.compile(r"一股.{0,12}(?:涌上|涌入)心头|心中暗道|眼中闪过一丝|嘴角.{0,4}勾起.{0,6}弧度"), "抽象情绪包装"),
+]
+
 # Genre-specific forbidden element keywords
 _GENRE_FORBIDDEN = {
     "西幻": ["修炼", "丹药", "灵石", "宗门", "渡劫", "飞升", "灵气", "元神", "金丹", "内功",
@@ -63,7 +71,32 @@ _SYSTEM_BREAK_KEYWORDS = [
 _AI_FLAVOR_WORDS = [
     "微微", "缓缓", "淡淡", "默默", "不禁", "不由得",
     "仿佛", "似乎", "好像", "嘴角勾起", "眼中闪过一丝",
+    "看了一眼", "心跳漏了一拍", "眼眶红了", "空气中弥漫着",
+    "嗡鸣声", "糖醋排骨", "炖排骨", "星巴克",
 ]
+
+
+def _check_ai_fingerprints(draft: str) -> tuple[float, list[str]]:
+    issues = []
+    penalty = 0.0
+    for pattern, label in _AI_FINGERPRINT_PATTERNS:
+        count = len(pattern.findall(draft))
+        if count:
+            issues.append(f"AI指纹：{label}出现{count}处")
+            penalty += 0.08 if count == 1 else 0.14
+
+    lifestyle_hits = sum(draft.count(w) for w in ["咖啡", "星巴克", "糖醋排骨", "炖排骨", "烤肉店", "日料店"])
+    if lifestyle_hits >= 4:
+        issues.append("生活细节偏置：咖啡/排骨/烤肉/日料等默认细节过多")
+        penalty += 0.06
+
+    positive = sum(draft.count(w) for w in ["温暖", "希望", "坚定", "释然", "欣慰", "从容", "美好"])
+    negative = sum(draft.count(w) for w in ["烦躁", "厌恶", "疲惫", "尴尬", "难堪", "后悔", "嫉妒", "麻木", "不耐烦"])
+    if positive >= 6 and negative == 0:
+        issues.append("情绪偏置：正向情绪过多，缺少自然负面情绪")
+        penalty += 0.04
+
+    return min(0.3, penalty), issues
 
 
 def _check_ai_ending(draft: str) -> list[str]:
@@ -242,6 +275,12 @@ def quality_check_node(state: AgentState) -> dict[str, Any]:
     if flavor_hits:
         score -= min(0.15, len(flavor_hits) * 0.03)
         issues.append(f"AI高频词过多：{', '.join(flavor_hits[:5])}")
+
+    # ── 8. Forum-observed AI fingerprints ────────────────────────────────────
+    fp_penalty, fp_issues = _check_ai_fingerprints(draft)
+    if fp_issues:
+        score -= fp_penalty
+        issues.extend(fp_issues[:6])
 
     score = max(0.0, min(1.0, score))
 

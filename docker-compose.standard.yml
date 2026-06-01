@@ -1,0 +1,20 @@
+services:
+  novelbuilder:
+    image: novelbuilder:standard
+    build:
+      context: .
+      dockerfile: Dockerfile.standard
+    container_name: nb-standard
+    ports:
+      - "8080:8080"
+    environment:
+      APP_PROFILE: standard
+      DB_DRIVER: postgres
+    volumes:
+      - novelbuilder-standard-pg:/var/lib/postgresql/data
+      - novelbuilder-standard-uploads:/data/uploads
+    restart: unless-stopped
+
+volumes:
+  novelbuilder-standard-pg:
+  novelbuilder-standard-uploads:

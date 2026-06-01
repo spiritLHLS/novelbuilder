@@ -385,7 +385,7 @@ async function runAgent() {
       task_type: agentTask.value,
       project_id: projectId.value,
       chapter_num: agentChapterNum.value,
-      outline: agentOutline.value,
+      outline_hint: agentOutline.value,
     })
     const sid = res.data.session_id
     agentSessionId.value = sid

@@ -9,8 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"go.uber.org/zap"
@@ -97,12 +96,12 @@ var agentRoster = []agentDef{
 
 // AgentReviewService orchestrates multi-agent debate reviews.
 type AgentReviewService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	ai     *gateway.AIGateway
 	logger *zap.Logger
 }
 
-func NewAgentReviewService(db *pgxpool.Pool, ai *gateway.AIGateway, logger *zap.Logger) *AgentReviewService {
+func NewAgentReviewService(db *database.DB, ai *gateway.AIGateway, logger *zap.Logger) *AgentReviewService {
 	return &AgentReviewService{db: db, ai: ai, logger: logger}
 }
 
@@ -202,7 +201,7 @@ func (s *AgentReviewService) StreamReview(
 	onMessage(synthesisMsg)
 
 	// Batch-insert all messages in one round-trip to avoid N+1
-	msgBatch := &pgx.Batch{}
+	msgBatch := &database.Batch{}
 	for _, m := range allMessages {
 		tagsJSON, _ := json.Marshal(m.Tags)
 		agentRoleStr := string(m.Agent)
@@ -251,7 +250,7 @@ func (s *AgentReviewService) GetSession(ctx context.Context, sessionID string) (
 		&sess.ID, &sess.ProjectID, &sess.ReviewScope, &sess.TargetID,
 		&sess.Status, &sess.Rounds, &sess.Consensus, &sess.CreatedAt, &sess.CompletedAt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err

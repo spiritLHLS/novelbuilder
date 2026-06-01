@@ -104,16 +104,15 @@ def planner_node(state: AgentState) -> dict[str, Any]:
 def _default_plan(task_type: str) -> list[PlanStep]:
     if task_type == "generate_chapter":
         return [
-            PlanStep(step=1, description="召回长期记忆与相关实体", status="pending"),
-            PlanStep(step=2, description="检索世界知识与叙事上下文", status="pending"),
-            PlanStep(step=3, description="组装 Re³ 双轨上下文", status="pending"),
-            PlanStep(step=4, description="生成章节草稿", status="pending"),
-            PlanStep(step=5, description="更新图记忆与向量索引", status="pending"),
-            PlanStep(step=6, description="质量评估", status="pending"),
+            PlanStep(step=1, description="召回长期事实与即时承接", status="pending"),
+            PlanStep(step=2, description="检索世界规则、角色、摘要和风格证据", status="pending"),
+            PlanStep(step=3, description="组装运行时证据包与场景约束", status="pending"),
+            PlanStep(step=4, description="按场景卡生成章节草稿", status="pending"),
+            PlanStep(step=5, description="沉淀摘要、状态和向量索引", status="pending"),
+            PlanStep(step=6, description="质量与AI指纹审计", status="pending"),
         ]
     return [
         PlanStep(step=1, description="分析内容", status="pending"),
         PlanStep(step=2, description="生成输出", status="pending"),
         PlanStep(step=3, description="质量检查", status="pending"),
     ]
-

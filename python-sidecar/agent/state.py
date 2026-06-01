@@ -13,7 +13,7 @@ from langgraph.graph.message import add_messages
 # ── sub-structures ───────────────────────────────────────────────────────────
 
 class WorldContext(TypedDict, total=False):
-    """Track-1: world-knowledge from Neo4j / graphiti."""
+    """Durable canon from PostgreSQL / Neo4j / graph memory."""
     constitution_rules: list[str]        # immutable world rules
     character_cores: list[dict]          # {name, role, core_traits, relationships}
     world_bible_summary: str             # compressed world-bible text
@@ -21,7 +21,7 @@ class WorldContext(TypedDict, total=False):
 
 
 class NarrativeContext(TypedDict, total=False):
-    """Track-2: narrative-continuity from Qdrant + Redis."""
+    """Narrative evidence from summaries, vectors, and immediate continuity."""
     recent_chapter_summaries: list[str]  # last 3-5 chapter summaries
     current_arc_summary: str             # current volume/arc compressed summary
     plot_momentum: str                   # description of story momentum
@@ -69,23 +69,23 @@ class AgentState(TypedDict, total=False):
     plan_steps: list[PlanStep]
     current_step: int
 
-    # ── Re³ dual-track context ────────────────────────────────────────────────
+    # ── runtime evidence pack ────────────────────────────────────────────────
     world_track: WorldContext
     narrative_track: NarrativeContext
 
-    # ── RecurrentGPT memory ──────────────────────────────────────────────────
-    short_term_paragraphs: list[str]  # last N generated paragraphs (Redis-backed)
-    long_term_facts: list[GraphEntity]  # recalled from graphiti
+    # ── memory evidence ──────────────────────────────────────────────────────
+    short_term_paragraphs: list[str]  # immediate continuity tail, Redis-backed
+    long_term_facts: list[GraphEntity]  # durable facts recalled from graph memory
     working_notes: str                  # scratchpad updated each node
 
     # ── retrieval results ─────────────────────────────────────────────────────
     graph_entities: list[GraphEntity]
     vector_hits: list[VectorHit]
 
-    # ── assembled context (Lost-in-Middle arranged) ───────────────────────────
-    anchor_top: str      # most critical: world rules + character cores
-    context_middle: str  # secondary: retrieved summaries / style samples
-    anchor_bottom: str   # most critical: chapter outline + writing instruction
+    # ── assembled evidence pack ──────────────────────────────────────────────
+    anchor_top: str      # durable canon: world rules + character cores
+    context_middle: str  # continuity evidence: summaries / style samples
+    anchor_bottom: str   # current chapter contract + craft constraints
 
     # ── generation ────────────────────────────────────────────────────────────
     draft: str

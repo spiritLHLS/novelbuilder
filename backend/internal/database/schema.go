@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
-// EnsureRuntimeSchema applies small, idempotent schema guarantees required by
-// the running binary. The full schema is still created by the SQL files on a
-// fresh database; this function covers no-downtime upgrades when the container
-// image changes but the Postgres volume is kept.
-func EnsureRuntimeSchema(ctx context.Context, db *pgxpool.Pool, logger *zap.Logger) error {
+// EnsureRuntimeSchema applies PostgreSQL-only runtime guards that are outside
+// the portable GORM model set. Fresh PostgreSQL and SQLite databases are created
+// by AutoMigrate before this function runs.
+func EnsureRuntimeSchema(ctx context.Context, db *DB, logger *zap.Logger) error {
+	if db.DriverName() == "sqlite" {
+		if logger != nil {
+			logger.Info("runtime schema ensured", zap.String("driver", "sqlite"))
+		}
+		return nil
+	}
 	statements := []string{
 		`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`,
 		`CREATE EXTENSION IF NOT EXISTS "vector"`,

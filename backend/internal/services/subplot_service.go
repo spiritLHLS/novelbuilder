@@ -6,17 +6,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/novelbuilder/backend/internal/database"
 	"go.uber.org/zap"
 )
 
 // SubplotService manages subplot (A/B/C plot-line) tracking.
 type SubplotService struct {
-	db     *pgxpool.Pool
+	db     *database.DB
 	logger *zap.Logger
 }
 
-func NewSubplotService(db *pgxpool.Pool, logger *zap.Logger) *SubplotService {
+func NewSubplotService(db *database.DB, logger *zap.Logger) *SubplotService {
 	return &SubplotService{db: db, logger: logger}
 }
 

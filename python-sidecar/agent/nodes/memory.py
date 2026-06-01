@@ -1,8 +1,8 @@
 """
-Memory Node — implements RecurrentGPT memory:
-  • Short-term: last N paragraphs from Redis
-  • Long-term: graphiti graph memory (entity/event recall from Neo4j)
-  • Update: after generation, compress and store new memories
+Memory Node — prepares memory evidence for chapter generation:
+  • Immediate continuity: last N paragraphs from Redis
+  • Durable facts: graph memory recall from Neo4j / graphiti
+  • Update: after generation, compress and store new evidence
 """
 from __future__ import annotations
 
@@ -17,10 +17,12 @@ from agent.state import AgentState, GraphEntity
 
 logger = logging.getLogger(__name__)
 
-# ── Redis short-term memory ───────────────────────────────────────────────────
+# ── Redis immediate continuity tail ──────────────────────────────────────────
 
 def _get_redis() -> redis.Redis:
     redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
+    if not redis_url.strip():
+        raise RuntimeError("Redis disabled by deployment profile")
     return redis.from_url(redis_url, decode_responses=True)
 
 
@@ -29,7 +31,7 @@ def _stm_key(project_id: str) -> str:
 
 
 def load_short_term(project_id: str, n: int = 5) -> list[str]:
-    """Return the last n paragraphs from Redis short-term memory."""
+    """Return the last n paragraphs from Redis immediate continuity memory."""
     try:
         r = _get_redis()
         items = r.lrange(_stm_key(project_id), -n, -1)
@@ -40,7 +42,7 @@ def load_short_term(project_id: str, n: int = 5) -> list[str]:
 
 
 def save_short_term(project_id: str, paragraphs: list[str]) -> None:
-    """Append new paragraphs to Redis short-term memory (keep last 20)."""
+    """Append new paragraphs to Redis immediate continuity memory (keep last 20)."""
     if not paragraphs:
         return
     try:
@@ -60,6 +62,9 @@ def save_short_term(project_id: str, paragraphs: list[str]) -> None:
 def _build_graphiti(llm_cfg: dict[str, Any] | None = None):
     """Build graphiti client lazily to avoid import errors if Neo4j is down."""
     try:
+        if "NEO4J_URI" in os.environ and not os.getenv("NEO4J_URI", "").strip():
+            logger.warning("graphiti disabled: Neo4j disabled by deployment profile")
+            return None
         from graphiti_core import Graphiti
         from graphiti_core.llm_client.openai_client import OpenAIClient as GOpenAI
         from graphiti_core.embedder.openai_embedder import OpenAIEmbedder as GEmbed
@@ -168,9 +173,9 @@ async def update_long_term(project_id: str, chapter_num: int,
 
 async def recall_memory_node(state: AgentState) -> dict[str, Any]:
     """
-    RecurrentGPT recall step:
-      1. Load short-term paragraphs from Redis
-      2. Search graphiti for long-term relevant facts
+    Memory recall step:
+      1. Load immediate continuity paragraphs from Redis
+      2. Search graph memory for durable relevant facts
     """
     project_id = state["project_id"]
     query = state.get("user_prompt", "") + " " + state.get("outline_hint", "")
@@ -189,9 +194,9 @@ async def recall_memory_node(state: AgentState) -> dict[str, Any]:
 
 async def update_memory_node(state: AgentState) -> dict[str, Any]:
     """
-    RecurrentGPT update step:
-      1. Append generated paragraphs to Redis short-term memory
-      2. Store chapter events into graphiti long-term memory
+    Memory update step:
+      1. Append generated paragraphs to Redis continuity memory
+      2. Store chapter events into graph memory
     """
     project_id = state["project_id"]
     chapter_num = state.get("chapter_num", 0)

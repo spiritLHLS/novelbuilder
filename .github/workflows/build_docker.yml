@@ -1,14 +1,17 @@
-name: Build and Push Docker Images
+name: Build Docker Images and Binaries
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 
 env:
   DOCKER_IMAGE: spiritlhl/novelbuilder
 
 jobs:
-  build-dockerhub:
-    runs-on: ${{ matrix.runner }}
+  docker:
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -16,34 +19,58 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
-            runner: ubuntu-latest
-            platform: linux/amd64
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            platform: linux/arm64
+          - profile: full
+            dockerfile: Dockerfile
+            base_profile: ""
+          - profile: standard
+            dockerfile: Dockerfile.standard
+            base_profile: ""
+          - profile: app
+            dockerfile: Dockerfile.app
+            base_profile: ""
+          - profile: no-neo4j
+            dockerfile: Dockerfile.no-neo4j
+            base_profile: full
+          - profile: no-qdrant
+            dockerfile: Dockerfile.no-qdrant
+            base_profile: full
+          - profile: no-graph-vector
+            dockerfile: Dockerfile.no-graph-vector
+            base_profile: standard
+          - profile: no-redis
+            dockerfile: Dockerfile.no-redis
+            base_profile: standard
+          - profile: sqlite
+            dockerfile: Dockerfile.sqlite
+            base_profile: app
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Get latest release tag
-        id: latest-tag
+      - name: Resolve tags
+        id: meta
         run: |
-          TAG=$(curl -fsSL "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" | \
-            jq -r '.tag_name // "dev"')
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "Latest release tag: ${TAG}"
+          date_tag="$(date +'%Y%m%d')"
+          version="${GITHUB_REF_NAME:-dev}"
+          profile="${{ matrix.profile }}"
+          dockerhub="${{ env.DOCKER_IMAGE }}:${profile},${{ env.DOCKER_IMAGE }}:${date_tag}-${profile}"
+          ghcr_owner="${GITHUB_REPOSITORY_OWNER,,}"
+          ghcr_repo="${GITHUB_REPOSITORY#*/}"
+          ghcr_image="ghcr.io/${ghcr_owner}/${ghcr_repo}"
+          ghcr="${ghcr_image}:${profile},${ghcr_image}:${date_tag}-${profile}"
+          if [ "${profile}" = "full" ]; then
+            dockerhub="${dockerhub},${{ env.DOCKER_IMAGE }}:latest,${{ env.DOCKER_IMAGE }}:${date_tag}"
+            ghcr="${ghcr},${ghcr_image}:latest,${ghcr_image}:${date_tag}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "date_tag=${date_tag}" >> "$GITHUB_OUTPUT"
+          echo "dockerhub=${dockerhub}" >> "$GITHUB_OUTPUT"
+          echo "ghcr=${ghcr}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
         id: login-dockerhub
@@ -53,89 +80,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata for Docker Hub
-        if: steps.login-dockerhub.outcome == 'success'
-        id: meta-dockerhub
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE }}
-          tags: |
-            type=raw,value=latest
-          flavor: |
-            suffix=-${{ matrix.arch }}
-
-      - name: Build and push to Docker Hub
-        if: steps.login-dockerhub.outcome == 'success'
-        id: build-dockerhub
-        continue-on-error: true
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile
-          platforms: ${{ matrix.platform }}
-          build-args: |
-            SERVER_VERSION=${{ steps.latest-tag.outputs.tag }}
-          outputs: type=image,name=${{ env.DOCKER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: |
-            type=gha,scope=dockerhub-${{ matrix.arch }}
-          cache-to: |
-            type=gha,mode=max,scope=dockerhub-${{ matrix.arch }}
-
-      - name: Export Docker Hub digest
-        if: steps.build-dockerhub.outcome == 'success'
-        run: |
-          mkdir -p /tmp/digests-dockerhub
-          digest="${{ steps.build-dockerhub.outputs.digest }}"
-          touch "/tmp/digests-dockerhub/${digest#sha256:}"
-
-      - name: Upload Docker Hub digest
-        if: steps.build-dockerhub.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-dockerhub-${{ matrix.arch }}
-          path: /tmp/digests-dockerhub/*
-          if-no-files-found: error
-          retention-days: 1
-
-  build-ghcr:
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-            platform: linux/amd64
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            platform: linux/arm64
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Get latest release tag
-        id: latest-tag
-        run: |
-          TAG=$(curl -fsSL "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" | \
-            jq -r '.tag_name // "dev"')
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "Latest release tag: ${TAG}"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
-
-      - name: Login to GitHub Container Registry
+      - name: Login to GHCR
         id: login-ghcr
         continue-on-error: true
         uses: docker/login-action@v3
@@ -144,130 +89,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare GHCR image name
-        id: ghcr-image
-        run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          repo="${GITHUB_REPOSITORY#*/}"
-          echo "image=ghcr.io/${owner}/${repo}" >> "$GITHUB_OUTPUT"
-
-      - name: Extract metadata for GHCR
-        if: steps.login-ghcr.outcome == 'success'
-        id: meta-ghcr
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.ghcr-image.outputs.image }}
-          tags: |
-            type=raw,value=latest
-          flavor: |
-            suffix=-${{ matrix.arch }}
-
-      - name: Build and push to GHCR
-        if: steps.login-ghcr.outcome == 'success'
-        id: build-ghcr
-        continue-on-error: true
+      - name: Build and push Docker Hub image
+        if: steps.login-dockerhub.outcome == 'success'
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Dockerfile
-          platforms: ${{ matrix.platform }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.dockerhub }}
           build-args: |
-            SERVER_VERSION=${{ steps.latest-tag.outputs.tag }}
-          outputs: type=image,name=${{ steps.ghcr-image.outputs.image }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: |
-            type=gha,scope=ghcr-${{ matrix.arch }}
-          cache-to: |
-            type=gha,mode=max,scope=ghcr-${{ matrix.arch }}
+            SERVER_VERSION=${{ steps.meta.outputs.version }}
+            BUILD_PROFILE=${{ matrix.profile }}
+            BASE_IMAGE=${{ env.DOCKER_IMAGE }}:${{ matrix.base_profile || matrix.profile }}
+          cache-from: type=gha,scope=dockerhub-${{ matrix.profile }}
+          cache-to: type=gha,mode=max,scope=dockerhub-${{ matrix.profile }}
 
-      - name: Export GHCR digest
-        if: steps.build-ghcr.outcome == 'success'
-        run: |
-          mkdir -p /tmp/digests-ghcr
-          digest="${{ steps.build-ghcr.outputs.digest }}"
-          touch "/tmp/digests-ghcr/${digest#sha256:}"
-
-      - name: Upload GHCR digest
-        if: steps.build-ghcr.outcome == 'success'
-        uses: actions/upload-artifact@v4
+      - name: Build and push GHCR image
+        if: steps.login-ghcr.outcome == 'success'
+        uses: docker/build-push-action@v5
         with:
-          name: digests-ghcr-${{ matrix.arch }}
-          path: /tmp/digests-ghcr/*
-          if-no-files-found: error
-          retention-days: 1
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.ghcr }}
+          build-args: |
+            SERVER_VERSION=${{ steps.meta.outputs.version }}
+            BUILD_PROFILE=${{ matrix.profile }}
+            BASE_IMAGE=${{ env.DOCKER_IMAGE }}:${{ matrix.base_profile || matrix.profile }}
+          cache-from: type=gha,scope=ghcr-${{ matrix.profile }}
+          cache-to: type=gha,mode=max,scope=ghcr-${{ matrix.profile }}
 
-  merge-dockerhub:
-    runs-on: ubuntu-latest
-    needs: build-dockerhub
-    if: always()
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        id: login-dockerhub
-        continue-on-error: true
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Get current date
-        id: date
-        run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
-
-      - name: Download Docker Hub digests
-        id: download-dockerhub
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          pattern: digests-dockerhub-*
-          merge-multiple: true
-          path: /tmp/digests-dockerhub
-
-      - name: Check Docker Hub digests
-        id: dockerhub-digests
-        run: |
-          mkdir -p /tmp/digests-dockerhub
-          if find /tmp/digests-dockerhub -maxdepth 1 -type f | grep -q .; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Extract metadata for Docker Hub
-        if: steps.login-dockerhub.outcome == 'success' && steps.download-dockerhub.outcome == 'success' && steps.dockerhub-digests.outputs.present == 'true'
-        id: meta-dockerhub
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE }}
-          tags: |
-            type=raw,value=latest
-            type=raw,value=v${{ steps.date.outputs.date }}
-            type=raw,value={{date 'YYYYMMDD'}}
-
-      - name: Create manifest list and push to Docker Hub
-        if: steps.login-dockerhub.outcome == 'success' && steps.download-dockerhub.outcome == 'success' && steps.dockerhub-digests.outputs.present == 'true'
-        continue-on-error: true
-        working-directory: /tmp/digests-dockerhub
-        run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.DOCKER_IMAGE }}@sha256:%s ' *)
-
-      - name: Inspect Docker Hub image
-        if: steps.login-dockerhub.outcome == 'success' && steps.download-dockerhub.outcome == 'success' && steps.dockerhub-digests.outputs.present == 'true'
-        continue-on-error: true
-        run: |
-          docker buildx imagetools inspect ${{ env.DOCKER_IMAGE }}:latest
-
-      - name: Update Docker Hub Description
-        if: steps.login-dockerhub.outcome == 'success'
+      - name: Update Docker Hub description
+        if: steps.login-dockerhub.outcome == 'success' && matrix.profile == 'full'
         continue-on-error: true
         uses: peter-evans/dockerhub-description@v4
         with:
@@ -276,81 +131,31 @@ jobs:
           repository: ${{ env.DOCKER_IMAGE }}
           readme-filepath: ./README.md
 
-  merge-ghcr:
+  binaries:
     runs-on: ubuntu-latest
-    needs: build-ghcr
-    if: always()
     permissions:
       contents: read
-      packages: write
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        id: login-ghcr
-        continue-on-error: true
-        uses: docker/login-action@v3
+      - uses: actions/checkout@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
 
-      - name: Prepare GHCR image name
-        id: ghcr-image
-        run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          repo="${GITHUB_REPOSITORY#*/}"
-          echo "image=ghcr.io/${owner}/${repo}" >> "$GITHUB_OUTPUT"
-
-      - name: Get current date
-        id: date
-        run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
-
-      - name: Download GHCR digests
-        id: download-ghcr
-        continue-on-error: true
-        uses: actions/download-artifact@v4
+      - uses: actions/setup-go@v5
         with:
-          pattern: digests-ghcr-*
-          merge-multiple: true
-          path: /tmp/digests-ghcr
+          go-version: "1.22"
 
-      - name: Check GHCR digests
-        id: ghcr-digests
-        run: |
-          mkdir -p /tmp/digests-ghcr
-          if find /tmp/digests-ghcr -maxdepth 1 -type f | grep -q .; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Extract metadata for GHCR
-        if: steps.login-ghcr.outcome == 'success' && steps.download-ghcr.outcome == 'success' && steps.ghcr-digests.outputs.present == 'true'
-        id: meta-ghcr
-        uses: docker/metadata-action@v5
+      - uses: actions/setup-node@v4
         with:
-          images: ${{ steps.ghcr-image.outputs.image }}
-          tags: |
-            type=raw,value=latest
-            type=raw,value=v${{ steps.date.outputs.date }}
-            type=raw,value={{date 'YYYYMMDD'}}
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Create manifest list and push to GHCR
-        if: steps.login-ghcr.outcome == 'success' && steps.download-ghcr.outcome == 'success' && steps.ghcr-digests.outputs.present == 'true'
-        continue-on-error: true
-        working-directory: /tmp/digests-ghcr
-        run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ steps.ghcr-image.outputs.image }}@sha256:%s ' *)
+      - name: Build binary packages
+        run: VERSION="${GITHUB_REF_NAME:-dev}" ./scripts/build-binaries.sh
 
-      - name: Inspect GHCR image
-        if: steps.login-ghcr.outcome == 'success' && steps.download-ghcr.outcome == 'success' && steps.ghcr-digests.outputs.present == 'true'
-        continue-on-error: true
-        run: |
-          docker buildx imagetools inspect ${{ steps.ghcr-image.outputs.image }}:latest
+      - name: Upload binary packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: novelbuilder-binaries
+          path: dist/binaries/*
+          if-no-files-found: error

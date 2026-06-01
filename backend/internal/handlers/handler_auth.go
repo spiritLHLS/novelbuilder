@@ -8,24 +8,22 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
+	"github.com/novelbuilder/backend/internal/sessions"
 	"golang.org/x/crypto/bcrypt"
 )
-
-const sessionKeyPrefix = "session:"
 
 // Authhandler handles login, logout, and session-check for the built-in
 // single-user authentication system.
 type AuthHandler struct {
 	username   string
 	pwHash     []byte // bcrypt hash of the configured password
-	rdb        *redis.Client
+	sessions   sessions.Store
 	sessionTTL time.Duration
 }
 
 // NewAuthHandler creates an AuthHandler.  The plain-text password is hashed
 // once at startup so comparisons are always constant-time.
-func NewAuthHandler(username, password string, rdb *redis.Client, sessionTTLHours int) *AuthHandler {
+func NewAuthHandler(username, password string, sessionStore sessions.Store, sessionTTLHours int) *AuthHandler {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		// bcrypt should never fail here; panic so the misconfiguration is obvious.
@@ -34,7 +32,7 @@ func NewAuthHandler(username, password string, rdb *redis.Client, sessionTTLHour
 	return &AuthHandler{
 		username:   username,
 		pwHash:     hash,
-		rdb:        rdb,
+		sessions:   sessionStore,
 		sessionTTL: time.Duration(sessionTTLHours) * time.Hour,
 	}
 }
@@ -71,9 +69,8 @@ func (a *AuthHandler) Login(c *gin.Context) {
 	}
 	token := hex.EncodeToString(raw)
 
-	// Persist in Redis; key expires after sessionTTL (slid on each request by middleware).
-	key := sessionKeyPrefix + token
-	if err := a.rdb.Set(context.Background(), key, a.username, a.sessionTTL).Err(); err != nil {
+	// Persist in the configured session store; expiry is slid on each request by middleware.
+	if err := a.sessions.Set(context.Background(), token, a.username, a.sessionTTL); err != nil {
 		c.JSON(500, gin.H{"error": "failed to store session"})
 		return
 	}
@@ -92,7 +89,7 @@ func (a *AuthHandler) Logout(c *gin.Context) {
 	header := c.GetHeader("Authorization")
 	if strings.HasPrefix(header, "Bearer ") {
 		token := strings.TrimPrefix(header, "Bearer ")
-		a.rdb.Del(context.Background(), sessionKeyPrefix+token)
+		_ = a.sessions.Delete(context.Background(), token)
 	}
 	c.JSON(200, gin.H{"message": "logged out"})
 }

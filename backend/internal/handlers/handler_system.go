@@ -36,7 +36,7 @@ func (h *Handler) Doctor(c *gin.Context) {
 
 	if err := h.chapters.PingRedis(ctx); err != nil {
 		checks["redis"] = gin.H{"ok": false, "error": err.Error()}
-		warnings = append(warnings, "Redis 不可用：短期记忆与缓存能力降级")
+		warnings = append(warnings, "Redis 不可用：即时承接与缓存能力降级")
 		out["status"] = "degraded"
 	} else {
 		checks["redis"] = gin.H{"ok": true}
