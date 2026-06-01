@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -349,6 +350,85 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 		CreatedAt:       existing.CreatedAt,
 		UpdatedAt:       now,
 	}, nil
+}
+
+func (s *LLMProfileService) Usage(ctx context.Context) ([]models.LLMProfileUsage, error) {
+	profiles, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	usageByID := make(map[string]*models.LLMProfileUsage, len(profiles))
+	profileByModel := make(map[string]string, len(profiles))
+	for _, p := range profiles {
+		usageByID[p.ID] = &models.LLMProfileUsage{
+			ProfileID:       p.ID,
+			EstimatedSource: "chapters.gen_params.llm_config.model",
+		}
+		if model := strings.ToLower(strings.TrimSpace(p.ModelName)); model != "" {
+			profileByModel[model] = p.ID
+		}
+	}
+
+	rows, err := s.db.Query(ctx,
+		`SELECT COALESCE(gen_params, '{}'), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0)
+		   FROM chapters
+		  WHERE COALESCE(input_tokens, 0) > 0 OR COALESCE(output_tokens, 0) > 0`)
+	if err != nil {
+		return nil, fmt.Errorf("list chapter token usage: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var genParamsRaw string
+		var inputTokens, outputTokens int64
+		if err := rows.Scan(&genParamsRaw, &inputTokens, &outputTokens); err != nil {
+			return nil, err
+		}
+		modelName := strings.ToLower(strings.TrimSpace(extractUsageModel(genParamsRaw)))
+		profileID := profileByModel[modelName]
+		if profileID == "" {
+			for _, p := range profiles {
+				model := strings.ToLower(strings.TrimSpace(p.ModelName))
+				if model != "" && strings.Contains(strings.ToLower(genParamsRaw), model) {
+					profileID = p.ID
+					break
+				}
+			}
+		}
+		if profileID == "" {
+			continue
+		}
+		u := usageByID[profileID]
+		u.ChapterCount++
+		u.InputTokens += inputTokens
+		u.OutputTokens += outputTokens
+		u.TotalTokens += inputTokens + outputTokens
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chapter token usage rows: %w", err)
+	}
+
+	out := make([]models.LLMProfileUsage, 0, len(profiles))
+	for _, p := range profiles {
+		out = append(out, *usageByID[p.ID])
+	}
+	return out, nil
+}
+
+func extractUsageModel(raw string) string {
+	var payload struct {
+		LLMConfig map[string]interface{} `json:"llm_config"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	if payload.LLMConfig == nil {
+		return ""
+	}
+	if model, ok := payload.LLMConfig["model"].(string); ok {
+		return model
+	}
+	return ""
 }
 
 func (s *LLMProfileService) Delete(ctx context.Context, id string) error {

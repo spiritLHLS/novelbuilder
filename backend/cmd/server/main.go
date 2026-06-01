@@ -70,9 +70,6 @@ func main() {
 	if err := database.AutoMigrate(context.Background(), db.GORM(), logger); err != nil {
 		logger.Fatal("failed to auto-migrate database schema", zap.Error(err))
 	}
-	if err := database.EnsureRuntimeSchema(context.Background(), db, logger); err != nil {
-		logger.Fatal("failed to ensure runtime database schema", zap.Error(err))
-	}
 
 	// Initialize Redis
 	rdb, err := database.NewRedis(cfg.Redis, logger)

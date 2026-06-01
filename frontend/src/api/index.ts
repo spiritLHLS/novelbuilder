@@ -439,11 +439,19 @@ export default api
 // LLM Profiles
 export const llmProfileApi = {
   list: () => api.get('/llm-profiles'),
+  usage: () => api.get('/llm-profiles/usage'),
   get: (id: string) => api.get(`/llm-profiles/${id}`),
   create: (data: any) => api.post('/llm-profiles', data),
   update: (id: string, data: any) => api.put(`/llm-profiles/${id}`, data),
   delete: (id: string) => api.delete(`/llm-profiles/${id}`),
   setDefault: (id: string) => api.post(`/llm-profiles/${id}/set-default`),
+  models: (data: {
+    profile_id?: string
+    base_url?: string
+    api_key?: string
+    provider?: string
+    api_style?: string
+  }) => api.post<{ ok: boolean; models?: Array<{ id: string; name: string; provider: string }>; source?: string; duration_ms?: number; error?: string }>('/llm-profiles/models', data),
   /** Test connectivity with the given credentials (or a saved profile_id). */
   test: (data: {
     profile_id?: string
@@ -452,6 +460,8 @@ export const llmProfileApi = {
     model_name?: string
     api_style?: string
     provider?: string
+    max_tokens?: number
+    temperature?: number
   }) => api.post<{ ok: boolean; model?: string; duration_ms?: number; error?: string }>('/llm-profiles/test', data),
 }
 

@@ -377,13 +377,15 @@ func resolvedFromCfg(cfg map[string]interface{}, req ChatRequest) resolvedModel 
 }
 
 // ChatWithConfig performs a chat using an explicitly provided credentials map.
-// Falls back to Chat() if cfg is nil or lacks an api_key.
+// Falls back to Chat() only when cfg is nil or does not identify a target model.
 func (gw *AIGateway) ChatWithConfig(ctx context.Context, req ChatRequest, cfg map[string]interface{}) (*ChatResponse, error) {
 	if cfg == nil {
 		return gw.Chat(ctx, req)
 	}
 	apiKey, _ := cfg["api_key"].(string)
-	if apiKey == "" {
+	model, _ := cfg["model"].(string)
+	baseURL, _ := cfg["base_url"].(string)
+	if apiKey == "" && model == "" && baseURL == "" {
 		return gw.Chat(ctx, req)
 	}
 	resolved := resolvedFromCfg(cfg, req)

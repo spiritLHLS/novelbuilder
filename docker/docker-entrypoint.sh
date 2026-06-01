@@ -54,44 +54,17 @@ HBA
     su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
     su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";'"
 
-    echo "==> Running SQL migrations (first init)..."
-    for f in /app/migrations/*.sql; do
-        echo "   applying $f"
-        su - postgres -c "psql -d $DB_NAME -f $f"
-    done
-
-    # Grant the app user full access to every table/sequence created by migrations.
-    # Migrations run as postgres (owner), so novelbuilder has no privileges by default.
-    su - postgres -c "psql -d $DB_NAME -c \"
-        GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA public TO $DB_USER;
-        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO $DB_USER;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public
-            GRANT ALL ON TABLES    TO $DB_USER;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public
-            GRANT ALL ON SEQUENCES TO $DB_USER;
-    \""
-
     su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA stop -w"
-    echo "==> PostgreSQL ready."
+    echo "==> PostgreSQL ready. Go backend will create schema with GORM AutoMigrate."
 else
-    # DB already initialised — start PG briefly to apply any new migrations
-    # that were added since the image was first built. All migration files use
-    # IF NOT EXISTS / ADD COLUMN IF NOT EXISTS so they are fully idempotent.
-    echo "==> Existing PostgreSQL data found. Applying any pending migrations..."
-    su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA -l /tmp/pg_migrate.log start -w"
+    # DB already initialised — start PG briefly to ensure required extensions.
+    # The Go backend owns schema creation through GORM AutoMigrate.
+    echo "==> Existing PostgreSQL data found. Ensuring PostgreSQL extensions..."
+    su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA -l /tmp/pg_extensions.log start -w"
     su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS vector;'" 2>/dev/null || true
     su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";'" 2>/dev/null || true
-    for f in /app/migrations/*.sql; do
-        echo "   applying $f"
-        su - postgres -c "psql -d $DB_NAME -f $f" || echo "   WARNING: $f failed (already applied or error — continuing)"
-    done
-    # Re-grant for any newly created tables
-    su - postgres -c "psql -d $DB_NAME -c \"
-        GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA public TO $DB_USER;
-        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO $DB_USER;
-    \"" 2>/dev/null || true
     su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA stop -w"
-    echo "==> Migrations applied."
+    echo "==> PostgreSQL extensions ensured."
 fi
 
 # ── Neo4j init ───────────────────────────────────────────
@@ -167,4 +140,3 @@ wait_for_port() {
 # ── Start all services via supervisord ────────────────────
 echo "==> Starting all services via supervisord..."
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
-

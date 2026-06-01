@@ -39,6 +39,12 @@
         </template>
       </el-table-column>
       <el-table-column label="Max Tokens" prop="max_tokens" width="110" align="right" />
+      <el-table-column label="章节用量" width="150" align="right">
+        <template #default="{ row }">
+          <div class="usage-cell">{{ formatTokens(profileUsage(row).total_tokens) }}</div>
+          <div class="usage-sub">{{ profileUsage(row).chapter_count }} 章</div>
+        </template>
+      </el-table-column>
       <el-table-column label="限速 (RPM)" prop="rpm_limit" width="100" align="right">
         <template #default="{ row }">
           {{ row.rpm_limit > 0 ? row.rpm_limit : '不限制' }}
@@ -109,11 +115,30 @@
           />
         </el-form-item>
         <el-form-item label="模型名称" prop="model_name">
-          <el-input
-            v-model="form.model_name"
-            placeholder="例如：claude-sonnet-4-5"
-            @blur="autoDetect"
-          />
+          <div class="model-picker">
+            <el-select
+              v-model="form.model_name"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="选择或输入模型"
+              @change="autoDetect"
+            >
+              <el-option
+                v-for="model in availableModels"
+                :key="model.id"
+                :label="model.name || model.id"
+                :value="model.id"
+              >
+                <span>{{ model.name || model.id }}</span>
+                <span class="model-provider">{{ model.provider }}</span>
+              </el-option>
+            </el-select>
+            <el-button :loading="loadingModels" @click="fetchAvailableModels">
+              <el-icon><Refresh /></el-icon>
+              获取模型
+            </el-button>
+          </div>
           <div class="hint" style="margin-top:4px">
             推荐：claude-sonnet-4-5（Anthropic）/ claude-opus-4（Anthropic）/ gpt-4o（OpenAI）/ gemini-2.0-flash（Gemini）
           </div>
@@ -185,7 +210,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, StarFilled } from '@element-plus/icons-vue'
+import { Plus, Refresh, StarFilled } from '@element-plus/icons-vue'
 import { llmProfileApi } from '@/api'
 import type { FormInstance, FormRules } from 'element-plus'
 
@@ -214,7 +239,23 @@ interface TestResult {
   raw_body?: string
 }
 
+interface ModelOption {
+  id: string
+  name: string
+  provider: string
+}
+
+interface ProfileUsage {
+  profile_id: string
+  chapter_count: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  estimated_source: string
+}
+
 const profiles = ref<LLMProfile[]>([])
+const usageMap = ref<Record<string, ProfileUsage>>({})
 const loading = ref(false)
 const showCreateDialog = ref(false)
 const submitting = ref(false)
@@ -224,6 +265,8 @@ const formRef = ref<FormInstance>()
 // Test state
 const dialogTesting = ref(false)
 const dialogTestResult = ref<TestResult | null>(null)
+const availableModels = ref<ModelOption[]>([])
+const loadingModels = ref(false)
 
 const defaultForm = () => ({
   name: '',
@@ -246,11 +289,22 @@ const rules: FormRules = {
   name: [{ required: true, message: '请输入配置名称', trigger: 'blur' }],
   provider: [{ required: true, message: '请选择提供商', trigger: 'change' }],
   base_url: [{ required: true, message: '请输入 API Base URL', trigger: 'blur' }],
-  api_key: [{ required: true, message: '请输入 API Key', trigger: 'blur' }],
+  api_key: [{
+    validator: (_rule: any, value: string, callback: (error?: Error) => void) => {
+      if (value || isLocalCompatibleEndpoint()) {
+        callback()
+        return
+      }
+      callback(new Error('请输入 API Key'))
+    },
+    trigger: 'blur',
+  }],
   model_name: [{ required: true, message: '请输入模型名称', trigger: 'blur' }],
 }
 
-onMounted(fetchProfiles)
+onMounted(async () => {
+  await Promise.all([fetchProfiles(), fetchUsage()])
+})
 
 async function fetchProfiles() {
   loading.value = true
@@ -262,6 +316,45 @@ async function fetchProfiles() {
   } finally {
     loading.value = false
   }
+}
+
+async function fetchUsage() {
+  try {
+    const res = await llmProfileApi.usage()
+    const items: ProfileUsage[] = res.data.data || []
+    usageMap.value = Object.fromEntries(items.map(item => [item.profile_id, item]))
+  } catch {
+    usageMap.value = {}
+  }
+}
+
+function profileUsage(profile: LLMProfile): ProfileUsage {
+  return usageMap.value[profile.id] || {
+    profile_id: profile.id,
+    chapter_count: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    estimated_source: '',
+  }
+}
+
+function formatTokens(tokens: number) {
+  if (!tokens) return '0'
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`
+  return String(tokens)
+}
+
+function isLocalCompatibleEndpoint() {
+  if (form.provider !== 'openai_compatible') return false
+  const url = form.base_url.toLowerCase()
+  return url.includes('localhost') ||
+    url.includes('127.0.0.1') ||
+    url.includes('[::1]') ||
+    url.includes('0.0.0.0') ||
+    url.includes('ollama') ||
+    /^https?:\/\/(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(url)
 }
 
 // ── Auto-detection ────────────────────────────────────────────────────────────
@@ -339,9 +432,51 @@ function applyProviderDefaults(provider: string, modelHint = '') {
 
 function onProviderChange(provider: string) {
   applyProviderDefaults(provider, form.model_name.toLowerCase())
+  availableModels.value = []
 }
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
+async function fetchAvailableModels() {
+  if (!form.base_url || !form.base_url.trim()) {
+    ElMessage.warning('请先填写 API Base URL')
+    return
+  }
+  const hasInlineKey = !!form.api_key
+  if (!hasInlineKey && !editingProfile.value && !isLocalCompatibleEndpoint()) {
+    ElMessage.warning('请先填写 API Key')
+    return
+  }
+
+  loadingModels.value = true
+  try {
+    const payload: any = {
+      base_url: form.base_url.trim(),
+      provider: form.provider,
+      api_style: form.api_style,
+    }
+    if (hasInlineKey) {
+      payload.api_key = form.api_key
+    } else if (editingProfile.value) {
+      payload.profile_id = editingProfile.value.id
+    }
+    const res = await llmProfileApi.models(payload)
+    if (!res.data.ok) {
+      ElMessage.error(res.data.error || '获取模型失败')
+      return
+    }
+    availableModels.value = res.data.models || []
+    if (!form.model_name && availableModels.value.length > 0) {
+      form.model_name = availableModels.value[0].id
+      autoDetect()
+    }
+    ElMessage.success(`已获取 ${availableModels.value.length} 个模型`)
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '获取模型失败')
+  } finally {
+    loadingModels.value = false
+  }
+}
+
 async function testDialogForm() {
   // Base URL and model name are always required
   if (!form.base_url || !form.base_url.trim()) {
@@ -356,7 +491,7 @@ async function testDialogForm() {
   // When creating a new profile, api_key is mandatory.
   // When editing an existing profile, the saved key can be reused via profile_id.
   const hasInlineKey = !!form.api_key
-  if (!hasInlineKey && !editingProfile.value) {
+  if (!hasInlineKey && !editingProfile.value && !isLocalCompatibleEndpoint()) {
     ElMessage.warning('请先填写 API Key')
     return
   }
@@ -392,6 +527,7 @@ async function testDialogForm() {
 function editProfile(profile: LLMProfile) {
   editingProfile.value = profile
   dialogTestResult.value = null
+  availableModels.value = [{ id: profile.model_name, name: profile.model_name, provider: profile.provider }]
   Object.assign(form, {
     name: profile.name,
     provider: profile.provider,
@@ -415,6 +551,7 @@ function editProfile(profile: LLMProfile) {
 function onDialogClosed() {
   editingProfile.value = null
   dialogTestResult.value = null
+  availableModels.value = []
   Object.assign(form, defaultForm())
 }
 
@@ -450,7 +587,7 @@ async function submitForm() {
       ElMessage.success('配置已创建')
     }
     cancelDialog()
-    await fetchProfiles()
+    await Promise.all([fetchProfiles(), fetchUsage()])
   } catch (e: any) {
     ElMessage.error(e.response?.data?.error || '操作失败')
   } finally {
@@ -477,7 +614,7 @@ async function deleteProfile(profile: LLMProfile) {
   try {
     await llmProfileApi.delete(profile.id)
     ElMessage.success('已删除')
-    await fetchProfiles()
+    await Promise.all([fetchProfiles(), fetchUsage()])
   } catch {
     ElMessage.error('删除失败')
   }
@@ -508,6 +645,20 @@ function providerTagType(provider: string) {
 .masked-key { font-family: monospace; color: #8a8a9a; font-size: 12px; }
 .default-icon { color: #f5a623; font-size: 18px; }
 .hint { margin-left: 10px; color: #888; font-size: 12px; }
+.usage-cell { font-variant-numeric: tabular-nums; color: var(--nb-text-primary); }
+.usage-sub { font-size: 12px; color: #888; line-height: 1.2; }
+.model-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  width: 100%;
+}
+.model-provider {
+  float: right;
+  color: #999;
+  font-size: 12px;
+  margin-left: 16px;
+}
 .raw-body-pre {
   margin: 0;
   padding: 8px;

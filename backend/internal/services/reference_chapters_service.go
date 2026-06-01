@@ -90,7 +90,7 @@ func sampleSentences(text string, maxSamples int) []string {
 	return result
 }
 
-// ── Download task management (migration 014) ─────────────────────────────────
+// ── Download task management ─────────────────────────────────────────────────
 
 // CreateDownloadTask inserts a reference_materials record immediately at the start of a download
 // so the task is persisted even if the browser disconnects.

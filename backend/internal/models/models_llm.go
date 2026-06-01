@@ -38,7 +38,7 @@ type CreateLLMProfileRequest struct {
 	Name            string  `json:"name" binding:"required"`
 	Provider        string  `json:"provider" binding:"required"`
 	BaseURL         string  `json:"base_url" binding:"required"`
-	APIKey          string  `json:"api_key" binding:"required"`
+	APIKey          string  `json:"api_key"`
 	ModelName       string  `json:"model_name" binding:"required"`
 	MaxTokens       int     `json:"max_tokens"`
 	Temperature     float64 `json:"temperature"`
@@ -62,6 +62,21 @@ type UpdateLLMProfileRequest struct {
 	OmitTemperature *bool    `json:"omit_temperature"`
 	APIStyle        string   `json:"api_style"`
 	IsDefault       *bool    `json:"is_default"`
+}
+
+type LLMModelOption struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+}
+
+type LLMProfileUsage struct {
+	ProfileID       string `json:"profile_id"`
+	ChapterCount    int    `json:"chapter_count"`
+	InputTokens     int64  `json:"input_tokens"`
+	OutputTokens    int64  `json:"output_tokens"`
+	TotalTokens     int64  `json:"total_tokens"`
+	EstimatedSource string `json:"estimated_source"`
 }
 
 // ── RAG Types ─────────────────────────────────────────────────────────────────
@@ -95,7 +110,7 @@ type ReferenceMaterial struct {
 	StyleCollection string          `json:"style_collection" db:"style_collection"`
 	SampleTexts     json.RawMessage `json:"sample_texts,omitempty" db:"sample_texts"`
 	Status          string          `json:"status" db:"status"`
-	// Download task tracking (migration 014)
+	// Download task tracking
 	FetchStatus     string          `json:"fetch_status" db:"fetch_status"`
 	FetchDone       int             `json:"fetch_done" db:"fetch_done"`
 	FetchTotal      int             `json:"fetch_total" db:"fetch_total"`

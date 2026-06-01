@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,10 +19,22 @@ import (
 	"go.uber.org/zap"
 )
 
-// validateTestURL rejects URLs that point to loopback addresses, link-local
-// addresses, or private RFC-1918 ranges to prevent SSRF via the LLM test
-// endpoint.  External LLM provider URLs are expected to be public Internet
-// addresses.
+func allowLocalLLMEndpoints() bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("ALLOW_LOCAL_LLM_ENDPOINTS")))
+	if raw == "" {
+		return true
+	}
+	return raw != "0" && raw != "false" && raw != "no" && raw != "off"
+}
+
+func isCarrierGradeNAT(ip net.IP) bool {
+	_, block, _ := net.ParseCIDR("100.64.0.0/10")
+	return block != nil && block.Contains(ip)
+}
+
+// validateTestURL protects the LLM test/discovery endpoints from dangerous
+// targets while still allowing local Ollama/OpenAI-compatible deployments by
+// default. Set ALLOW_LOCAL_LLM_ENDPOINTS=false in hardened multi-user installs.
 func validateTestURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -33,18 +47,16 @@ func validateTestURL(rawURL string) error {
 	if host == "" {
 		return fmt.Errorf("url host is empty")
 	}
-	// Reject bare IP addresses in private/loopback ranges.
+	allowLocal := allowLocalLLMEndpoints()
 	checkIP := func(ip net.IP) error {
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return fmt.Errorf("url must not point to a loopback address")
+		if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+			return fmt.Errorf("url must not point to a link-local, multicast, or unspecified address")
 		}
-		// RFC-1918 private ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-		privateRanges := []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"}
-		for _, cidr := range privateRanges {
-			_, block, _ := net.ParseCIDR(cidr)
-			if block != nil && block.Contains(ip) {
-				return fmt.Errorf("url must not point to a private/internal network address")
-			}
+		if allowLocal && (ip.IsLoopback() || ip.IsPrivate() || isCarrierGradeNAT(ip)) {
+			return nil
+		}
+		if ip.IsLoopback() || ip.IsPrivate() || isCarrierGradeNAT(ip) {
+			return fmt.Errorf("url must not point to a loopback/private/internal network address")
 		}
 		if !ip.IsGlobalUnicast() {
 			return fmt.Errorf("url must point to a globally routable address")
@@ -78,6 +90,18 @@ func (h *Handler) ListLLMProfiles(c *gin.Context) {
 	c.JSON(200, gin.H{"data": profiles})
 }
 
+func (h *Handler) ListLLMProfileUsage(c *gin.Context) {
+	usage, err := h.llmProfiles.Usage(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if usage == nil {
+		usage = []models.LLMProfileUsage{}
+	}
+	c.JSON(200, gin.H{"data": usage})
+}
+
 func validateCreateLLMProfileRequest(req models.CreateLLMProfileRequest) error {
 	if strings.TrimSpace(req.Name) == "" {
 		return errors.New("name is required")
@@ -88,7 +112,7 @@ func validateCreateLLMProfileRequest(req models.CreateLLMProfileRequest) error {
 	if strings.TrimSpace(req.BaseURL) == "" {
 		return errors.New("base_url is required")
 	}
-	if strings.TrimSpace(req.APIKey) == "" {
+	if strings.TrimSpace(req.APIKey) == "" && req.Provider != "openai_compatible" {
 		return errors.New("api_key is required")
 	}
 	if strings.TrimSpace(req.ModelName) == "" {
@@ -132,6 +156,247 @@ func validateUpdateLLMProfileRequest(req models.UpdateLLMProfileRequest) error {
 		return fmt.Errorf("rpm_limit must be 0 or greater")
 	}
 	return nil
+}
+
+func inferLLMAPIStyle(provider, apiStyle string) string {
+	if apiStyle != "" {
+		switch apiStyle {
+		case "chat_completions":
+			return "/chat/completions"
+		case "responses":
+			return "/responses"
+		case "claude":
+			return "/messages"
+		default:
+			return apiStyle
+		}
+	}
+	switch provider {
+	case "anthropic":
+		return "/messages"
+	case "gemini":
+		return "gemini"
+	default:
+		return "/chat/completions"
+	}
+}
+
+func buildLLMModelRequest(ctx *gin.Context, method, endpoint, apiKey, apiStyle string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx.Request.Context(), method, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case apiStyle == "gemini":
+	case strings.HasSuffix(apiStyle, "/messages"):
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	default:
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+	}
+	return req, nil
+}
+
+func parseOpenAIModelOptions(raw []byte, provider string) []models.LLMModelOption {
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &parsed) != nil {
+		return nil
+	}
+	out := make([]models.LLMModelOption, 0, len(parsed.Data))
+	for _, item := range parsed.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		out = append(out, models.LLMModelOption{ID: id, Name: id, Provider: provider})
+	}
+	return out
+}
+
+func parseGeminiModelOptions(raw []byte) []models.LLMModelOption {
+	var parsed struct {
+		Models []struct {
+			Name             string   `json:"name"`
+			DisplayName      string   `json:"displayName"`
+			SupportedMethods []string `json:"supportedGenerationMethods"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(raw, &parsed) != nil {
+		return nil
+	}
+	out := make([]models.LLMModelOption, 0, len(parsed.Models))
+	for _, item := range parsed.Models {
+		supportsGenerate := len(item.SupportedMethods) == 0
+		for _, method := range item.SupportedMethods {
+			if method == "generateContent" {
+				supportsGenerate = true
+				break
+			}
+		}
+		if !supportsGenerate {
+			continue
+		}
+		id := strings.TrimPrefix(strings.TrimSpace(item.Name), "models/")
+		if id == "" {
+			continue
+		}
+		name := strings.TrimSpace(item.DisplayName)
+		if name == "" {
+			name = id
+		}
+		out = append(out, models.LLMModelOption{ID: id, Name: name, Provider: "gemini"})
+	}
+	return out
+}
+
+func parseOllamaModelOptions(raw []byte) []models.LLMModelOption {
+	var parsed struct {
+		Models []struct {
+			Name  string `json:"name"`
+			Model string `json:"model"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(raw, &parsed) != nil {
+		return nil
+	}
+	out := make([]models.LLMModelOption, 0, len(parsed.Models))
+	for _, item := range parsed.Models {
+		id := strings.TrimSpace(item.Model)
+		if id == "" {
+			id = strings.TrimSpace(item.Name)
+		}
+		if id == "" {
+			continue
+		}
+		out = append(out, models.LLMModelOption{ID: id, Name: id, Provider: "ollama"})
+	}
+	return out
+}
+
+func sortModelOptions(models []models.LLMModelOption) {
+	sort.SliceStable(models, func(i, j int) bool {
+		return strings.ToLower(models[i].ID) < strings.ToLower(models[j].ID)
+	})
+}
+
+func (h *Handler) DiscoverLLMModels(c *gin.Context) {
+	var req struct {
+		ProfileID string `json:"profile_id"`
+		BaseURL   string `json:"base_url"`
+		APIKey    string `json:"api_key"`
+		Provider  string `json:"provider"`
+		APIStyle  string `json:"api_style"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.ProfileID != "" {
+		full, err := h.llmProfiles.GetFull(c.Request.Context(), req.ProfileID)
+		if err != nil || full == nil {
+			c.JSON(404, gin.H{"error": "profile not found"})
+			return
+		}
+		if req.APIKey == "" {
+			req.APIKey = full.APIKey
+		}
+		if req.BaseURL == "" {
+			req.BaseURL = full.BaseURL
+		}
+		if req.Provider == "" {
+			req.Provider = full.Provider
+		}
+		if req.APIStyle == "" {
+			req.APIStyle = full.APIStyle
+		}
+	}
+	req.BaseURL = strings.TrimSpace(req.BaseURL)
+	req.APIKey = strings.TrimSpace(req.APIKey)
+	req.Provider = strings.TrimSpace(req.Provider)
+	req.APIStyle = inferLLMAPIStyle(req.Provider, req.APIStyle)
+	if req.BaseURL == "" {
+		c.JSON(400, gin.H{"error": "base_url is required"})
+		return
+	}
+	if req.APIKey == "" && req.Provider != "openai_compatible" {
+		c.JSON(400, gin.H{"error": "api_key is required for this provider"})
+		return
+	}
+	if err := validateTestURL(req.BaseURL); err != nil {
+		c.JSON(400, gin.H{"error": fmt.Sprintf("base_url rejected: %s", err.Error())})
+		return
+	}
+
+	baseURL := strings.TrimRight(req.BaseURL, "/")
+	endpoint := baseURL + "/models"
+	if req.APIStyle == "gemini" {
+		endpoint = baseURL + "/models?key=" + url.QueryEscape(req.APIKey)
+	}
+
+	start := time.Now()
+	client := &http.Client{Timeout: 20 * time.Second}
+	httpReq, err := buildLLMModelRequest(c, http.MethodGet, endpoint, req.APIKey, req.APIStyle)
+	if err != nil {
+		c.JSON(500, gin.H{"error": fmt.Sprintf("build model request: %v", err)})
+		return
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil && req.Provider == "openai_compatible" {
+		ollamaBase := strings.TrimSuffix(baseURL, "/v1")
+		ollamaReq, buildErr := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, ollamaBase+"/api/tags", nil)
+		if buildErr == nil {
+			resp, err = client.Do(ollamaReq)
+			endpoint = ollamaBase + "/api/tags"
+		}
+	}
+	if err != nil {
+		c.JSON(200, gin.H{"ok": false, "error": fmt.Sprintf("获取模型失败: %v", err), "duration_ms": time.Since(start).Milliseconds()})
+		return
+	}
+	if resp.StatusCode >= 400 && req.Provider == "openai_compatible" {
+		initialResp := resp
+		ollamaBase := strings.TrimSuffix(baseURL, "/v1")
+		if ollamaReq, buildErr := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, ollamaBase+"/api/tags", nil); buildErr == nil {
+			if fallbackResp, fallbackErr := client.Do(ollamaReq); fallbackErr == nil {
+				initialResp.Body.Close()
+				resp = fallbackResp
+				endpoint = ollamaBase + "/api/tags"
+			}
+		}
+	}
+	defer resp.Body.Close()
+	rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+	durationMs := time.Since(start).Milliseconds()
+	if resp.StatusCode >= 400 {
+		c.JSON(200, gin.H{"ok": false, "error": fmt.Sprintf("HTTP %d", resp.StatusCode), "duration_ms": durationMs, "raw_body": string(rawBody[:min(len(rawBody), 500)])})
+		return
+	}
+
+	var options []models.LLMModelOption
+	switch {
+	case req.APIStyle == "gemini":
+		options = parseGeminiModelOptions(rawBody)
+	case strings.HasSuffix(endpoint, "/api/tags"):
+		options = parseOllamaModelOptions(rawBody)
+	default:
+		options = parseOpenAIModelOptions(rawBody, req.Provider)
+	}
+	if options == nil {
+		options = []models.LLMModelOption{}
+	}
+	sortModelOptions(options)
+	safeEndpoint := endpoint
+	if req.APIStyle == "gemini" && req.APIKey != "" {
+		safeEndpoint = strings.ReplaceAll(endpoint, url.QueryEscape(req.APIKey), "[REDACTED]")
+	}
+	c.JSON(200, gin.H{"ok": true, "models": options, "source": safeEndpoint, "duration_ms": durationMs})
 }
 
 func (h *Handler) CreateLLMProfile(c *gin.Context) {
@@ -263,8 +528,12 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 		}
 	}
 
-	if req.BaseURL == "" || req.APIKey == "" || req.ModelName == "" {
-		c.JSON(400, gin.H{"error": "base_url, api_key and model_name are required"})
+	if req.BaseURL == "" || req.ModelName == "" {
+		c.JSON(400, gin.H{"error": "base_url and model_name are required"})
+		return
+	}
+	if req.APIKey == "" && req.Provider != "openai_compatible" {
+		c.JSON(400, gin.H{"error": "api_key is required for this provider"})
 		return
 	}
 
@@ -364,7 +633,9 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 		httpReq.Header.Set("x-api-key", req.APIKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
 	default:
-		httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
+		if req.APIKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
+		}
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -399,7 +670,9 @@ func (h *Handler) TestLLMProfile(c *gin.Context) {
 		if fbBytes, err2 := json.Marshal(fallbackMap); err2 == nil {
 			if fbReq, err2 := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, endpoint, bytes.NewReader(fbBytes)); err2 == nil {
 				fbReq.Header.Set("Content-Type", "application/json")
-				fbReq.Header.Set("Authorization", "Bearer "+req.APIKey)
+				if req.APIKey != "" {
+					fbReq.Header.Set("Authorization", "Bearer "+req.APIKey)
+				}
 				if resp2, err2 := client.Do(fbReq); err2 == nil {
 					rawBody2, _ := io.ReadAll(io.LimitReader(resp2.Body, 4096))
 					resp2.Body.Close()

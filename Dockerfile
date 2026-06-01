@@ -144,9 +144,6 @@ COPY --from=go-builder /build/server /app/server
 # ---- Vue frontend ----
 COPY --from=vue-builder /build/frontend/dist /app/frontend/dist
 
-# ---- Migrations only (configs/config.yaml is no longer needed) ----
-COPY migrations/ /app/migrations/
-
 # ---- Supervisord ----
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 

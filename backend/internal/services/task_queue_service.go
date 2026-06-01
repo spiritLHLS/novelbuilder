@@ -29,6 +29,8 @@ type TaskQueueService struct {
 
 	handlers   map[string]TaskHandler
 	mu         sync.RWMutex
+	runningMu  sync.RWMutex
+	running    map[string]context.CancelFunc
 	stop       chan struct{}
 	stopCtx    context.Context
 	stopCancel context.CancelFunc
@@ -43,6 +45,7 @@ func NewTaskQueueService(db *database.DB, workers, maxRetries int, logger *zap.L
 		maxRetries: maxRetries,
 		logger:     logger,
 		handlers:   make(map[string]TaskHandler),
+		running:    make(map[string]context.CancelFunc),
 		stop:       make(chan struct{}),
 		stopCtx:    ctx,
 		stopCancel: cancel,
@@ -133,6 +136,44 @@ func (s *TaskQueueService) worker() {
 	}
 }
 
+func (s *TaskQueueService) registerRunningTask(id string, cancel context.CancelFunc) {
+	s.runningMu.Lock()
+	defer s.runningMu.Unlock()
+	s.running[id] = cancel
+}
+
+func (s *TaskQueueService) unregisterRunningTask(id string) {
+	s.runningMu.Lock()
+	defer s.runningMu.Unlock()
+	delete(s.running, id)
+}
+
+func (s *TaskQueueService) runningCancel(id string) (context.CancelFunc, bool) {
+	s.runningMu.RLock()
+	defer s.runningMu.RUnlock()
+	cancel, ok := s.running[id]
+	return cancel, ok
+}
+
+func queueFinishContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil || parent.Err() != nil {
+		return context.WithTimeout(context.Background(), 10*time.Second)
+	}
+	return parent, func() {}
+}
+
+func (s *TaskQueueService) isTaskCancelled(ctx context.Context, id string) (bool, error) {
+	var status string
+	err := s.db.QueryRow(ctx, `SELECT status FROM task_queue WHERE id=$1`, id).Scan(&status)
+	if errors.Is(err, database.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return status == "cancelled", nil
+}
+
 // processOne claims and runs a single pending task. Returns an error when no task is available.
 func (s *TaskQueueService) processOne(ctx context.Context) error {
 	tx, err := s.db.Begin(ctx)
@@ -187,6 +228,20 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 	}
 	s.logger.Info("task started", logFields...)
 
+	taskCtx, taskCancel := context.WithCancel(ctx)
+	s.registerRunningTask(task.ID, taskCancel)
+	defer func() {
+		s.unregisterRunningTask(task.ID)
+		taskCancel()
+	}()
+
+	if cancelled, err := s.isTaskCancelled(ctx, task.ID); err != nil {
+		s.logger.Warn("task cancellation state check failed", append(logFields, zap.Error(err))...)
+	} else if cancelled {
+		s.logger.Info("task skipped because it was cancelled before handler start", logFields...)
+		return nil
+	}
+
 	// Run handler OUTSIDE the transaction
 	s.mu.RLock()
 	h, ok := s.handlers[task.TaskType]
@@ -207,15 +262,46 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 						)...)
 				}
 			}()
-			handlerErr = h(ctx, task)
+			handlerErr = h(taskCtx, task)
 		}()
 	}
 
+	finishCtx, finishCancel := queueFinishContext(ctx)
+	defer finishCancel()
+
+	if cancelled, err := s.isTaskCancelled(finishCtx, task.ID); err != nil {
+		s.logger.Warn("task cancellation state check failed", append(logFields, zap.Error(err))...)
+	} else if cancelled {
+		s.logger.Info("task cancellation acknowledged", append(logFields, zap.Duration("duration", time.Since(started)))...)
+		return nil
+	}
+
 	if handlerErr == nil {
-		_, _ = s.db.Exec(ctx,
+		_, _ = s.db.Exec(finishCtx,
 			`UPDATE task_queue SET status='done', completed_at=$1, updated_at=$1 WHERE id=$2`,
 			time.Now(), task.ID)
 		s.logger.Info("task completed", append(logFields, zap.Duration("duration", time.Since(started)))...)
+		return nil
+	}
+
+	if errors.Is(handlerErr, context.Canceled) || errors.Is(taskCtx.Err(), context.Canceled) {
+		if ctx.Err() != nil {
+			_, _ = s.db.Exec(finishCtx,
+				`UPDATE task_queue
+				 SET status='pending', error_message=$1, scheduled_at=NOW(), updated_at=NOW()
+				 WHERE id=$2 AND status='running'`,
+				"server stopped while task was running; queued for retry", task.ID)
+			s.logger.Info("task returned to queue during shutdown",
+				append(logFields, zap.Duration("duration", time.Since(started)))...)
+			return nil
+		}
+		_, _ = s.db.Exec(finishCtx,
+			`UPDATE task_queue
+			 SET status='cancelled', error_message=$1, completed_at=NOW(), updated_at=NOW()
+			 WHERE id=$2 AND status IN ('pending','running')`,
+			"cancel requested", task.ID)
+		s.logger.Info("task cancelled",
+			append(logFields, zap.Duration("duration", time.Since(started)))...)
 		return nil
 	}
 
@@ -228,7 +314,7 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 
 	if attempt < maxAtt {
 		backoff := time.Duration(math.Pow(2, float64(attempt))) * time.Second
-		_, _ = s.db.Exec(ctx,
+		_, _ = s.db.Exec(finishCtx,
 			`UPDATE task_queue SET status='pending', error_message=$1, scheduled_at=$2, updated_at=$3 WHERE id=$4`,
 			handlerErr.Error(), time.Now().Add(backoff), time.Now(), task.ID)
 		s.logger.Warn("task failed; scheduled retry",
@@ -238,7 +324,7 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 				zap.Error(handlerErr),
 			)...)
 	} else {
-		_, _ = s.db.Exec(ctx,
+		_, _ = s.db.Exec(finishCtx,
 			`UPDATE task_queue SET status='failed', error_message=$1, updated_at=$2 WHERE id=$3`,
 			handlerErr.Error(), time.Now(), task.ID)
 		s.logger.Error("task failed permanently",
@@ -330,15 +416,33 @@ func (s *TaskQueueService) Enqueue(ctx context.Context, req models.CreateTaskReq
 	}, nil
 }
 
-// Cancel marks a pending task as cancelled.
+// Cancel marks a pending/running task as cancelled. Running handlers receive a
+// cancelled context; completion code re-checks the DB status before writing done.
 func (s *TaskQueueService) Cancel(ctx context.Context, id string) error {
 	tag, err := s.db.Exec(ctx,
-		`UPDATE task_queue SET status='cancelled', updated_at=NOW() WHERE id=$1 AND status='pending'`, id)
+		`UPDATE task_queue
+		 SET status='cancelled', error_message=$1, completed_at=NOW(), updated_at=NOW()
+		 WHERE id=$2 AND status IN ('pending','running')`,
+		"cancel requested", id)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("task %s not found or not in pending state", id)
+		var status string
+		statusErr := s.db.QueryRow(ctx, `SELECT status FROM task_queue WHERE id=$1`, id).Scan(&status)
+		if errors.Is(statusErr, database.ErrNoRows) {
+			return fmt.Errorf("task %s not found", id)
+		}
+		if statusErr != nil {
+			return statusErr
+		}
+		if status == "cancelled" {
+			return nil
+		}
+		return fmt.Errorf("task %s is already %s and cannot be cancelled", id, status)
+	}
+	if cancel, ok := s.runningCancel(id); ok {
+		cancel()
 	}
 	return nil
 }

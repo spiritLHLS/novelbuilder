@@ -153,7 +153,7 @@ func (s *WorldBibleService) GetConstitution(ctx context.Context, projectID strin
 
 func (s *WorldBibleService) UpdateConstitution(ctx context.Context, projectID string, immutable, mutable, forbidden json.RawMessage) (*models.WorldBibleConstitution, error) {
 	var wbc models.WorldBibleConstitution
-	// Atomic UPSERT: requires UNIQUE (project_id) constraint added in migration.
+	// Atomic UPSERT: relies on the project_id unique index created by GORM AutoMigrate.
 	err := s.db.QueryRow(ctx,
 		`INSERT INTO world_bible_constitutions (project_id, immutable_rules, mutable_rules, forbidden_anchors)
 		 VALUES ($1, $2, $3, $4)
