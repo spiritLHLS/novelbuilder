@@ -37,6 +37,7 @@ env:
   DOCKER_IMAGE: spiritlhl/novelbuilder
   IMAGE_SET: ${{ github.event_name == 'workflow_dispatch' && inputs.image_set || 'all' }}
   IMAGE_PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux/amd64' }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   docker-base:
@@ -82,7 +83,7 @@ jobs:
           echo "enabled=${enabled}" >> "$GITHUB_OUTPUT"
           echo "platform_scope=${platform_scope}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: steps.selected.outputs.enabled == 'true'
         with:
           submodules: recursive
@@ -110,17 +111,17 @@ jobs:
           echo "dockerhub=${dockerhub}" >> "$GITHUB_OUTPUT"
           echo "ghcr=${ghcr}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
         if: steps.selected.outputs.enabled == 'true' && contains(env.IMAGE_PLATFORMS, 'arm64')
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
         if: steps.selected.outputs.enabled == 'true'
 
       - name: Login to Docker Hub
         id: login-dockerhub
         if: steps.selected.outputs.enabled == 'true'
         continue-on-error: true
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -129,7 +130,7 @@ jobs:
         id: login-ghcr
         if: steps.selected.outputs.enabled == 'true'
         continue-on-error: true
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -174,7 +175,7 @@ jobs:
 
       - name: Build and push image
         if: steps.selected.outputs.enabled == 'true' && steps.tags.outputs.push_enabled == 'true'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -193,7 +194,7 @@ jobs:
       - name: Update Docker Hub description
         if: steps.selected.outputs.enabled == 'true' && steps.login-dockerhub.outcome == 'success' && matrix.profile == 'full'
         continue-on-error: true
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -230,7 +231,7 @@ jobs:
             base_profile: app
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Resolve tags
         id: meta
@@ -255,15 +256,15 @@ jobs:
           echo "ghcr_base=${ghcr_base}" >> "$GITHUB_OUTPUT"
           echo "platform_scope=${platform_scope}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
         if: contains(env.IMAGE_PLATFORMS, 'arm64')
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Login to Docker Hub
         id: login-dockerhub
         continue-on-error: true
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -271,7 +272,7 @@ jobs:
       - name: Login to GHCR
         id: login-ghcr
         continue-on-error: true
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -321,7 +322,7 @@ jobs:
 
       - name: Build and push image
         if: steps.tags.outputs.push_enabled == 'true'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -344,18 +345,18 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.22"
           cache-dependency-path: backend/go.sum
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -369,7 +370,7 @@ jobs:
         run: VERSION="${GITHUB_REF_NAME:-dev}" UPX_ENABLED=auto ./scripts/build-binaries.sh
 
       - name: Upload binary packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: novelbuilder-binaries
           path: dist/binaries/*

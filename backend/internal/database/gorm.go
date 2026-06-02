@@ -109,10 +109,10 @@ func (CharacterSchema) TableName() string { return "characters" }
 
 type OutlineSchema struct {
 	ID            string  `gorm:"type:uuid;primaryKey"`
-	ProjectID     *string `gorm:"type:uuid;uniqueIndex:uq_outlines_project_level_order;index"`
-	Level         string  `gorm:"type:varchar(20);not null;uniqueIndex:uq_outlines_project_level_order"`
-	ParentID      *string `gorm:"type:uuid"`
-	OrderNum      int     `gorm:"not null;default:0;uniqueIndex:uq_outlines_project_level_order"`
+	ProjectID     *string `gorm:"type:uuid;index:idx_outlines_project_level_parent_order"`
+	Level         string  `gorm:"type:varchar(20);not null;index:idx_outlines_project_level_parent_order"`
+	ParentID      *string `gorm:"type:uuid;index:idx_outlines_project_level_parent_order"`
+	OrderNum      int     `gorm:"not null;default:0;index:idx_outlines_project_level_parent_order"`
 	Title         string  `gorm:"type:varchar(300)"`
 	Content       JSONB   `gorm:"type:jsonb;not null;default:'{}'"`
 	TensionTarget float64 `gorm:"default:0.5"`

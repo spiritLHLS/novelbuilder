@@ -72,6 +72,14 @@
           {{ row.attempts ?? 0 }} / {{ row.max_attempts ?? 3 }}
         </template>
       </el-table-column>
+      <el-table-column label="耗时" width="150">
+        <template #default="{ row }">
+          <div class="duration-stack">
+            <span>排队 {{ formatDuration(row.queue_wait_ms) }}</span>
+            <span>执行 {{ formatDuration(row.runtime_ms) }}</span>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="创建时间" prop="created_at" width="180">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
@@ -155,6 +163,8 @@ interface Task {
   scheduled_at: string
   started_at: string | null
   completed_at: string | null
+  queue_wait_ms?: number
+  runtime_ms?: number
 }
 
 const route = useRoute()
@@ -197,6 +207,19 @@ const statusTagType = (s: string): '' | 'success' | 'warning' | 'danger' | 'info
 function formatTime(iso: string) {
   if (!iso) return '—'
   return new Date(iso).toLocaleString('zh-CN', { hour12: false })
+}
+
+function formatDuration(ms?: number) {
+  if (!ms || ms < 0) return '—'
+  if (ms < 1000) return `${ms}ms`
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  if (minutes < 60) return rest ? `${minutes}m ${rest}s` : `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  const minuteRest = minutes % 60
+  return minuteRest ? `${hours}h ${minuteRest}m` : `${hours}h`
 }
 
 function taskSummary(task: Task) {
@@ -381,6 +404,15 @@ onUnmounted(() => {
 .error-text {
   color: #f56c6c;
   font-size: 12px;
+}
+
+.duration-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--nb-text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .muted {

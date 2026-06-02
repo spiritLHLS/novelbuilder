@@ -251,9 +251,12 @@ class VectorUpsertRequest(BaseModel):
 
 class VectorSearchRequest(BaseModel):
     project_id: str
-    collection: str
+    collection: Optional[str] = None
+    collections: Optional[list[str]] = None
     query: str
     limit: int = 5
+    top_k: Optional[int] = None
+    score_threshold: Optional[float] = None
 
 class VectorRebuildRequest(BaseModel):
     project_id: str
@@ -361,7 +364,11 @@ _ALLOWED_UPLOAD_DIR = os.path.abspath(os.getenv("UPLOAD_DIR", "/data/uploads"))
 def _read_file(file_path: str) -> str:
     # Prevent path traversal: only allow files under the upload directory
     abs_path = os.path.abspath(file_path)
-    if not abs_path.startswith(_ALLOWED_UPLOAD_DIR):
+    try:
+        is_under_upload_dir = os.path.commonpath([_ALLOWED_UPLOAD_DIR, abs_path]) == _ALLOWED_UPLOAD_DIR
+    except ValueError:
+        is_under_upload_dir = False
+    if not is_under_upload_dir:
         logger.warning("Path traversal blocked: %s", file_path)
         return ""
     if not os.path.exists(abs_path):
@@ -875,13 +882,27 @@ async def vector_upsert(req: VectorUpsertRequest):
 @app.post("/vector/search")
 async def vector_search(req: VectorSearchRequest):
     store = get_qdrant()
-    hits = await store.search(
+    from vector_store.qdrant_store import COLLECTIONS
+
+    req.query = req.query.strip()
+    if not req.query:
+        raise HTTPException(status_code=400, detail="query is required")
+
+    limit = req.top_k or req.limit or 5
+    limit = max(1, min(int(limit), 50))
+    requested = req.collections or ([req.collection] if req.collection else list(COLLECTIONS))
+    collections = [c for c in dict.fromkeys(requested) if c in COLLECTIONS]
+    if not collections:
+        raise HTTPException(status_code=400, detail="no valid vector collection selected")
+
+    hits = await store.search_collections(
         project_id=req.project_id,
-        collection=req.collection,
+        collections=collections,
         query=req.query,
-        limit=req.limit,
+        limit=limit,
+        score_threshold=req.score_threshold,
     )
-    return {"hits": hits}
+    return {"hits": hits, "results": hits}
 
 
 @app.post("/vector/rebuild")

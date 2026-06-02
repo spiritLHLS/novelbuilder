@@ -148,9 +148,12 @@ type VectorStatus struct {
 }
 
 type VectorSearchRequest struct {
-	Collection string `json:"collection" binding:"required"`
-	Query      string `json:"query"      binding:"required"`
-	Limit      int    `json:"limit,omitempty"`
+	Collection     string   `json:"collection,omitempty"`
+	Collections    []string `json:"collections,omitempty"`
+	Query          string   `json:"query" binding:"required"`
+	Limit          int      `json:"limit,omitempty"`
+	TopK           int      `json:"top_k,omitempty"`
+	ScoreThreshold *float64 `json:"score_threshold,omitempty"`
 }
 
 type VectorRebuildRequest struct {

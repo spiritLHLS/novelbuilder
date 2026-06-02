@@ -1,12 +1,72 @@
-ARG BASE_IMAGE=spiritlhl/novelbuilder:app
-FROM ${BASE_IMAGE}
+# ===========================================================
+# NovelBuilder — SQLite minimal image
+#
+# Contains Go backend, Vue assets and the Python sidecar with base-only
+# dependencies. Redis, PostgreSQL, Neo4j, Qdrant and browser automation are
+# disabled for a small single-container profile.
+# ===========================================================
 
-ENV APP_PROFILE=sqlite
-ENV DB_DRIVER=sqlite
-ENV SQLITE_PATH=/data/novelbuilder.db
-ENV REDIS_ENABLED=false
-ENV REDIS_URL=""
-ENV NEO4J_URI=""
-ENV QDRANT_URL=""
+FROM golang:1.22-alpine AS go-builder
 
+RUN apk add --no-cache git gcc musl-dev
+ARG SERVER_VERSION=dev
+ARG UPX_ENABLED=false
+WORKDIR /build/backend
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags "-s -w -buildid= -X main.version=${SERVER_VERSION}" \
+      -o /build/server ./cmd/server \
+    && if [ "${UPX_ENABLED}" = "true" ]; then \
+      (apk add --no-cache upx && upx -9 /build/server) || true; \
+    fi
+
+FROM node:24-alpine AS vue-builder
+
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --legacy-peer-deps
+COPY frontend/ ./
+RUN npm run build
+
+FROM python:3.11.11-slim
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl netcat-openbsd supervisor \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/python-sidecar
+COPY python-sidecar/requirements*.txt ./
+COPY python-sidecar/novel-downloader ./novel-downloader
+RUN pip install --no-cache-dir --no-compile -r requirements-base.txt
+RUN if [ -f "./novel-downloader/pyproject.toml" ]; then \
+        pip install --no-cache-dir --no-compile ./novel-downloader; \
+    fi
+COPY python-sidecar/ ./
+
+COPY --from=go-builder /build/server /app/server
+COPY --from=vue-builder /build/frontend/dist /app/frontend/dist
+COPY docker/supervisord.app.conf /etc/supervisor/conf.d/supervisord.conf
+COPY docker/wait-for-port.sh /app/docker/wait-for-port.sh
+RUN chmod +x /app/docker/wait-for-port.sh
+
+ENV APP_PROFILE=sqlite \
+    DB_DRIVER=sqlite \
+    SQLITE_PATH=/data/novelbuilder.db \
+    REDIS_ENABLED=false \
+    REDIS_URL="" \
+    NEO4J_URI="" \
+    QDRANT_URL=""
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
+    CMD curl -f http://localhost:8080/api/health || exit 1
+
+EXPOSE 8080
 VOLUME ["/data", "/data/uploads"]
+WORKDIR /app
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

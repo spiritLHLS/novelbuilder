@@ -30,7 +30,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     fi
 
 # ── Stage 2: Vue frontend ────────────────────────────────
-FROM node:20-alpine AS vue-builder
+FROM node:24-alpine AS vue-builder
 
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
@@ -118,7 +118,7 @@ RUN mkdir -p /var/lib/qdrant && chmod 755 /var/lib/qdrant
 
 # ---- Python sidecar ----
 WORKDIR /app/python-sidecar
-COPY python-sidecar/requirements.txt ./
+COPY python-sidecar/requirements*.txt ./
 # Copy novel-downloader submodule source (populated when cloned with --recurse-submodules)
 COPY python-sidecar/novel-downloader ./novel-downloader
 # Install CPU-only torch first (keeps image smaller).

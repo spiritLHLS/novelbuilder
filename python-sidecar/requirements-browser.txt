@@ -1,0 +1,2 @@
+# Browser automation for Fanqie auto-upload
+playwright>=1.40.0

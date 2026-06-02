@@ -137,6 +137,8 @@ type TaskQueueItem struct {
 	CompletedAt  *time.Time      `json:"completed_at"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
+	QueueWaitMs  int64           `json:"queue_wait_ms,omitempty"`
+	RuntimeMs    int64           `json:"runtime_ms,omitempty"`
 }
 
 type CreateTaskRequest struct {

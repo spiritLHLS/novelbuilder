@@ -23,15 +23,19 @@
           <el-tree
             :data="treeData"
             :props="{ label: 'title', children: 'children' }"
+            node-key="id"
             :default-expand-all="true"
+            :draggable="viewLevel === 'all'"
+            :allow-drop="allowDrop"
             highlight-current
             @node-click="onNodeClick"
+            @node-drop="onNodeDrop"
           >
             <template #default="{ data }">
-              <div class="tree-node">
+              <div class="tree-node" @dblclick.stop="editNodeFromData(data)">
                 <el-tag :type="levelTagType(data.level)" size="small">{{ levelLabel(data.level) }}</el-tag>
                 <span class="node-title">{{ data.title }}</span>
-                <span v-if="data.tension_target" class="tension">⚡{{ data.tension_target }}</span>
+                <span v-if="data.tension_target" class="tension">{{ data.tension_target }}</span>
               </div>
             </template>
           </el-tree>
@@ -173,7 +177,12 @@ const treeData = computed(() => {
       roots.push(node)
     }
   })
-  return roots.sort((a, b) => a.order_num - b.order_num)
+  const sortNodes = (nodes: any[]) => {
+    nodes.sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0))
+    nodes.forEach(node => sortNodes(node.children ?? []))
+    return nodes
+  }
+  return sortNodes(roots)
 })
 
 const tensionChartOption = computed(() => {
@@ -250,6 +259,89 @@ function editNode() {
     involved_characters: contentObj.involved_characters || [],
   }
   showDialog.value = true
+}
+
+function editNodeFromData(data: any) {
+  selectedNode.value = data
+  editNode()
+}
+
+function outlineContent(node: any) {
+  if (node.content && typeof node.content === 'object') return node.content
+  return {
+    content: typeof node.content === 'string' ? node.content : '',
+    key_events: '',
+    estimated_words: 0,
+    involved_characters: [],
+  }
+}
+
+function outlinePayload(node: any, overrides: Record<string, any> = {}) {
+  return {
+    level: overrides.level ?? node.level,
+    parent_id: overrides.parent_id === undefined ? (node.parent_id || null) : overrides.parent_id,
+    order_num: overrides.order_num ?? node.order_num ?? 0,
+    title: overrides.title ?? node.title,
+    tension_target: overrides.tension_target ?? node.tension_target ?? 0,
+    content: overrides.content ?? outlineContent(node),
+  }
+}
+
+function isDescendant(targetId: string, maybeAncestorId: string): boolean {
+  const byId = new Map(outlines.value.map(node => [node.id, node]))
+  let current = byId.get(targetId)
+  while (current?.parent_id) {
+    if (current.parent_id === maybeAncestorId) return true
+    current = byId.get(current.parent_id)
+  }
+  return false
+}
+
+function allowDrop(draggingNode: any, dropNode: any, type: 'prev' | 'inner' | 'next') {
+  const dragId = draggingNode?.data?.id
+  const dropId = dropNode?.data?.id
+  if (!dragId || !dropId || dragId === dropId) return false
+  if (type === 'inner' && isDescendant(dropId, dragId)) return false
+  return viewLevel.value === 'all'
+}
+
+async function onNodeDrop(draggingNode: any, dropNode: any, dropType: 'before' | 'after' | 'inner') {
+  const moved = outlines.value.find(node => node.id === draggingNode?.data?.id)
+  const target = outlines.value.find(node => node.id === dropNode?.data?.id)
+  if (!moved || !target) return
+
+  const newParentId = dropType === 'inner' ? target.id : (target.parent_id || null)
+  const newLevel = moved.level
+  const siblings = outlines.value
+    .filter(node => node.id !== moved.id && node.level === newLevel && (node.parent_id || null) === newParentId)
+    .sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0))
+
+  const targetIndex = dropType === 'inner'
+    ? siblings.length
+    : siblings.findIndex(node => node.id === target.id)
+  const insertAt = targetIndex < 0
+    ? siblings.length
+    : dropType === 'after' ? targetIndex + 1 : targetIndex
+  siblings.splice(insertAt, 0, { ...moved, parent_id: newParentId })
+
+  try {
+    await outlineApi.update(projectId, moved.id, outlinePayload(moved, {
+      parent_id: newParentId,
+      order_num: 100000 + Date.now() % 10000,
+    }))
+    for (const [index, node] of siblings.entries()) {
+      await outlineApi.update(projectId, node.id, outlinePayload(node, {
+        parent_id: newParentId,
+        order_num: (index + 1) * 10,
+      }))
+    }
+    ElMessage.success('大纲顺序已更新')
+    await fetchOutlines()
+    selectedNode.value = outlines.value.find(node => node.id === moved.id) || null
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '大纲拖拽保存失败')
+    await fetchOutlines()
+  }
 }
 
 async function saveOutline() {

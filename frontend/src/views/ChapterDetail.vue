@@ -46,7 +46,21 @@
           </template>
           <div v-if="isEditing" class="chapter-editor">
             <el-input v-model="editTitle" class="editor-title" placeholder="章节标题" />
-            <el-input v-model="editContent" type="textarea" :rows="26" resize="vertical" placeholder="输入章节正文" />
+            <div class="editor-toolbar">
+              <el-radio-group v-model="editorMode" size="small">
+                <el-radio-button label="source">编辑</el-radio-button>
+                <el-radio-button label="preview">预览</el-radio-button>
+              </el-radio-group>
+            </div>
+            <el-input
+              v-if="editorMode === 'source'"
+              v-model="editContent"
+              type="textarea"
+              :rows="26"
+              resize="vertical"
+              placeholder="输入章节正文"
+            />
+            <div v-else class="editor-preview rich-text" v-html="renderRichText(editContent)"></div>
           </div>
           <div v-else class="chapter-content rich-text" v-html="renderedContent"></div>
         </el-card>
@@ -67,6 +81,43 @@
             <el-descriptions-item label="创建时间">{{ formatDate(chapter.created_at) }}</el-descriptions-item>
             <el-descriptions-item label="更新时间">{{ formatDate(chapter.updated_at) }}</el-descriptions-item>
           </el-descriptions>
+        </el-card>
+
+        <el-card shadow="hover" style="margin-top: 16px;">
+          <template #header>
+            <div class="card-header">
+              <span>AI 辅助</span>
+              <el-tag v-if="aiSessionId" size="small" type="info">{{ aiSessionId.slice(0, 8) }}</el-tag>
+            </div>
+          </template>
+          <div class="ai-panel">
+            <el-input
+              v-model="aiPrompt"
+              type="textarea"
+              :rows="3"
+              resize="vertical"
+              placeholder="向 AI 询问本章问题，或要求局部润色、补情绪、补动作"
+            />
+            <div class="ai-actions">
+              <el-button size="small" type="primary" :loading="aiRunning" @click="askChapterAI('chat')">
+                询问本章
+              </el-button>
+              <el-button size="small" :loading="aiRunning" @click="askChapterAI('continue')">
+                续写一段
+              </el-button>
+              <el-button size="small" :disabled="!aiOutput.trim()" @click="appendAIToDraft">
+                追加到草稿
+              </el-button>
+            </div>
+            <el-alert
+              v-if="aiError"
+              :title="aiError"
+              type="warning"
+              :closable="false"
+              show-icon
+            />
+            <div v-if="aiOutput" class="ai-output">{{ aiOutput }}</div>
+          </div>
         </el-card>
 
         <!-- Quality Report -->
@@ -169,10 +220,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { chapterApi, qualityApi } from '@/api'
+import { chapterApi, qualityApi, agentApi } from '@/api'
 import { renderRichText } from '@/utils/richText'
 
 const route = useRoute()
@@ -192,6 +243,13 @@ const loadingSnapshots = ref(false)
 const restoringSnapshotId = ref('')
 const editTitle = ref('')
 const editContent = ref('')
+const editorMode = ref<'source' | 'preview'>('source')
+const aiPrompt = ref('')
+const aiOutput = ref('')
+const aiRunning = ref(false)
+const aiSessionId = ref('')
+const aiError = ref('')
+let aiEventSource: EventSource | null = null
 
 const statusType = computed(() => {
   const m: Record<string, string> = {
@@ -285,6 +343,10 @@ onMounted(async () => {
   await Promise.all([loadChapter(), loadSnapshots()])
 })
 
+onUnmounted(() => {
+  if (aiEventSource) aiEventSource.close()
+})
+
 function goBack() {
   router.push({ name: 'chapters', params: { projectId } })
 }
@@ -351,6 +413,7 @@ function startEdit() {
   if (!chapter.value) return
   editTitle.value = chapter.value.title || ''
   editContent.value = chapter.value.content || ''
+  editorMode.value = 'source'
   isEditing.value = true
 }
 
@@ -382,6 +445,89 @@ async function saveEdit() {
   } finally {
     saving.value = false
   }
+}
+
+function buildAIPrompt(mode: 'chat' | 'continue') {
+  const currentText = (isEditing.value ? editContent.value : chapter.value?.content || '').trim()
+  const tail = currentText.slice(-3600)
+  const userPrompt = aiPrompt.value.trim()
+  const instruction = mode === 'continue'
+    ? '请承接当前章节末尾，续写一段 600-1000 字的正文。保持已有文风、人物语气、视角和节奏，不要总结，不要解释。'
+    : userPrompt
+  return [
+    `项目ID：${projectId}`,
+    `章节：第${chapter.value?.chapter_num ?? ''}章 ${chapter.value?.title || ''}`,
+    `当前章节末尾：\n${tail}`,
+    `要求：\n${instruction}`,
+  ].join('\n\n')
+}
+
+async function askChapterAI(mode: 'chat' | 'continue') {
+  if (!chapter.value) return
+  if (mode === 'chat' && !aiPrompt.value.trim()) {
+    ElMessage.warning('请先输入要问的问题')
+    return
+  }
+  if (aiEventSource) {
+    aiEventSource.close()
+    aiEventSource = null
+  }
+  aiRunning.value = true
+  aiOutput.value = ''
+  aiError.value = ''
+  aiSessionId.value = ''
+  const prompt = buildAIPrompt(mode)
+  try {
+    const res = await agentApi.run(projectId, {
+      task_type: mode === 'continue' ? 'chapter_continue_inline' : 'chapter_context_chat',
+      project_id: projectId,
+      chapter_num: chapter.value.chapter_num,
+      user_prompt: prompt,
+      outline_hint: prompt.slice(0, 1200),
+    })
+    const sid = res.data.session_id
+    aiSessionId.value = sid
+    aiEventSource = agentApi.stream(
+      sid,
+      (payload) => {
+        if (payload.token) {
+          aiOutput.value += payload.token
+        } else if (payload.content) {
+          aiOutput.value += payload.content
+        } else if (payload.text) {
+          aiOutput.value += payload.text
+        }
+      },
+      async () => {
+        try {
+          const st = await agentApi.status(sid)
+          const finalText = st.data?.result?.final_text
+          if (finalText && !aiOutput.value.trim()) {
+            aiOutput.value = finalText
+          }
+          if (st.data?.error) {
+            aiError.value = st.data.error
+          }
+        } catch (e: any) {
+          aiError.value = e.response?.data?.error ?? e.message ?? 'AI 会话状态获取失败'
+        } finally {
+          aiRunning.value = false
+        }
+      },
+    )
+  } catch (e: any) {
+    aiError.value = e.response?.data?.error ?? e.message ?? 'AI 辅助启动失败'
+    aiRunning.value = false
+  }
+}
+
+function appendAIToDraft() {
+  if (!chapter.value || !aiOutput.value.trim()) return
+  if (!isEditing.value) startEdit()
+  const prefix = editContent.value.trim() ? '\n\n' : ''
+  editContent.value = `${editContent.value}${prefix}${aiOutput.value.trim()}`
+  editorMode.value = 'source'
+  ElMessage.success('已追加到当前草稿')
 }
 
 function snapshotSourceLabel(source: string) {
@@ -466,6 +612,11 @@ async function deleteChapter() {
 .rich-text :deep(ol) { margin: 0.75em 0; padding-left: 1.4em; }
 .chapter-editor { display: flex; flex-direction: column; gap: 12px; }
 .editor-title { margin-bottom: 4px; }
+.editor-toolbar { display: flex; justify-content: flex-end; }
+.editor-preview { min-height: 520px; max-height: 70vh; overflow-y: auto; border: 1px solid var(--nb-card-border); border-radius: 6px; padding: 14px; background: var(--nb-table-header-bg); }
+.ai-panel { display: flex; flex-direction: column; gap: 10px; }
+.ai-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ai-output { white-space: pre-wrap; line-height: 1.8; color: var(--nb-text-secondary); max-height: 320px; overflow-y: auto; border: 1px solid var(--nb-card-border); border-radius: 6px; padding: 10px; background: var(--nb-table-header-bg); }
 .score-grid { display: grid; gap: 12px; }
 .score-item { }
 .score-label { color: var(--nb-text-secondary); font-size: 13px; margin-bottom: 4px; }

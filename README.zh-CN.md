@@ -65,9 +65,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 | 标签 | Dockerfile | 形态 | 推荐资源 | 说明 |
 | --- | --- | --- | --- | --- |
 | `latest`, `full`, `YYYYMMDD` | `Dockerfile` | 单容器内置 PostgreSQL、Redis、Qdrant、Neo4j、Python、Go、Vue、Playwright | 4 CPU、8 GB 内存、20 GB 磁盘 | 完整本地部署 |
-| `standard`, `YYYYMMDD-standard` | `Dockerfile.standard` | 单容器内置 PostgreSQL、Redis、Python、Go、Vue | 2 CPU、4 GB 内存、10 GB 磁盘 | 体积更小的日常写作档 |
-| `app`, `YYYYMMDD-app` | `Dockerfile.app` | 只包含应用、Sidecar 和前端 | 2 CPU、2 GB 内存，外部服务另算 | 多容器 compose 或托管数据库 |
-| `sqlite` | `Dockerfile.sqlite` | 基于 app，使用 SQLite，并关闭可选服务 | 1 CPU、2 GB 内存、5 GB 磁盘 | 最小本地/容器档 |
+| `standard`, `YYYYMMDD-standard` | `Dockerfile.standard` | 单容器内置 PostgreSQL、Redis、Python、Go、Vue | 2 CPU、4 GB 内存、10 GB 磁盘 | 只安装 base Python 依赖，关闭图谱/向量/浏览器能力 |
+| `app`, `YYYYMMDD-app` | `Dockerfile.app` | 只包含应用、Sidecar 和前端 | 2 CPU、2 GB 内存，外部服务另算 | 保留外部 Neo4j/Qdrant 所需依赖，不内置浏览器自动化 |
+| `sqlite` | `Dockerfile.sqlite` | 独立最小镜像，使用 SQLite，并关闭可选服务 | 1 CPU、2 GB 内存、5 GB 磁盘 | 只安装 base Python 依赖，适合单用户本地使用 |
 | `no-neo4j`, `no-qdrant`, `no-graph-vector`, `no-redis` | overlay Dockerfile | 从 `full` 或 `standard` 派生并禁用部分运行时能力 | 视基础档位而定 | 这些标签主要禁用服务/配置；如需明显减小物理体积，优先选 `standard`、`app` 或 `sqlite` |
 
 发布 workflow 会先构建并推送 `full`、`standard`、`app`，再用同一次运行内稳定的 `run-${GITHUB_RUN_ID}-profile` 基础 tag 构建派生镜像；Docker Hub 和 GHCR 各自引用自己的基础镜像。
@@ -97,6 +97,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 | `QDRANT_URL` | 按档位设置 | 为空时关闭向量能力 |
 | `TASK_WORKERS`, `TASK_MAX_RETRIES` | `4`, `3` | 后台任务队列 |
 | `NB_ACCELERATOR` | `auto` | 可设为 `auto`、`cpu`、`cuda`、`rocm`、`npu` |
+| `VECTOR_EMBED_CONCURRENCY` | `4` | Python Sidecar 重建向量时的本地 embedding 并发度 |
+
+参考文件上传支持 `.txt`、`.md`、`.markdown`、`.pdf`、`.epub`，单文件上限 50 MiB。上传文件统一保存到 `/data/uploads`，Sidecar 只允许读取该目录内的路径。
 
 ## 构建与瘦身
 
@@ -105,7 +108,9 @@ VERSION=dev UPX_ENABLED=auto ./scripts/build-binaries.sh
 TARGETS="linux amd64,windows amd64" ./scripts/build-binaries.sh
 ```
 
-Go 二进制默认使用 `-trimpath`、删除符号表、清空 build id。如果本机或 CI 安装了 `upx`，Linux 和 Windows 二进制包会自动压缩。Docker 构建在 CI 中传入 `UPX_ENABLED=true`，并使用 `npm ci`、禁用 pip 缓存、避免 Python bytecode 写入，同时缩小 Docker build context。
+Go 二进制默认使用 `-trimpath`、删除符号表、清空 build id。如果本机或 CI 安装了 `upx`，Linux 和 Windows 二进制包会自动压缩。Docker 构建使用 Node 24 builder 镜像、`npm ci`、禁用 pip 缓存、避免 Python bytecode 写入，并按档位组合 sidecar 依赖（`base`、`graph`、`vector`、`browser`）。GitHub Actions 已升级到 Node 24 兼容的 action 版本。
+
+当前数据库初始化以新结构为准。大纲排序索引已从“项目+层级+排序唯一”改为普通排序索引，以支持父子节点内拖拽重排；如果沿用旧库遇到旧唯一索引冲突，请按新部署重新初始化数据库。
 
 ## 验证命令
 
@@ -118,5 +123,7 @@ cd frontend && npm run build
 更多说明：
 
 - [部署矩阵](docs/deployment_matrix.md)
+- [部署矩阵（英文）](docs/deployment_matrix.en.md)
+- [反向代理示例](docs/reverse_proxy.md)
 - [生成架构](docs/generation_architecture.md)
 - [现代化 todo](docs/modernization_todo.md)

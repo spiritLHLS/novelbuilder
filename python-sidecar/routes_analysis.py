@@ -115,7 +115,11 @@ _ALLOWED_UPLOAD_DIR = os.path.abspath(os.getenv("UPLOAD_DIR", "/data/uploads"))
 
 def _read_file(file_path: str) -> str:
     abs_path = os.path.abspath(file_path)
-    if not abs_path.startswith(_ALLOWED_UPLOAD_DIR):
+    try:
+        is_under_upload_dir = os.path.commonpath([_ALLOWED_UPLOAD_DIR, abs_path]) == _ALLOWED_UPLOAD_DIR
+    except ValueError:
+        is_under_upload_dir = False
+    if not is_under_upload_dir:
         logger.warning("Path traversal blocked: %s", file_path)
         return ""
     if not os.path.exists(abs_path):
@@ -124,19 +128,19 @@ def _read_file(file_path: str) -> str:
     if ext == ".pdf":
         try:
             from pdfminer.high_level import extract_text
-            return extract_text(file_path)
+            return extract_text(abs_path)
         except Exception as e:
             logger.error("PDF extraction failed: %s", repr(e), exc_info=True)
             return ""
     elif ext in (".txt", ".md", ".text"):
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
     elif ext == ".epub":
         try:
             import zipfile
             from xml.etree import ElementTree
             text_parts = []
-            with zipfile.ZipFile(file_path, "r") as z:
+            with zipfile.ZipFile(abs_path, "r") as z:
                 for name in z.namelist():
                     if name.endswith((".xhtml", ".html", ".htm")):
                         with z.open(name) as f2:

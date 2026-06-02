@@ -172,7 +172,8 @@
           <div v-if="searchResults.length > 0" class="search-results">
             <div v-for="(r, i) in searchResults" :key="i" class="search-result-item">
               <div class="result-score">score: {{ r.score?.toFixed(4) }}</div>
-              <div class="result-text">{{ r.payload?.text ?? JSON.stringify(r.payload) }}</div>
+              <div class="result-collection">{{ r.collection ?? r.metadata?.collection ?? 'unknown' }}</div>
+              <div class="result-text">{{ r.content ?? r.payload?.text ?? JSON.stringify(r.payload ?? r.metadata ?? {}) }}</div>
             </div>
           </div>
           <div v-else-if="searchDone" class="muted">No results found.</div>
@@ -278,12 +279,34 @@ function selectNode(node: GraphNode) {
   selectedNode.value = selectedNode.value?.id === node.id ? null : node
 }
 
+function normalizeGraphData(raw: any): GraphData {
+  const nodes = Array.isArray(raw?.nodes) ? raw.nodes : []
+  const edges = Array.isArray(raw?.edges) ? raw.edges : []
+  return {
+    nodes: nodes.map((node: any): GraphNode => ({
+      id: String(node.id),
+      type: String(node.type ?? node.label ?? 'Entity'),
+      label: String(node.name ?? node.label ?? node.id),
+      properties: node.properties ?? node.props ?? {},
+    })),
+    edges: edges.map((edge: any, index: number): GraphEdge => ({
+      id: String(edge.id ?? `${edge.from ?? edge.source}-${edge.type ?? edge.relation}-${edge.to ?? edge.target}-${index}`),
+      source: String(edge.source ?? edge.from),
+      target: String(edge.target ?? edge.to),
+      relation: String(edge.relation ?? edge.type ?? 'RELATED_TO'),
+    })).filter((edge: GraphEdge) => edge.source && edge.target),
+  }
+}
+
 async function loadGraph() {
   loadingGraph.value = true
   error.value = ''
   try {
     const res = await graphApi.entities(projectId.value)
-    graphData.value = res.data
+    graphData.value = normalizeGraphData(res.data)
+    if (selectedNode.value && !graphData.value.nodes.some(node => node.id === selectedNode.value?.id)) {
+      selectedNode.value = null
+    }
   } catch (e: any) {
     error.value = e.response?.data?.error ?? e.message
   } finally {
@@ -319,7 +342,14 @@ async function loadVectorStatus() {
   error.value = ''
   try {
     const res = await vectorApi.status(projectId.value)
-    vectorStatus.value = res.data
+    const raw = res.data ?? {}
+    vectorStatus.value = {
+      ...raw,
+      collections: (Array.isArray(raw.collections) ? raw.collections : []).map((col: any) => ({
+        name: col.name ?? col.collection,
+        count: Number(col.count ?? 0),
+      })).filter((col: CollectionStat) => col.name),
+    }
   } catch (e: any) {
     error.value = e.response?.data?.error ?? e.message
   } finally {
@@ -351,7 +381,7 @@ async function runSearch() {
       collections: searchCollection.value ? [searchCollection.value] : undefined,
       top_k: 10,
     })
-    searchResults.value = res.data.results ?? []
+    searchResults.value = res.data.results ?? res.data.hits ?? []
     searchDone.value = true
   } catch (e: any) {
     error.value = e.response?.data?.error ?? e.message

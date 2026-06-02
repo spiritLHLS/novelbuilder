@@ -188,9 +188,20 @@ func (s *SidecarService) RebuildVectorIndex(ctx context.Context, projectID strin
 func (s *SidecarService) SearchVector(ctx context.Context, projectID string, req models.VectorSearchRequest) (json.RawMessage, error) {
 	body := map[string]interface{}{
 		"project_id": projectID,
-		"collection": req.Collection,
 		"query":      req.Query,
 		"limit":      req.Limit,
+	}
+	if req.TopK > 0 {
+		body["top_k"] = req.TopK
+	}
+	if req.Collection != "" {
+		body["collection"] = req.Collection
+	}
+	if len(req.Collections) > 0 {
+		body["collections"] = req.Collections
+	}
+	if req.ScoreThreshold != nil {
+		body["score_threshold"] = *req.ScoreThreshold
 	}
 	return s.post(ctx, "/vector/search", body)
 }

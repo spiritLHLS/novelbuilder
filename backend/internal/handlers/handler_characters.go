@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/services"
 )
 
@@ -106,16 +107,42 @@ func (h *Handler) CreateOutline(c *gin.Context) {
 }
 
 func (h *Handler) UpdateOutline(c *gin.Context) {
-	var body struct {
-		Title         string          `json:"title"`
-		Content       json.RawMessage `json:"content"`
-		TensionTarget float64         `json:"tension_target"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
+	var raw map[string]json.RawMessage
+	if err := c.ShouldBindJSON(&raw); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	o, err := h.outlines.Update(c.Request.Context(), c.Param("id"), body.Title, body.Content, body.TensionTarget)
+	var body struct {
+		Title         string          `json:"title"`
+		Level         string          `json:"level"`
+		ParentID      *string         `json:"parent_id"`
+		OrderNum      *int            `json:"order_num"`
+		Content       json.RawMessage `json:"content"`
+		TensionTarget float64         `json:"tension_target"`
+	}
+	data, _ := json.Marshal(raw)
+	if err := json.Unmarshal(data, &body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	_, hasLevel := raw["level"]
+	_, hasParent := raw["parent_id"]
+	_, hasOrder := raw["order_num"]
+	var o *models.Outline
+	var err error
+	if hasLevel || hasParent || hasOrder {
+		if body.Level == "" || body.OrderNum == nil {
+			c.JSON(400, gin.H{"error": "level and order_num are required when moving outline nodes"})
+			return
+		}
+		o, err = h.outlines.UpdateWithMeta(
+			c.Request.Context(), c.Param("id"),
+			body.Level, body.ParentID, *body.OrderNum,
+			body.Title, body.Content, body.TensionTarget,
+		)
+	} else {
+		o, err = h.outlines.Update(c.Request.Context(), c.Param("id"), body.Title, body.Content, body.TensionTarget)
+	}
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

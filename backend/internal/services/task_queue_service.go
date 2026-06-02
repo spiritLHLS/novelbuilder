@@ -635,6 +635,7 @@ func (s *TaskQueueService) Get(ctx context.Context, id string) (*models.TaskQueu
 	if err != nil {
 		return nil, fmt.Errorf("get task: %w", err)
 	}
+	populateTaskMetrics(&t, time.Now())
 	return &t, nil
 }
 
@@ -710,7 +711,32 @@ func (s *TaskQueueService) List(ctx context.Context, params TaskListParams) ([]m
 			&t.StartedAt, &t.CompletedAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
+		populateTaskMetrics(&t, time.Now())
 		tasks = append(tasks, t)
 	}
 	return tasks, total, rows.Err()
+}
+
+func populateTaskMetrics(t *models.TaskQueueItem, now time.Time) {
+	if t == nil {
+		return
+	}
+	if !t.ScheduledAt.IsZero() {
+		waitEnd := now
+		if t.StartedAt != nil && !t.StartedAt.IsZero() {
+			waitEnd = *t.StartedAt
+		}
+		if waitEnd.After(t.ScheduledAt) {
+			t.QueueWaitMs = waitEnd.Sub(t.ScheduledAt).Milliseconds()
+		}
+	}
+	if t.StartedAt != nil && !t.StartedAt.IsZero() {
+		runEnd := now
+		if t.CompletedAt != nil && !t.CompletedAt.IsZero() {
+			runEnd = *t.CompletedAt
+		}
+		if runEnd.After(*t.StartedAt) {
+			t.RuntimeMs = runEnd.Sub(*t.StartedAt).Milliseconds()
+		}
+	}
 }

@@ -1,0 +1,7 @@
+{$NB_DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size {$NB_MAX_BODY_SIZE}
+	}
+	reverse_proxy {$NB_UPSTREAM}
+}

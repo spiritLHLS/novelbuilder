@@ -39,6 +39,17 @@ var fetchImportHTTPClient = &http.Client{
 	},
 }
 
+const maxReferenceUploadBytes int64 = 50 << 20
+
+var allowedReferenceUploadExtensions = map[string]struct{}{
+	".txt":      {},
+	".text":     {},
+	".md":       {},
+	".markdown": {},
+	".pdf":      {},
+	".epub":     {},
+}
+
 func (h *Handler) ListReferences(c *gin.Context) {
 	id := c.Param("id")
 	if _, err := uuid.Parse(id); err != nil {
@@ -61,12 +72,38 @@ func (h *Handler) UploadReference(c *gin.Context) {
 	}
 	defer file.Close()
 
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if _, ok := allowedReferenceUploadExtensions[ext]; !ok {
+		c.JSON(400, gin.H{"error": "unsupported file type"})
+		return
+	}
+	if header.Size > maxReferenceUploadBytes {
+		c.JSON(413, gin.H{"error": "file is too large"})
+		return
+	}
+
+	sniff := make([]byte, 512)
+	n, readErr := file.Read(sniff)
+	if readErr != nil && readErr != io.EOF {
+		c.JSON(400, gin.H{"error": "failed to read file header"})
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		c.JSON(500, gin.H{"error": "failed to reset upload stream"})
+		return
+	}
+	detectedType := http.DetectContentType(sniff[:n])
+	if !isAllowedReferenceUploadContentType(ext, detectedType, sniff[:n]) {
+		c.JSON(400, gin.H{"error": "unsupported file content type"})
+		return
+	}
+
 	uploadDir := "/data/uploads"
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		c.JSON(500, gin.H{"error": "failed to create upload directory"})
 		return
 	}
-	fileName := uuid.New().String() + filepath.Ext(header.Filename)
+	fileName := uuid.New().String() + ext
 	filePath := filepath.Join(uploadDir, fileName)
 	dst, err := os.Create(filePath)
 	if err != nil {
@@ -74,14 +111,24 @@ func (h *Handler) UploadReference(c *gin.Context) {
 		return
 	}
 	defer dst.Close()
-	if _, err := io.Copy(dst, file); err != nil {
+	written, err := io.Copy(dst, io.LimitReader(file, maxReferenceUploadBytes+1))
+	if err != nil {
+		os.Remove(filePath) //nolint
 		c.JSON(500, gin.H{"error": "failed to save file"})
 		return
 	}
+	if written > maxReferenceUploadBytes {
+		os.Remove(filePath) //nolint
+		c.JSON(413, gin.H{"error": "file is too large"})
+		return
+	}
 
-	title := c.PostForm("title")
-	author := c.PostForm("author")
-	genre := c.PostForm("genre")
+	title := strings.TrimSpace(c.PostForm("title"))
+	if title == "" {
+		title = strings.TrimSuffix(filepath.Base(header.Filename), filepath.Ext(header.Filename))
+	}
+	author := strings.TrimSpace(c.PostForm("author"))
+	genre := strings.TrimSpace(c.PostForm("genre"))
 
 	ref, err := h.references.Create(c.Request.Context(), c.Param("id"), title, author, genre, filePath, "")
 	if err != nil {
@@ -89,6 +136,39 @@ func (h *Handler) UploadReference(c *gin.Context) {
 		return
 	}
 	c.JSON(201, gin.H{"data": ref})
+}
+
+func isAllowedReferenceUploadContentType(ext, detected string, sample []byte) bool {
+	if detected == "" {
+		return true
+	}
+	if strings.HasPrefix(detected, "text/") {
+		return ext == ".txt" || ext == ".text" || ext == ".md" || ext == ".markdown"
+	}
+	switch ext {
+	case ".pdf":
+		return detected == "application/pdf" || detected == "application/octet-stream"
+	case ".epub":
+		return detected == "application/epub+zip" || detected == "application/zip" || detected == "application/octet-stream"
+	default:
+		return detected == "application/octet-stream" && looksMostlyText(sample)
+	}
+}
+
+func looksMostlyText(sample []byte) bool {
+	if len(sample) == 0 {
+		return true
+	}
+	if bytes.IndexByte(sample, 0) >= 0 {
+		return false
+	}
+	control := 0
+	for _, b := range sample {
+		if b < 0x09 || (b > 0x0d && b < 0x20) {
+			control++
+		}
+	}
+	return control*10 < len(sample)
 }
 
 func (h *Handler) GetReference(c *gin.Context) {
@@ -824,15 +904,14 @@ func (h *Handler) runReferenceAnalyze(ctx context.Context, refID, projectID, ana
 	h.references.UpdateAnalysis(ctx, refID,
 		analysisResult.StyleLayer, analysisResult.NarrativeLayer, analysisResult.AtmosphereLayer) //nolint
 
-	// Ingest text samples into the vector store asynchronously.
-	go func() {
-		if ingestErr := h.references.IngestSamples(
-			ctx, projectID, refID,
-			analysisResult.StyleSamples, analysisResult.SensorySamples,
-		); ingestErr != nil {
-			h.logger.Warn("RAG ingest failed", zap.String("ref_id", refID), zap.Error(ingestErr))
-		}
-	}()
+	ingestCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if ingestErr := h.references.IngestSamples(
+		ingestCtx, projectID, refID,
+		analysisResult.StyleSamples, analysisResult.SensorySamples,
+	); ingestErr != nil {
+		h.logger.Warn("RAG ingest failed", zap.String("ref_id", refID), zap.Error(ingestErr))
+	}
 	return nil
 }
 

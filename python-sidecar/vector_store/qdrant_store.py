@@ -226,10 +226,17 @@ class QdrantStore:
         col = self._collection_name(project_id, collection)
 
         loop = asyncio.get_event_loop()
-        # Embed all items concurrently in thread pool
-        vecs = await asyncio.gather(
-            *[loop.run_in_executor(None, embed, item["content"]) for item in items]
-        )
+        try:
+            max_embed_workers = max(1, int(os.getenv("VECTOR_EMBED_CONCURRENCY", "4")))
+        except ValueError:
+            max_embed_workers = 4
+        semaphore = asyncio.Semaphore(max_embed_workers)
+
+        async def _embed_item(content: str):
+            async with semaphore:
+                return await loop.run_in_executor(None, embed, content)
+
+        vecs = await asyncio.gather(*[_embed_item(item["content"]) for item in items])
 
         points = []
         for item, vec in zip(items, vecs):
@@ -258,30 +265,61 @@ class QdrantStore:
         limit: int = 5,
     ) -> list[dict]:
         """Semantic search. Returns [{id, score, content, metadata}]."""
-        await self.ensure_collection(project_id, collection)
-        col = self._collection_name(project_id, collection)
+        return await self.search_collections(project_id, [collection], query, limit)
+
+    async def search_collections(
+        self,
+        project_id: str,
+        collections: list[str],
+        query: str,
+        limit: int = 5,
+        score_threshold: float | None = None,
+    ) -> list[dict]:
+        """Search multiple logical collections while embedding the query once."""
+        collections = [c for c in dict.fromkeys(collections) if c]
+        if not collections:
+            return []
+        limit = max(1, min(int(limit or 5), 50))
+        for collection in collections:
+            await self.ensure_collection(project_id, collection)
         loop = asyncio.get_event_loop()
         vec = await loop.run_in_executor(None, embed, query)
         if vec is None:
             return []
+
+        async def _search_one(collection: str) -> list[dict]:
+            col = self._collection_name(project_id, collection)
+            try:
+                results = await self._client.search(
+                    collection_name=col,
+                    query_vector=vec,
+                    limit=limit,
+                    with_payload=True,
+                )
+                hits = []
+                for r in results:
+                    if score_threshold is not None and r.score < score_threshold:
+                        continue
+                    payload = r.payload or {}
+                    hits.append({
+                        "id": str(r.id),
+                        "score": r.score,
+                        "collection": collection,
+                        "content": payload.get("content", ""),
+                        "metadata": {k: v for k, v in payload.items() if k != "content"},
+                    })
+                return hits
+            except Exception as exc:
+                logger.warning("Qdrant search failed on %s: %s", col, repr(exc), exc_info=True)
+                return []
+
         try:
-            results = await self._client.search(
-                collection_name=col,
-                query_vector=vec,
-                limit=limit,
-                with_payload=True,
-            )
-            return [
-                {
-                    "id": str(r.id),
-                    "score": r.score,
-                    "content": r.payload.get("content", ""),
-                    "metadata": {k: v for k, v in r.payload.items() if k != "content"},
-                }
-                for r in results
-            ]
+            grouped = await asyncio.gather(*[_search_one(collection) for collection in collections])
+            hits = [hit for group in grouped for hit in group]
+            hits.sort(key=lambda h: h.get("score", 0), reverse=True)
+            return hits[:limit]
         except Exception as exc:
-            logger.warning("Qdrant search failed on %s: %s", col, repr(exc), exc_info=True)
+            logger.warning("Qdrant multi-collection search failed: %s", repr(exc), exc_info=True)
             return []
 
     async def delete_project_collection(self, project_id: str, collection: str) -> None:

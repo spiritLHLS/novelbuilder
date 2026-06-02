@@ -136,7 +136,10 @@ const pipelineItems = computed(() => {
   return [
     { path: `/projects/${pid}/references`, icon: 'Reading', label: '参考书与导入' },
     { path: `/projects/${pid}/rag`, icon: 'Management', label: 'RAG 知识库' },
-    { path: `/projects/${pid}/world`, icon: 'Place', label: '世界/角色/大纲' },
+    { path: `/projects/${pid}/graph-memory`, icon: 'Share', label: '图谱与向量记忆' },
+    { path: `/projects/${pid}/world`, icon: 'Place', label: '世界设定' },
+    { path: `/projects/${pid}/characters`, icon: 'Avatar', label: '角色档案' },
+    { path: `/projects/${pid}/outline`, icon: 'List', label: '章节大纲' },
     { path: `/projects/${pid}/glossary`, icon: 'Collection', label: '术语与资源' },
   ]
 })

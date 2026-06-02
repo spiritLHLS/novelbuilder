@@ -1,0 +1,33 @@
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+
+# HTTP clients
+httpx[http2]==0.27.2
+curl_cffi>=0.7.0
+aiohttp>=3.9.0
+
+# DB and cache
+psycopg2-binary==2.9.10
+redis==5.2.1
+
+# LangGraph + LangChain
+langgraph==0.2.56
+langchain==0.3.12
+langchain-core==0.3.25
+langchain-openai==0.2.12
+langchain-community==0.3.12
+langchain-anthropic>=0.3.0
+langchain-google-genai>=2.0.0
+openai==1.58.1
+
+# NLP / analysis
+json-repair>=0.30.0
+jieba==0.42.1
+numpy>=1.24,<2.0
+scipy>=1.11
+pdfminer.six==20221105
+
+# Novel download / search is installed from the git submodule at
+# python-sidecar/novel-downloader/ in Dockerfiles.

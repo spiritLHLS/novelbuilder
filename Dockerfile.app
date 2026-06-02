@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
       (apk add --no-cache upx && upx -9 /build/server) || true; \
     fi
 
-FROM node:20-alpine AS vue-builder
+FROM node:24-alpine AS vue-builder
 
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/python-sidecar
-COPY python-sidecar/requirements.txt ./
+COPY python-sidecar/requirements*.txt ./
 COPY python-sidecar/novel-downloader ./novel-downloader
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" = "amd64" ]; then \
@@ -48,7 +48,10 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
     else \
         pip install --no-cache-dir --no-compile torch==2.5.1; \
     fi
-RUN pip install --no-cache-dir --no-compile -r requirements.txt
+RUN pip install --no-cache-dir --no-compile \
+        -r requirements-base.txt \
+        -r requirements-graph.txt \
+        -r requirements-vector.txt
 RUN if [ -f "./novel-downloader/pyproject.toml" ]; then \
         pip install --no-cache-dir --no-compile ./novel-downloader; \
     fi

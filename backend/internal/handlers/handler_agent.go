@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -322,8 +323,25 @@ func (h *Handler) SearchVector(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	req.Query = strings.TrimSpace(req.Query)
+	if req.Query == "" {
+		c.JSON(400, gin.H{"error": "query is required"})
+		return
+	}
+	if req.TopK > 0 && (req.Limit <= 0 || req.TopK < req.Limit) {
+		req.Limit = req.TopK
+	}
 	if req.Limit == 0 {
 		req.Limit = 5
+	}
+	if req.Limit < 0 {
+		req.Limit = 5
+	}
+	if req.Limit > 50 {
+		req.Limit = 50
+	}
+	if strings.TrimSpace(req.Collection) != "" && len(req.Collections) == 0 {
+		req.Collections = []string{strings.TrimSpace(req.Collection)}
 	}
 	raw, err := h.sidecar.SearchVector(c.Request.Context(), c.Param("id"), req)
 	if err != nil {

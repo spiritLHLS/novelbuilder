@@ -1,0 +1,19 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      NB_DOMAIN: ${NB_DOMAIN:-localhost}
+      NB_UPSTREAM: ${NB_UPSTREAM:-novelbuilder:8080}
+      NB_MAX_BODY_SIZE: ${NB_MAX_BODY_SIZE:-60MB}
+    volumes:
+      - ./docker/Caddyfile.reverse-proxy:/etc/caddy/Caddyfile:ro
+      - novelbuilder-caddy-data:/data
+      - novelbuilder-caddy-config:/config
+
+volumes:
+  novelbuilder-caddy-data:
+  novelbuilder-caddy-config:

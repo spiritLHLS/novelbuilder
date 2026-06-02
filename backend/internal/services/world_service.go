@@ -368,10 +368,22 @@ func (s *OutlineService) Create(ctx context.Context, projectID, level string, pa
 func (s *OutlineService) Update(ctx context.Context, id string, title string, content json.RawMessage, tension float64) (*models.Outline, error) {
 	var o models.Outline
 	err := s.db.QueryRow(ctx,
-		`UPDATE outlines SET title = $1, content = $2, tension_target = $3
+		`UPDATE outlines SET title = $1, content = $2, tension_target = $3, updated_at = NOW()
 		 WHERE id = $4
 		 RETURNING id, project_id, level, parent_id, order_num, title, content, tension_target, created_at, updated_at`,
 		title, content, tension, id).Scan(
+		&o.ID, &o.ProjectID, &o.Level, &o.ParentID, &o.OrderNum,
+		&o.Title, rawJSONScanner{dst: &o.Content}, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt)
+	return &o, err
+}
+
+func (s *OutlineService) UpdateWithMeta(ctx context.Context, id, level string, parentID *string, orderNum int, title string, content json.RawMessage, tension float64) (*models.Outline, error) {
+	var o models.Outline
+	err := s.db.QueryRow(ctx,
+		`UPDATE outlines SET level = $1, parent_id = $2, order_num = $3, title = $4, content = $5, tension_target = $6, updated_at = NOW()
+		 WHERE id = $7
+		 RETURNING id, project_id, level, parent_id, order_num, title, content, tension_target, created_at, updated_at`,
+		level, parentID, orderNum, title, content, tension, id).Scan(
 		&o.ID, &o.ProjectID, &o.Level, &o.ParentID, &o.OrderNum,
 		&o.Title, rawJSONScanner{dst: &o.Content}, &o.TensionTarget, &o.CreatedAt, &o.UpdatedAt)
 	return &o, err

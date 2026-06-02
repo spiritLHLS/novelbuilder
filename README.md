@@ -65,9 +65,9 @@ Open `/setup` first. It checks runtime readiness and then the in-app guide walks
 | Tag | Dockerfile | Shape | Suggested resources | Notes |
 | --- | --- | --- | --- | --- |
 | `latest`, `full`, `YYYYMMDD` | `Dockerfile` | Single container with PostgreSQL, Redis, Qdrant, Neo4j, Python, Go, Vue, Playwright | 4 CPU, 8 GB RAM, 20 GB disk | Complete local deployment |
-| `standard`, `YYYYMMDD-standard` | `Dockerfile.standard` | Single container with PostgreSQL, Redis, Python, Go, Vue | 2 CPU, 4 GB RAM, 10 GB disk | Smaller daily writing profile |
-| `app`, `YYYYMMDD-app` | `Dockerfile.app` | App, sidecar, and Vue only | 2 CPU, 2 GB RAM plus external services | Multi-container compose or managed services |
-| `sqlite` | `Dockerfile.sqlite` | App profile with SQLite and optional services disabled | 1 CPU, 2 GB RAM, 5 GB disk | Smallest local/container profile |
+| `standard`, `YYYYMMDD-standard` | `Dockerfile.standard` | Single container with PostgreSQL, Redis, Python, Go, Vue | 2 CPU, 4 GB RAM, 10 GB disk | Installs base Python deps only; graph/vector/browser routes are disabled |
+| `app`, `YYYYMMDD-app` | `Dockerfile.app` | App, sidecar, and Vue only | 2 CPU, 2 GB RAM plus external services | Includes graph/vector Python deps for external Neo4j/Qdrant; omits browser automation |
+| `sqlite` | `Dockerfile.sqlite` | Independent minimal image with SQLite and optional services disabled | 1 CPU, 2 GB RAM, 5 GB disk | Base Python deps only; intended for single-user local use |
 | `no-neo4j`, `no-qdrant`, `no-graph-vector`, `no-redis` | overlay Dockerfiles | Runtime-disabled variants built from `full` or `standard` | profile-dependent | These disable services/configuration; choose `standard`, `app`, or `sqlite` for the largest physical size reduction |
 
 The release workflow builds `full`, `standard`, and `app` first, then builds overlay variants from same-run `run-${GITHUB_RUN_ID}-profile` base tags for Docker Hub and GHCR independently.
@@ -97,6 +97,9 @@ Infrastructure settings are environment variables. Application settings, LLM pro
 | `QDRANT_URL` | profile-specific | Empty disables vector services |
 | `TASK_WORKERS`, `TASK_MAX_RETRIES` | `4`, `3` | Background task queue |
 | `NB_ACCELERATOR` | `auto` | `auto`, `cpu`, `cuda`, `rocm`, or `npu` |
+| `VECTOR_EMBED_CONCURRENCY` | `4` | Python-sidecar embedding concurrency during vector rebuilds |
+
+Reference uploads accept `.txt`, `.md`, `.markdown`, `.pdf`, and `.epub` files up to 50 MiB. Files are stored under `/data/uploads`, and the sidecar only reads paths inside that directory.
 
 ## Build And Size Controls
 
@@ -105,7 +108,7 @@ VERSION=dev UPX_ENABLED=auto ./scripts/build-binaries.sh
 TARGETS="linux amd64,windows amd64" ./scripts/build-binaries.sh
 ```
 
-Go binaries are built with `-trimpath`, stripped symbols, and an empty build id. If `upx` is installed, Linux and Windows binary packages are compressed automatically. Docker builds pass `UPX_ENABLED=true` in CI and use `npm ci`, no pip cache, no Python bytecode writes, and a narrower Docker build context.
+Go binaries are built with `-trimpath`, stripped symbols, and an empty build id. If `upx` is installed, Linux and Windows binary packages are compressed automatically. Docker builds use Node 24 builder images, `npm ci`, no pip cache, no Python bytecode writes, and split sidecar requirements (`base`, `graph`, `vector`, `browser`) per profile. GitHub Actions also run JavaScript actions on Node 24-compatible action versions.
 
 ## Development Checks
 
@@ -118,5 +121,7 @@ cd frontend && npm run build
 More details:
 
 - [Deployment matrix](docs/deployment_matrix.md)
+- [Deployment matrix (English)](docs/deployment_matrix.en.md)
+- [Reverse proxy example](docs/reverse_proxy.md)
 - [Generation architecture](docs/generation_architecture.md)
 - [Modernization todo](docs/modernization_todo.md)
