@@ -42,7 +42,7 @@ jobs:
   docker-base:
     name: docker base (${{ matrix.profile }})
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 3600
     permissions:
       contents: read
       packages: write
@@ -205,7 +205,7 @@ jobs:
     needs: docker-base
     if: github.event_name != 'workflow_dispatch' || inputs.image_set == 'all'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 3600
     permissions:
       contents: read
       packages: write
@@ -340,7 +340,7 @@ jobs:
   binaries:
     runs-on: ubuntu-latest
     if: github.event_name != 'workflow_dispatch' || inputs.build_binaries
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
