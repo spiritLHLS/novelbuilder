@@ -2,17 +2,47 @@ name: Build Docker Images and Binaries
 
 on:
   workflow_dispatch:
+    inputs:
+      image_set:
+        description: "Images to build. Use app for fast smoke/release checks; all includes every Docker profile."
+        required: true
+        default: app
+        type: choice
+        options:
+          - app
+          - base
+          - all
+      platforms:
+        description: "Docker target platforms. Multi-arch uses QEMU on GitHub-hosted x64 runners and is much slower."
+        required: true
+        default: linux/amd64
+        type: choice
+        options:
+          - linux/amd64
+          - linux/amd64,linux/arm64
+      build_binaries:
+        description: "Build and upload cross-platform binary packages."
+        required: true
+        default: true
+        type: boolean
   push:
     tags:
       - "v*"
 
+concurrency:
+  group: build-docker-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   DOCKER_IMAGE: spiritlhl/novelbuilder
+  IMAGE_SET: ${{ github.event_name == 'workflow_dispatch' && inputs.image_set || 'all' }}
+  IMAGE_PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux/amd64' }}
 
 jobs:
   docker-base:
     name: docker base (${{ matrix.profile }})
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     permissions:
       contents: read
       packages: write
@@ -28,12 +58,39 @@ jobs:
             dockerfile: Dockerfile.app
 
     steps:
+      - name: Decide profile
+        id: selected
+        shell: bash
+        run: |
+          enabled=false
+          case "${IMAGE_SET}" in
+            all|base)
+              enabled=true
+              ;;
+            app)
+              if [ "${{ matrix.profile }}" = "app" ]; then
+                enabled=true
+              fi
+              ;;
+            *)
+              echo "Unsupported IMAGE_SET=${IMAGE_SET}" >&2
+              exit 1
+              ;;
+          esac
+
+          platform_scope="$(printf '%s' "${IMAGE_PLATFORMS}" | tr '/,' '--' | tr -cs 'A-Za-z0-9_.-' '-')"
+          echo "enabled=${enabled}" >> "$GITHUB_OUTPUT"
+          echo "platform_scope=${platform_scope}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
+        if: steps.selected.outputs.enabled == 'true'
         with:
           submodules: recursive
 
       - name: Resolve tags
         id: meta
+        if: steps.selected.outputs.enabled == 'true'
+        shell: bash
         run: |
           date_tag="$(date +'%Y%m%d')"
           run_tag="run-${GITHUB_RUN_ID}"
@@ -54,10 +111,14 @@ jobs:
           echo "ghcr=${ghcr}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
+        if: steps.selected.outputs.enabled == 'true' && contains(env.IMAGE_PLATFORMS, 'arm64')
+
       - uses: docker/setup-buildx-action@v3
+        if: steps.selected.outputs.enabled == 'true'
 
       - name: Login to Docker Hub
         id: login-dockerhub
+        if: steps.selected.outputs.enabled == 'true'
         continue-on-error: true
         uses: docker/login-action@v3
         with:
@@ -66,6 +127,7 @@ jobs:
 
       - name: Login to GHCR
         id: login-ghcr
+        if: steps.selected.outputs.enabled == 'true'
         continue-on-error: true
         uses: docker/login-action@v3
         with:
@@ -73,40 +135,63 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker Hub image
-        if: steps.login-dockerhub.outcome == 'success'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.dockerhub }}
-          build-args: |
-            SERVER_VERSION=${{ steps.meta.outputs.version }}
-            BUILD_PROFILE=${{ matrix.profile }}
-            UPX_ENABLED=true
-          cache-from: type=gha,scope=dockerhub-${{ matrix.profile }}
-          cache-to: type=gha,mode=max,scope=dockerhub-${{ matrix.profile }}
+      - name: Collect image tags
+        id: tags
+        if: steps.selected.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          tags=""
+          append_csv_tags() {
+            local csv="$1"
+            local tag
+            IFS=',' read -r -a tag_list <<< "${csv}"
+            for tag in "${tag_list[@]}"; do
+              if [ -n "${tag}" ]; then
+                tags+="${tag}"$'\n'
+              fi
+            done
+          }
 
-      - name: Build and push GHCR image
-        if: steps.login-ghcr.outcome == 'success'
+          if [ "${{ steps.login-dockerhub.outcome }}" = "success" ]; then
+            append_csv_tags "${{ steps.meta.outputs.dockerhub }}"
+          fi
+          if [ "${{ steps.login-ghcr.outcome }}" = "success" ]; then
+            append_csv_tags "${{ steps.meta.outputs.ghcr }}"
+          fi
+
+          if [ -z "${tags}" ]; then
+            echo "push_enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No registry login succeeded; skipping Docker push."
+            exit 0
+          fi
+
+          echo "push_enabled=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            printf "%s" "${tags}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        if: steps.selected.outputs.enabled == 'true' && steps.tags.outputs.push_enabled == 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ env.IMAGE_PLATFORMS }}
           push: true
-          tags: ${{ steps.meta.outputs.ghcr }}
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+          sbom: false
           build-args: |
             SERVER_VERSION=${{ steps.meta.outputs.version }}
             BUILD_PROFILE=${{ matrix.profile }}
-            UPX_ENABLED=true
-          cache-from: type=gha,scope=ghcr-${{ matrix.profile }}
-          cache-to: type=gha,mode=max,scope=ghcr-${{ matrix.profile }}
+            UPX_ENABLED=false
+          cache-from: type=gha,scope=docker-${{ matrix.profile }}-${{ steps.selected.outputs.platform_scope }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.profile }}-${{ steps.selected.outputs.platform_scope }}
 
       - name: Update Docker Hub description
-        if: steps.login-dockerhub.outcome == 'success' && matrix.profile == 'full'
+        if: steps.selected.outputs.enabled == 'true' && steps.login-dockerhub.outcome == 'success' && matrix.profile == 'full'
         continue-on-error: true
         uses: peter-evans/dockerhub-description@v4
         with:
@@ -118,7 +203,9 @@ jobs:
   docker-variants:
     name: docker variant (${{ matrix.profile }})
     needs: docker-base
+    if: github.event_name != 'workflow_dispatch' || inputs.image_set == 'all'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write
@@ -147,6 +234,7 @@ jobs:
 
       - name: Resolve tags
         id: meta
+        shell: bash
         run: |
           date_tag="$(date +'%Y%m%d')"
           run_tag="run-${GITHUB_RUN_ID}"
@@ -159,13 +247,17 @@ jobs:
           ghcr_image="ghcr.io/${ghcr_owner}/${ghcr_repo}"
           ghcr="${ghcr_image}:${profile},${ghcr_image}:${date_tag}-${profile},${ghcr_image}:${run_tag}-${profile}"
           ghcr_base="${ghcr_image}:${run_tag}-${{ matrix.base_profile }}"
+          platform_scope="$(printf '%s' "${IMAGE_PLATFORMS}" | tr '/,' '--' | tr -cs 'A-Za-z0-9_.-' '-')"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "dockerhub=${dockerhub}" >> "$GITHUB_OUTPUT"
           echo "dockerhub_base=${dockerhub_base}" >> "$GITHUB_OUTPUT"
           echo "ghcr=${ghcr}" >> "$GITHUB_OUTPUT"
           echo "ghcr_base=${ghcr_base}" >> "$GITHUB_OUTPUT"
+          echo "platform_scope=${platform_scope}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
+        if: contains(env.IMAGE_PLATFORMS, 'arm64')
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
@@ -185,40 +277,70 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker Hub image
-        if: steps.login-dockerhub.outcome == 'success'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.dockerhub }}
-          build-args: |
-            SERVER_VERSION=${{ steps.meta.outputs.version }}
-            BUILD_PROFILE=${{ matrix.profile }}
-            BASE_IMAGE=${{ steps.meta.outputs.dockerhub_base }}
-          cache-from: type=gha,scope=dockerhub-${{ matrix.profile }}
-          cache-to: type=gha,mode=max,scope=dockerhub-${{ matrix.profile }}
+      - name: Collect image tags
+        id: tags
+        shell: bash
+        run: |
+          tags=""
+          base_image=""
+          append_csv_tags() {
+            local csv="$1"
+            local tag
+            IFS=',' read -r -a tag_list <<< "${csv}"
+            for tag in "${tag_list[@]}"; do
+              if [ -n "${tag}" ]; then
+                tags+="${tag}"$'\n'
+              fi
+            done
+          }
 
-      - name: Build and push GHCR image
-        if: steps.login-ghcr.outcome == 'success'
+          if [ "${{ steps.login-dockerhub.outcome }}" = "success" ]; then
+            append_csv_tags "${{ steps.meta.outputs.dockerhub }}"
+            base_image="${{ steps.meta.outputs.dockerhub_base }}"
+          fi
+          if [ "${{ steps.login-ghcr.outcome }}" = "success" ]; then
+            append_csv_tags "${{ steps.meta.outputs.ghcr }}"
+            if [ -z "${base_image}" ]; then
+              base_image="${{ steps.meta.outputs.ghcr_base }}"
+            fi
+          fi
+
+          if [ -z "${tags}" ] || [ -z "${base_image}" ]; then
+            echo "push_enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No registry login succeeded; skipping Docker push."
+            exit 0
+          fi
+
+          echo "push_enabled=true" >> "$GITHUB_OUTPUT"
+          echo "base_image=${base_image}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            printf "%s" "${tags}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        if: steps.tags.outputs.push_enabled == 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ env.IMAGE_PLATFORMS }}
           push: true
-          tags: ${{ steps.meta.outputs.ghcr }}
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+          sbom: false
           build-args: |
             SERVER_VERSION=${{ steps.meta.outputs.version }}
             BUILD_PROFILE=${{ matrix.profile }}
-            BASE_IMAGE=${{ steps.meta.outputs.ghcr_base }}
-          cache-from: type=gha,scope=ghcr-${{ matrix.profile }}
-          cache-to: type=gha,mode=max,scope=ghcr-${{ matrix.profile }}
+            BASE_IMAGE=${{ steps.tags.outputs.base_image }}
+          cache-from: type=gha,scope=docker-${{ matrix.profile }}-${{ steps.meta.outputs.platform_scope }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.profile }}-${{ steps.meta.outputs.platform_scope }}
 
   binaries:
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || inputs.build_binaries
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -229,6 +351,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+          cache-dependency-path: backend/go.sum
 
       - uses: actions/setup-node@v4
         with:
