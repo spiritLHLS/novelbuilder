@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -20,6 +19,12 @@ import (
 // TaskHandler is called by the worker pool to handle a task.
 // Returning an error marks the task as failed (retried if attempts < max_attempts).
 type TaskHandler func(ctx context.Context, task models.TaskQueueItem) error
+
+const (
+	defaultTaskMaxAttempts = 3
+	minTaskRetryBackoff    = 2 * time.Second
+	maxTaskRetryBackoff    = 5 * time.Minute
+)
 
 type TaskQueueService struct {
 	db         *database.DB
@@ -78,20 +83,75 @@ func (s *TaskQueueService) Start() {
 // than 5 minutes back to 'pending' so they can be retried. This handles the case
 // where the server crashed while a task was executing.
 func (s *TaskQueueService) recoverStaleRunning(ctx context.Context) {
-	tag, err := s.db.Exec(ctx,
-		`UPDATE task_queue
-		 SET status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
-		     error_message = COALESCE(error_message, '') || ' [recovered from stale running state]',
-		     scheduled_at = NOW(),
-		     updated_at = NOW()
+	cutoff := time.Now().Add(-5 * time.Minute)
+	rows, err := s.db.Query(ctx,
+		`SELECT id, attempts, max_attempts, error_message
+		 FROM task_queue
 		 WHERE status = 'running'
-		   AND updated_at < NOW() - INTERVAL '5 minutes'`)
+		   AND updated_at < $1`,
+		cutoff)
 	if err != nil {
 		s.logger.Warn("failed to recover stale running tasks", zap.Error(err))
 		return
 	}
-	if tag.RowsAffected() > 0 {
-		s.logger.Info("recovered stale running tasks", zap.Int64("count", tag.RowsAffected()))
+	defer rows.Close()
+
+	type staleTask struct {
+		id           string
+		attempts     int
+		maxAttempts  int
+		errorMessage string
+	}
+	var stale []staleTask
+	for rows.Next() {
+		var task staleTask
+		if err := rows.Scan(&task.id, &task.attempts, &task.maxAttempts, &task.errorMessage); err != nil {
+			s.logger.Warn("failed to scan stale running task", zap.Error(err))
+			return
+		}
+		stale = append(stale, task)
+	}
+	if err := rows.Err(); err != nil {
+		s.logger.Warn("failed to iterate stale running tasks", zap.Error(err))
+		return
+	}
+	if len(stale) == 0 {
+		return
+	}
+
+	now := time.Now()
+	batch := &database.Batch{}
+	for _, task := range stale {
+		maxAttempts := s.maxAttempts(task.maxAttempts)
+		recoveredMessage := appendTaskRecoveryMessage(task.errorMessage)
+		if task.attempts >= maxAttempts {
+			batch.Queue(
+				`UPDATE task_queue
+				 SET status='failed', error_message=$1, completed_at=$2, updated_at=$2
+				 WHERE id=$3 AND status='running'`,
+				recoveredMessage, now, task.id)
+			continue
+		}
+		batch.Queue(
+			`UPDATE task_queue
+			 SET status='pending', error_message=$1, scheduled_at=$2, updated_at=$3
+			 WHERE id=$4 AND status='running'`,
+			recoveredMessage, now.Add(taskRetryBackoff(task.attempts)), now, task.id)
+	}
+
+	br := s.db.SendBatch(ctx, batch)
+	defer br.Close()
+	var recovered int64
+	for range stale {
+		tag, err := br.Exec()
+		if err != nil {
+			s.logger.Warn("failed to update stale running task", zap.Error(err))
+			return
+		}
+		recovered += tag.RowsAffected()
+	}
+	if recovered > 0 {
+		s.logger.Info("recovered stale running tasks", zap.Int64("count", recovered))
 	}
 }
 
@@ -160,6 +220,45 @@ func queueFinishContext(parent context.Context) (context.Context, context.Cancel
 		return context.WithTimeout(context.Background(), 10*time.Second)
 	}
 	return parent, func() {}
+}
+
+func (s *TaskQueueService) maxAttempts(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	if s.maxRetries > 0 {
+		return s.maxRetries
+	}
+	return defaultTaskMaxAttempts
+}
+
+func taskRetryBackoff(attempt int) time.Duration {
+	if attempt <= 1 {
+		return minTaskRetryBackoff
+	}
+	backoff := minTaskRetryBackoff
+	for i := 1; i < attempt; i++ {
+		if backoff >= maxTaskRetryBackoff/2 {
+			return maxTaskRetryBackoff
+		}
+		backoff *= 2
+	}
+	if backoff > maxTaskRetryBackoff {
+		return maxTaskRetryBackoff
+	}
+	return backoff
+}
+
+func appendTaskRecoveryMessage(message string) string {
+	const recovered = "recovered from stale running state"
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return recovered
+	}
+	if strings.Contains(message, recovered) {
+		return message
+	}
+	return message + " [" + recovered + "]"
 }
 
 func (s *TaskQueueService) taskStatus(ctx context.Context, id string) (string, error) {
@@ -236,11 +335,12 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 	}
 
 	started := time.Now()
+	maxAtt := s.maxAttempts(task.MaxAttempts)
 	logFields := []zap.Field{
 		zap.String("task_id", task.ID),
 		zap.String("task_type", task.TaskType),
 		zap.Int("attempt", task.Attempts+1),
-		zap.Int("max_attempts", task.MaxAttempts),
+		zap.Int("max_attempts", maxAtt),
 	}
 	if task.ProjectID != nil {
 		logFields = append(logFields, zap.String("project_id", *task.ProjectID))
@@ -334,13 +434,9 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 
 	// Handle failure: retry or mark as failed
 	attempt := task.Attempts + 1
-	maxAtt := task.MaxAttempts
-	if maxAtt == 0 {
-		maxAtt = s.maxRetries
-	}
 
 	if attempt < maxAtt {
-		backoff := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+		backoff := taskRetryBackoff(attempt)
 		_, _ = s.db.Exec(finishCtx,
 			`UPDATE task_queue SET status='pending', error_message=$1, scheduled_at=$2, updated_at=$3 WHERE id=$4`,
 			handlerErr.Error(), time.Now().Add(backoff), time.Now(), task.ID)
@@ -352,7 +448,7 @@ func (s *TaskQueueService) processOne(ctx context.Context) error {
 			)...)
 	} else {
 		_, _ = s.db.Exec(finishCtx,
-			`UPDATE task_queue SET status='failed', error_message=$1, updated_at=$2 WHERE id=$3`,
+			`UPDATE task_queue SET status='failed', error_message=$1, completed_at=$2, updated_at=$2 WHERE id=$3`,
 			handlerErr.Error(), time.Now(), task.ID)
 		s.logger.Error("task failed permanently",
 			append(logFields,
@@ -382,9 +478,7 @@ func (s *TaskQueueService) EnqueueBatch(ctx context.Context, reqs []models.Creat
 			payload = json.RawMessage("{}")
 		}
 		maxAttempts := req.MaxAttempts
-		if maxAttempts == 0 {
-			maxAttempts = s.maxRetries
-		}
+		maxAttempts = s.maxAttempts(maxAttempts)
 		var projectID *string
 		if req.ProjectID != "" {
 			pid := req.ProjectID
@@ -417,9 +511,7 @@ func (s *TaskQueueService) Enqueue(ctx context.Context, req models.CreateTaskReq
 	}
 
 	maxAttempts := req.MaxAttempts
-	if maxAttempts == 0 {
-		maxAttempts = s.maxRetries
-	}
+	maxAttempts = s.maxAttempts(maxAttempts)
 
 	// ProjectID: convert empty string to nil for nullable FK
 	var projectID *string
@@ -620,6 +712,31 @@ func (s *TaskQueueService) Retry(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *TaskQueueService) UpdatePayload(ctx context.Context, id string, payload json.RawMessage) (*models.TaskQueueItem, error) {
+	if len(payload) == 0 || !json.Valid(payload) {
+		return nil, errors.New("payload must be valid JSON")
+	}
+	tag, err := s.db.Exec(ctx,
+		`UPDATE task_queue
+		 SET payload=$2, updated_at=NOW()
+		 WHERE id=$1 AND status IN ('pending','paused','failed','cancelled')`,
+		id, payload)
+	if err != nil {
+		return nil, fmt.Errorf("update task payload: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		existing, getErr := s.Get(ctx, id)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if existing == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("task payload can only be edited while pending, paused, failed, or cancelled")
+	}
+	return s.Get(ctx, id)
+}
+
 func (s *TaskQueueService) Get(ctx context.Context, id string) (*models.TaskQueueItem, error) {
 	var t models.TaskQueueItem
 	err := s.db.QueryRow(ctx,
@@ -717,26 +834,108 @@ func (s *TaskQueueService) List(ctx context.Context, params TaskListParams) ([]m
 	return tasks, total, rows.Err()
 }
 
-func populateTaskMetrics(t *models.TaskQueueItem, now time.Time) {
-	if t == nil {
-		return
+func (s *TaskQueueService) Stats(ctx context.Context, projectID string) (*models.TaskQueueStats, error) {
+	whereClause := "1 = 1"
+	args := []interface{}{}
+	if projectID != "" {
+		whereClause = "project_id = $1"
+		args = append(args, projectID)
 	}
-	if !t.ScheduledAt.IsZero() {
-		waitEnd := now
-		if t.StartedAt != nil && !t.StartedAt.IsZero() {
-			waitEnd = *t.StartedAt
+	rows, err := s.db.Query(ctx,
+		fmt.Sprintf(`SELECT project_id, task_type, status, attempts, error_message,
+		                    scheduled_at, started_at, completed_at
+		             FROM task_queue
+		             WHERE %s`, whereClause),
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("query task stats: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now()
+	dayAgo := now.Add(-24 * time.Hour)
+	stats := &models.TaskQueueStats{
+		ByStatus: make(map[string]int),
+		ByType:   make(map[string]int),
+	}
+	failures := map[string]int{}
+	projectDone := map[string]int{}
+	var queueTotal, queueSamples, runtimeTotal, runtimeSamples int64
+
+	for rows.Next() {
+		var (
+			rowProjectID *string
+			taskType     string
+			status       string
+			attempts     int
+			errorMessage string
+			scheduledAt  time.Time
+			startedAt    *time.Time
+			completedAt  *time.Time
+		)
+		if err := rows.Scan(&rowProjectID, &taskType, &status, &attempts, &errorMessage,
+			&scheduledAt, &startedAt, &completedAt); err != nil {
+			return nil, fmt.Errorf("scan task stats: %w", err)
 		}
-		if waitEnd.After(t.ScheduledAt) {
-			t.QueueWaitMs = waitEnd.Sub(t.ScheduledAt).Milliseconds()
+
+		stats.Total++
+		stats.ByStatus[status]++
+		stats.ByType[taskType]++
+		if attempts > 1 {
+			stats.Retried++
+		}
+		switch status {
+		case "pending":
+			stats.Pending++
+		case "running":
+			stats.Running++
+		case "paused":
+			stats.Paused++
+		case "done":
+			stats.Done++
+			if completedAt != nil && completedAt.After(dayAgo) {
+				stats.Done24h++
+				if rowProjectID != nil && *rowProjectID != "" {
+					projectDone[*rowProjectID]++
+				}
+			}
+		case "failed":
+			stats.Failed++
+			failures[normalizeTaskFailureReason(errorMessage)]++
+		case "cancelled":
+			stats.Cancelled++
+		}
+
+		queueEnd := now
+		if startedAt != nil && !startedAt.IsZero() {
+			queueEnd = *startedAt
+		}
+		if !scheduledAt.IsZero() && queueEnd.After(scheduledAt) {
+			queueTotal += queueEnd.Sub(scheduledAt).Milliseconds()
+			queueSamples++
+		}
+
+		if startedAt != nil && !startedAt.IsZero() {
+			runEnd := now
+			if completedAt != nil && !completedAt.IsZero() {
+				runEnd = *completedAt
+			}
+			if runEnd.After(*startedAt) {
+				runtimeTotal += runEnd.Sub(*startedAt).Milliseconds()
+				runtimeSamples++
+			}
 		}
 	}
-	if t.StartedAt != nil && !t.StartedAt.IsZero() {
-		runEnd := now
-		if t.CompletedAt != nil && !t.CompletedAt.IsZero() {
-			runEnd = *t.CompletedAt
-		}
-		if runEnd.After(*t.StartedAt) {
-			t.RuntimeMs = runEnd.Sub(*t.StartedAt).Milliseconds()
-		}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate task stats: %w", err)
 	}
+	if queueSamples > 0 {
+		stats.AverageQueueMs = queueTotal / queueSamples
+	}
+	if runtimeSamples > 0 {
+		stats.AverageRuntimeMs = runtimeTotal / runtimeSamples
+	}
+	stats.FailureReasons = sortedFailureReasons(failures, 5)
+	stats.ProjectThroughput = sortedProjectThroughput(projectDone, 10)
+	return stats, nil
 }

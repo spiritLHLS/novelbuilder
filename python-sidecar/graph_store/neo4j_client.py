@@ -32,7 +32,7 @@ class Neo4jClient:
     def __init__(self) -> None:
         uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
         user = os.getenv("NEO4J_USER", "neo4j")
-        password = os.getenv("NEO4J_PASSWORD", "novelbuilder")
+        password = os.getenv("NEO4J_PASSWORD", "")
         self._driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
         logger.info("Neo4j driver created: %s", uri)
 

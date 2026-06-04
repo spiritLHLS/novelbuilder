@@ -58,6 +58,11 @@ func main() {
 
 	// Load infrastructure config (env-vars only, no config files)
 	cfg := config.Load()
+	if cfg.Auth.PasswordGenerated {
+		logger.Warn("ADMIN_PASSWORD is not set; generated a temporary admin password for first-run admin bootstrap",
+			zap.String("admin_username", cfg.Auth.Username),
+			zap.String("temporary_admin_password", cfg.Auth.Password))
+	}
 
 	// Set Gin mode
 	if cfg.Server.Mode == "release" {
@@ -128,6 +133,10 @@ func main() {
 
 	// Initialize Services
 	projectService := services.NewProjectService(db, db.GORM(), logger)
+	userService := services.NewUserService(db, db.GORM(), logger)
+	if _, err := userService.BootstrapAdmin(context.Background(), cfg.Auth.Username, cfg.Auth.Password, !cfg.Auth.PasswordGenerated); err != nil {
+		logger.Fatal("failed to bootstrap admin user", zap.Error(err))
+	}
 	ragService := services.NewRAGService(db, cfg.PythonSidecar.URL, logger)
 	originalityService := services.NewOriginalityService(db, cfg.PythonSidecar.URL, logger)
 	propagationService := services.NewEditPropagationService(db, aiGateway, logger)
@@ -265,6 +274,8 @@ func main() {
 
 	// Initialize Handler
 	h := handlers.NewHandler(
+		userService,
+		aiGateway,
 		projectService,
 		blueprintService,
 		chapterService,
@@ -668,6 +679,8 @@ func main() {
 			"sidecar": sidecarStatus,
 			"security": gin.H{
 				"allowed_origins":       cfg.Server.AllowedOrigins,
+				"admin_username":        cfg.Auth.Username,
+				"admin_password_set":    !cfg.Auth.PasswordGenerated,
 				"trusted_proxies_count": len(cfg.Server.TrustedProxies),
 				"login_max_attempts":    cfg.Auth.LoginMaxAttempts,
 				"login_window_seconds":  cfg.Auth.LoginWindowSeconds,
@@ -682,8 +695,7 @@ func main() {
 
 	// ── Authentication ────────────────────────────────────────────────────────
 	authHandler := handlers.NewAuthHandler(
-		cfg.Auth.Username,
-		cfg.Auth.Password,
+		userService,
 		sessionStore,
 		cfg.Auth.SessionTTLHours,
 		cfg.Auth.LoginMaxAttempts,
@@ -702,6 +714,7 @@ func main() {
 
 	// Register all main API routes with auth middleware.
 	h.RegisterRoutes(r, authMiddleware)
+	handlers.RegisterDocsRoutes(r, authMiddleware, version)
 
 	// Serve Vue frontend static files
 	r.Static("/assets", "./frontend/dist/assets")

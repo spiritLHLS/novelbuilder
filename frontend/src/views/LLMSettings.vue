@@ -50,6 +50,11 @@
           {{ row.rpm_limit > 0 ? row.rpm_limit : '不限制' }}
         </template>
       </el-table-column>
+      <el-table-column label="限速 (TPM)" prop="tpm_limit" width="110" align="right">
+        <template #default="{ row }">
+          {{ row.tpm_limit > 0 ? formatTokens(row.tpm_limit) : '不限制' }}
+        </template>
+      </el-table-column>
       <el-table-column label="默认" width="80" align="center">
         <template #default="{ row }">
           <el-icon v-if="row.is_default" class="default-icon"><StarFilled /></el-icon>
@@ -153,6 +158,10 @@
           <el-input-number v-model="form.rpm_limit" :min="0" :max="1000" :step="5" style="width:100%" />
           <div class="hint" style="margin-top:4px">每分钟最大请求数，0 表示不限制（适用于受并发上限的中转站）</div>
         </el-form-item>
+        <el-form-item label="限速 (TPM)">
+          <el-input-number v-model="form.tpm_limit" :min="0" :max="2000000" :step="1000" style="width:100%" />
+          <div class="hint" style="margin-top:4px">每分钟最大预估 token，0 表示不限制；系统会按输入长度 + max_tokens 预留额度</div>
+        </el-form-item>
         <el-form-item label="API 调用路径">
           <el-select v-model="form.api_style" style="width:100%">
             <el-option label="/chat/completions" value="/chat/completions" />
@@ -223,6 +232,7 @@ interface LLMProfile {
   max_tokens: number
   temperature: number
   rpm_limit: number
+  tpm_limit: number
   omit_max_tokens: boolean
   omit_temperature: boolean
   api_style: string
@@ -277,6 +287,7 @@ const defaultForm = () => ({
   max_tokens: 8192,
   temperature: 0.7,
   rpm_limit: 0,
+  tpm_limit: 0,
   omit_max_tokens: false,
   omit_temperature: false,
   api_style: '/chat/completions',
@@ -537,6 +548,7 @@ function editProfile(profile: LLMProfile) {
     max_tokens: profile.max_tokens,
     temperature: profile.temperature,
     rpm_limit: profile.rpm_limit,
+    tpm_limit: profile.tpm_limit,
     omit_max_tokens: profile.omit_max_tokens,
     omit_temperature: profile.omit_temperature,
     api_style: normalizeAPIStyle(profile.api_style),

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import redis
@@ -66,13 +67,14 @@ def _build_graphiti(llm_cfg: dict[str, Any] | None = None):
             logger.warning("graphiti disabled: Neo4j disabled by deployment profile")
             return None
         from graphiti_core import Graphiti
-        from graphiti_core.llm_client.openai_client import OpenAIClient as GOpenAI
-        from graphiti_core.embedder.openai_embedder import OpenAIEmbedder as GEmbed
+        from graphiti_core.cross_encoder import OpenAIRerankerClient
+        from graphiti_core.embedder import OpenAIEmbedder, OpenAIEmbedderConfig
+        from graphiti_core.llm_client import LLMConfig, OpenAIClient
 
         cfg = llm_cfg or {}
         neo4j_uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
         neo4j_user = os.getenv("NEO4J_USER", "neo4j")
-        neo4j_pw = os.getenv("NEO4J_PASSWORD", "novelbuilder")
+        neo4j_pw = os.getenv("NEO4J_PASSWORD", "")
         api_key = (
             cfg.get("graphiti_api_key")
             or cfg.get("api_key")
@@ -90,16 +92,33 @@ def _build_graphiti(llm_cfg: dict[str, Any] | None = None):
             or cfg.get("model")
             or os.getenv("GRAPHITI_LLM_MODEL", "gpt-4o-mini")
         )
+        embedding_model = (
+            cfg.get("graphiti_embedding_model")
+            or os.getenv("GRAPHITI_EMBEDDING_MODEL", "text-embedding-3-small")
+        )
 
         if not api_key:
             logger.warning("graphiti disabled: missing API key")
             return None
 
-        llm_client = GOpenAI(api_key=api_key, base_url=base_url, model=model)
-        embedder = GEmbed(api_key=api_key, base_url=base_url)
+        llm_config = LLMConfig(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            temperature=float(cfg.get("temperature", 0.2) or 0.2),
+            max_tokens=int(cfg.get("max_tokens", 4096) or 4096),
+        )
+        llm_client = OpenAIClient(config=llm_config)
+        embedder = OpenAIEmbedder(config=OpenAIEmbedderConfig(
+            api_key=api_key,
+            base_url=base_url,
+            embedding_model=embedding_model,
+        ))
+        cross_encoder = OpenAIRerankerClient(config=llm_config)
 
         return Graphiti(neo4j_uri, neo4j_user, neo4j_pw,
-                        llm_client=llm_client, embedder=embedder)
+                        llm_client=llm_client, embedder=embedder,
+                        cross_encoder=cross_encoder)
     except Exception as exc:
         logger.warning("graphiti init failed (Neo4j may be warming up): %s", repr(exc), exc_info=True)
         return None
@@ -163,6 +182,7 @@ async def update_long_term(project_id: str, chapter_num: int,
             name=episode_name,
             episode_body=summary or chapter_text[:2000],
             source_description=f"Chapter {chapter_num} of project {project_id}",
+            reference_time=datetime.now(timezone.utc),
         )
         logger.info("graphiti updated for project=%s chapter=%d", project_id, chapter_num)
     except Exception as exc:

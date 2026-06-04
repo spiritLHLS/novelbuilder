@@ -47,7 +47,7 @@ func (s *PromptPresetService) List(ctx context.Context, projectID *string) ([]mo
 	}
 	defer rows.Close()
 
-	var presets []models.PromptPreset
+	presets := make([]models.PromptPreset, 0)
 	for rows.Next() {
 		var p models.PromptPreset
 		var variables json.RawMessage

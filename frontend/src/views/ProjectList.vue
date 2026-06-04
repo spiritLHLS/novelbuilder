@@ -23,6 +23,7 @@
           <div class="card-body">
             <el-tag :type="genreTagType(project.genre)" size="small">{{ project.genre }}</el-tag>
             <el-tag size="small" style="margin-left: 6px">{{ project.language === 'en-US' ? 'English' : '中文' }}</el-tag>
+            <el-tag size="small" type="info" style="margin-left: 6px">{{ creationModeLabel(project.creation_mode) }}</el-tag>
             <p class="target-words">目标字数: {{ formatNumber(project.target_words) }}</p>
             <p class="target-words">单章字数: {{ formatNumber(project.chapter_words || 3000) }}</p>
             <p class="style-desc" v-if="project.description">
@@ -72,6 +73,12 @@
         <el-form-item label="写作语言">
           <el-segmented v-model="form.language" :options="languageOptions" />
         </el-form-item>
+        <el-form-item label="创建方式">
+          <el-select v-model="form.creation_mode" placeholder="选择创建方式" style="width: 100%">
+            <el-option v-for="option in creationModeOptions" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
+          <p class="form-hint">{{ creationModeHelp }}</p>
+        </el-form-item>
         <el-form-item label="目标字数">
           <el-input-number v-model="form.target_words" :min="10000" :max="10000000" :step="10000" />
         </el-form-item>
@@ -82,8 +89,8 @@
           <el-input
             v-model="form.description"
             type="textarea"
-            :rows="3"
-            placeholder="直接写开书 prompt：题材、主角、核心冲突、卖点、期望读者体验"
+            :rows="5"
+            :placeholder="descriptionPlaceholder"
           />
         </el-form-item>
         <el-form-item label="风格描述">
@@ -109,7 +116,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { blueprintApi } from '@/api'
@@ -126,11 +133,40 @@ const languageOptions = [
   { label: '中文', value: 'zh-CN' },
   { label: 'English', value: 'en-US' },
 ]
+const creationModeOptions = [
+  { label: '仅用 prompt 开书', value: 'prompt_only', help: '适合一句话创意、核心卖点和读者体验驱动的项目。' },
+  { label: '从零开始共创', value: 'scratch', help: '让系统从题材、主角、世界和冲突开始完整规划。' },
+  { label: '我已有大纲', value: 'own_outline', help: '把你的卷纲、章纲、时间线或关键场景放到项目简介里。' },
+  { label: '参考书仿写/拆解', value: 'reference_style', help: '先在参考书页导入作品，项目简介里说明要学习的结构、节奏和风格边界。' },
+  { label: '基于原文改写', value: 'rewrite_original', help: '把原文或改写目标放到项目简介，后续可在章节导入页继续拆章处理。' },
+  { label: '续写已有作品', value: 'continuation', help: '创建后到参考书页选择续写底本，系统会从底本尾章接续。' },
+  { label: '同风格异世界', value: 'same_style_new_world', help: '学习参考作品的文风和节奏，但要求人物、世界和主线完全新建。' },
+] as const
+
+type CreationMode = typeof creationModeOptions[number]['value']
+
+const creationModeHelp = computed(() =>
+  creationModeOptions.find((option) => option.value === form.value.creation_mode)?.help || ''
+)
+
+const descriptionPlaceholder = computed(() => {
+  const map: Record<CreationMode, string> = {
+    prompt_only: '直接写开书 prompt：题材、主角、核心冲突、卖点、期望读者体验',
+    scratch: '写你确定的少量约束即可：题材、禁忌、目标读者、希望避免的套路',
+    own_outline: '粘贴你的大纲、时间线、卷结构、关键场景或人物关系',
+    reference_style: '说明参考对象、要学习的节奏/结构/文风，以及不能照搬的边界',
+    rewrite_original: '粘贴原文片段或说明改写目标：保留什么、替换什么、规避什么',
+    continuation: '说明续写方向、起始状态、必须继承的角色关系和不可推翻设定',
+    same_style_new_world: '说明要学习的风格特征，同时列出新世界观、新主角和新冲突要求',
+  }
+  return map[form.value.creation_mode] || map.prompt_only
+})
 
 const form = ref({
   title: '',
   genre: '玄幻',
   language: 'zh-CN' as 'zh-CN' | 'en-US',
+  creation_mode: 'prompt_only' as CreationMode,
   description: '',
   target_words: 500000,
   chapter_words: 3000,
@@ -163,6 +199,7 @@ function editProject(project: Project) {
     title: project.title,
     genre: project.genre,
     language: project.language || 'zh-CN',
+    creation_mode: (project.creation_mode || 'prompt_only') as CreationMode,
     description: project.description || '',
     target_words: project.target_words,
     chapter_words: project.chapter_words || 3000,
@@ -191,7 +228,7 @@ async function handleSave() {
       ElMessage.success('项目创建成功')
       if (autoGenerateBlueprint.value && form.value.description.trim()) {
         try {
-          await blueprintApi.generate(project.id, { idea: form.value.description, genre: form.value.genre })
+          await blueprintApi.generate(project.id, { idea: buildBlueprintIdea(), genre: form.value.genre })
           ElMessage.success('整书蓝图任务已创建')
         } catch (err: any) {
           ElMessage.warning(err.response?.data?.error || '项目已创建，但蓝图任务启动失败')
@@ -221,8 +258,32 @@ async function confirmDelete(project: Project) {
 
 function resetForm() {
   editingProject.value = null
-  form.value = { title: '', genre: '玄幻', language: 'zh-CN', description: '', target_words: 500000, chapter_words: 3000, style_description: '' }
+  form.value = {
+    title: '',
+    genre: '玄幻',
+    language: 'zh-CN',
+    creation_mode: 'prompt_only',
+    description: '',
+    target_words: 500000,
+    chapter_words: 3000,
+    style_description: '',
+  }
   autoGenerateBlueprint.value = true
+}
+
+function creationModeLabel(mode: string) {
+  return creationModeOptions.find((option) => option.value === mode)?.label || '仅用 prompt 开书'
+}
+
+function buildBlueprintIdea() {
+  const blocks = [
+    `创建方式：${creationModeLabel(form.value.creation_mode)}`,
+    form.value.description.trim(),
+  ]
+  if (form.value.style_description.trim()) {
+    blocks.push(`风格要求：${form.value.style_description.trim()}`)
+  }
+  return blocks.filter(Boolean).join('\n\n')
 }
 
 function formatNumber(n: number) {
@@ -308,6 +369,13 @@ function statusLabel(status: string) {
   margin: 8px 0;
   color: #888;
   font-size: 13px;
+}
+
+.form-hint {
+  margin-top: 6px;
+  color: var(--nb-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .style-desc {

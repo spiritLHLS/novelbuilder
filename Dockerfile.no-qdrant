@@ -1,7 +1,106 @@
-ARG BASE_IMAGE=spiritlhl/novelbuilder:full
-FROM ${BASE_IMAGE}
+# ===========================================================
+# NovelBuilder - no-qdrant Docker image
+#
+# Single-container profile with PostgreSQL, Redis, Neo4j, browser automation,
+# the Go backend and Python sidecar. Qdrant and vector dependencies are omitted.
+# ===========================================================
+
+FROM golang:1.22-alpine AS go-builder
+
+RUN apk add --no-cache git gcc musl-dev
+ARG SERVER_VERSION=dev
+ARG UPX_ENABLED=false
+WORKDIR /build/backend
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags "-s -w -buildid= -X main.version=${SERVER_VERSION}" \
+      -o /build/server ./cmd/server \
+    && if [ "${UPX_ENABLED}" = "true" ]; then \
+      (apk add --no-cache upx && upx -9 /build/server) || true; \
+    fi
+
+FROM node:24-alpine AS vue-builder
+
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --legacy-peer-deps
+COPY frontend/ ./
+RUN npm run build
+
+FROM neo4j:5.24-community AS neo4j-source
+FROM eclipse-temurin:21-jre AS jre-source
+
+FROM python:3.11.11-slim
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gnupg curl lsb-release ca-certificates \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+       -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+       https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+       > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       postgresql-16 postgresql-16-pgvector postgresql-client-16 \
+       redis-server supervisor netcat-openbsd gosu \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=jre-source /opt/java/openjdk /opt/java/openjdk
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+ENV NEO4J_HOME=/opt/neo4j
+COPY --from=neo4j-source /var/lib/neo4j ${NEO4J_HOME}
+ENV PATH="${NEO4J_HOME}/bin:${PATH}"
+RUN if ! getent group neo4j >/dev/null; then groupadd -r neo4j; fi \
+    && if ! id -u neo4j >/dev/null 2>&1; then useradd -r -g neo4j -d ${NEO4J_HOME} neo4j; fi \
+    && rm -rf ${NEO4J_HOME}/data ${NEO4J_HOME}/logs ${NEO4J_HOME}/run ${NEO4J_HOME}/import \
+    && mkdir -p ${NEO4J_HOME}/data ${NEO4J_HOME}/logs ${NEO4J_HOME}/run ${NEO4J_HOME}/import \
+    && chown -R neo4j:neo4j ${NEO4J_HOME}
+
+WORKDIR /app/python-sidecar
+COPY python-sidecar/requirements*.txt ./
+COPY python-sidecar/novel-downloader ./novel-downloader
+RUN pip install --no-cache-dir --no-compile \
+        -r requirements-base.txt \
+        -r requirements-graph.txt \
+        -r requirements-browser.txt
+RUN python -m playwright install --with-deps chromium \
+    && (python -m camoufox fetch || echo "WARNING: Camoufox fetch failed; Playwright Chromium fallback remains available") \
+    && rm -rf /var/lib/apt/lists/*
+RUN if [ -f "./novel-downloader/pyproject.toml" ]; then \
+        pip install --no-cache-dir --no-compile ./novel-downloader; \
+    else \
+        echo "WARNING: novel-downloader submodule is empty; downloading from GitHub..." \
+        && curl -fsSL https://github.com/spiritLHLS/novel-downloader/archive/refs/heads/main.tar.gz \
+           | tar -xz -C /tmp \
+        && pip install --no-cache-dir --no-compile /tmp/novel-downloader-main \
+        && rm -rf /tmp/novel-downloader-main; \
+    fi
+COPY python-sidecar/ ./
+
+COPY --from=go-builder /build/server /app/server
+COPY --from=vue-builder /build/frontend/dist /app/frontend/dist
+
+COPY docker/supervisord.no-qdrant.conf /etc/supervisor/conf.d/supervisord.conf
+COPY docker/wait-for-pg.sh /app/docker/wait-for-pg.sh
+COPY docker/wait-for-port.sh /app/docker/wait-for-port.sh
+COPY docker/docker-entrypoint.no-qdrant.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker/*.sh /app/docker-entrypoint.sh
 
 ENV APP_PROFILE=no-qdrant
 ENV QDRANT_URL=""
 
-COPY docker/supervisord.no-qdrant.conf /etc/supervisor/conf.d/supervisord.conf
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+    CMD curl -f http://localhost:8080/api/health || exit 1
+
+EXPOSE 8080
+VOLUME ["/var/lib/postgresql/data", "/opt/neo4j/data", "/data/uploads"]
+WORKDIR /app
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

@@ -18,15 +18,15 @@ services:
     environment:
       APP_PROFILE: full
       DB_DRIVER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env before starting the full Docker profile}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env before starting the full Docker profile}
       # Optional overrides:
       # ADMIN_USERNAME: spiritlhl
-      # ADMIN_PASSWORD: change-this
+      # ADMIN_PASSWORD: use-a-long-random-password
       # SESSION_TTL_HOURS: "24"
       # ALLOWED_ORIGINS: https://your-domain.example
       # LOGIN_MAX_ATTEMPTS: "5"
       # LOGIN_LOCKOUT_SECONDS: "900"
-      # DB_PASSWORD: changeme
-      # NEO4J_PASSWORD: changeme
 
 volumes:
   novelbuilder-pg:

@@ -2,10 +2,12 @@ package sessions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
 
+	"github.com/novelbuilder/backend/internal/models"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
@@ -13,8 +15,8 @@ import (
 var ErrNotFound = errors.New("session not found")
 
 type Store interface {
-	Get(ctx context.Context, token string) (string, error)
-	Set(ctx context.Context, token string, username string, ttl time.Duration) error
+	Get(ctx context.Context, token string) (models.UserSession, error)
+	Set(ctx context.Context, token string, session models.UserSession, ttl time.Duration) error
 	Extend(ctx context.Context, token string, ttl time.Duration) error
 	Delete(ctx context.Context, token string) error
 	Mode() string
@@ -30,16 +32,28 @@ func NewRedisStore(client *redis.Client) *RedisStore {
 	return &RedisStore{client: client}
 }
 
-func (s *RedisStore) Get(ctx context.Context, token string) (string, error) {
-	username, err := s.client.Get(ctx, keyPrefix+token).Result()
+func (s *RedisStore) Get(ctx context.Context, token string) (models.UserSession, error) {
+	value, err := s.client.Get(ctx, keyPrefix+token).Result()
 	if errors.Is(err, redis.Nil) {
-		return "", ErrNotFound
+		return models.UserSession{}, ErrNotFound
 	}
-	return username, err
+	if err != nil {
+		return models.UserSession{}, err
+	}
+	var session models.UserSession
+	if jsonErr := json.Unmarshal([]byte(value), &session); jsonErr == nil && session.Username != "" {
+		return session, nil
+	}
+	// Backward compatibility with sessions created before role-aware sessions.
+	return models.UserSession{Username: value, Role: models.UserRoleAdmin}, nil
 }
 
-func (s *RedisStore) Set(ctx context.Context, token string, username string, ttl time.Duration) error {
-	return s.client.Set(ctx, keyPrefix+token, username, ttl).Err()
+func (s *RedisStore) Set(ctx context.Context, token string, session models.UserSession, ttl time.Duration) error {
+	value, err := json.Marshal(session)
+	if err != nil {
+		return err
+	}
+	return s.client.Set(ctx, keyPrefix+token, value, ttl).Err()
 }
 
 func (s *RedisStore) Extend(ctx context.Context, token string, ttl time.Duration) error {
@@ -55,7 +69,7 @@ func (s *RedisStore) Mode() string {
 }
 
 type memoryEntry struct {
-	username  string
+	session   models.UserSession
 	expiresAt time.Time
 }
 
@@ -74,7 +88,7 @@ func NewMemoryStore(logger *zap.Logger) *MemoryStore {
 	return store
 }
 
-func (s *MemoryStore) Get(_ context.Context, token string) (string, error) {
+func (s *MemoryStore) Get(_ context.Context, token string) (models.UserSession, error) {
 	now := time.Now()
 	s.mu.RLock()
 	entry, ok := s.values[token]
@@ -83,15 +97,15 @@ func (s *MemoryStore) Get(_ context.Context, token string) (string, error) {
 		if ok {
 			_ = s.Delete(context.Background(), token)
 		}
-		return "", ErrNotFound
+		return models.UserSession{}, ErrNotFound
 	}
-	return entry.username, nil
+	return entry.session, nil
 }
 
-func (s *MemoryStore) Set(_ context.Context, token string, username string, ttl time.Duration) error {
+func (s *MemoryStore) Set(_ context.Context, token string, session models.UserSession, ttl time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.values[token] = memoryEntry{username: username, expiresAt: time.Now().Add(ttl)}
+	s.values[token] = memoryEntry{session: session, expiresAt: time.Now().Add(ttl)}
 	return nil
 }
 

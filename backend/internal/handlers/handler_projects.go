@@ -16,7 +16,8 @@ import (
 // ── Project CRUD ──────────────────────────────────────────────────────────────
 
 func (h *Handler) ListProjects(c *gin.Context) {
-	projects, err := h.projects.List(c.Request.Context())
+	session := currentUser(c)
+	projects, err := h.projects.ListForUser(c.Request.Context(), session.UserID, isAdmin(session))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -30,7 +31,7 @@ func (h *Handler) CreateProject(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	project, err := h.projects.Create(c.Request.Context(), req)
+	project, err := h.projects.CreateForOwner(c.Request.Context(), req, currentUser(c).UserID)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

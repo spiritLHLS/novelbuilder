@@ -176,6 +176,9 @@ func (h *Handler) AgentRun(c *gin.Context) {
 		if _, ok := req.LLMConfig["rpm_limit"]; !ok && profile.RPMLimit > 0 {
 			req.LLMConfig["rpm_limit"] = profile.RPMLimit
 		}
+		if _, ok := req.LLMConfig["tpm_limit"]; !ok && profile.TPMLimit > 0 {
+			req.LLMConfig["tpm_limit"] = profile.TPMLimit
+		}
 	}
 	req.LLMConfig = injectTaskSession(req.LLMConfig, taskSessionID(req.TaskType, projectID, req.ChapterNum, "interactive"))
 

@@ -3,12 +3,17 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/services"
 )
@@ -137,9 +142,28 @@ func (h *Handler) CreatePromptPreset(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	session := currentUser(c)
 	var projectID *string
 	if pid := c.Query("project_id"); pid != "" {
+		if !isAdmin(session) {
+			allowed, err := h.userCanAccessProject(c.Request.Context(), session.UserID, pid)
+			if err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			if !allowed {
+				c.JSON(404, gin.H{"error": "project not found"})
+				return
+			}
+		}
 		projectID = &pid
+	}
+	if projectID == nil && !isAdmin(session) {
+		c.JSON(403, gin.H{"error": "admin role required for global prompt presets"})
+		return
+	}
+	if projectID != nil {
+		req.IsGlobal = false
 	}
 	preset, err := h.promptPresets.Create(c.Request.Context(), projectID, req)
 	if err != nil {
@@ -168,6 +192,9 @@ func (h *Handler) UpdatePromptPreset(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	if !h.canManagePromptPreset(c, c.Param("id")) {
+		return
+	}
 	preset, err := h.promptPresets.Update(c.Request.Context(), c.Param("id"), req)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -177,11 +204,114 @@ func (h *Handler) UpdatePromptPreset(c *gin.Context) {
 }
 
 func (h *Handler) DeletePromptPreset(c *gin.Context) {
+	if !h.canManagePromptPreset(c, c.Param("id")) {
+		return
+	}
 	if err := h.promptPresets.Delete(c.Request.Context(), c.Param("id")); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(204, nil)
+}
+
+func (h *Handler) canManagePromptPreset(c *gin.Context, presetID string) bool {
+	session := currentUser(c)
+	if isAdmin(session) {
+		return true
+	}
+	preset, err := h.promptPresets.Get(c.Request.Context(), presetID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return false
+	}
+	if preset == nil {
+		c.JSON(404, gin.H{"error": "prompt preset not found"})
+		return false
+	}
+	if preset.ProjectID == nil || *preset.ProjectID == "" || preset.IsGlobal {
+		c.JSON(403, gin.H{"error": "admin role required for global prompt presets"})
+		return false
+	}
+	allowed, err := h.userCanAccessProject(c.Request.Context(), session.UserID, *preset.ProjectID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return false
+	}
+	if !allowed {
+		c.JSON(404, gin.H{"error": "project not found"})
+		return false
+	}
+	return true
+}
+
+func (h *Handler) OptimizePromptPreset(c *gin.Context) {
+	var req struct {
+		Content     string `json:"content" binding:"required"`
+		TargetChars int    `json:"target_chars"`
+		Language    string `json:"language"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		c.JSON(400, gin.H{"error": "content is required"})
+		return
+	}
+	if req.TargetChars <= 0 {
+		req.TargetChars = maxInt(280, utf8.RuneCountInString(content)*70/100)
+	}
+	if req.TargetChars > 4000 {
+		req.TargetChars = 4000
+	}
+	system := `You optimize reusable writing rules for a long-form fiction generation system.
+Return only the optimized rule text. Preserve hard constraints, factual requirements,
+names, safety rules, genre boundaries, and ordering dependencies. Remove repetition,
+soft filler, vague motivation, and duplicate wording. Do not introduce new story facts.`
+	if strings.HasPrefix(strings.ToLower(req.Language), "zh") || req.Language == "" {
+		system = `你是长篇小说生成系统的提示词规则编辑。只输出优化后的规则文本。
+必须保留硬性约束、事实设定、名称、题材边界、安全规则和顺序依赖；删除重复、空泛动机、软性废话和同义累赘；不得新增故事事实。`
+	}
+	user := fmt.Sprintf("目标长度：不超过 %d 字符。\n\n待优化规则：\n%s", req.TargetChars, content)
+	resp, err := h.ai.Chat(c.Request.Context(), gateway.ChatRequest{
+		Task:        "prompt_rule_optimize",
+		MaxTokens:   minInt(1600, maxInt(400, req.TargetChars*2)),
+		Temperature: 0.2,
+		Messages: []gateway.ChatMessage{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+		},
+	})
+	if err != nil {
+		c.JSON(502, gin.H{"error": err.Error()})
+		return
+	}
+	optimized := strings.TrimSpace(resp.Content)
+	if optimized == "" {
+		c.JSON(502, gin.H{"error": "optimizer returned empty content"})
+		return
+	}
+	c.JSON(200, gin.H{"data": gin.H{
+		"content":         optimized,
+		"original_chars":  utf8.RuneCountInString(content),
+		"optimized_chars": utf8.RuneCountInString(optimized),
+		"tokens_used":     resp.TokensUsed,
+	}})
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ── Glossary ──────────────────────────────────────────────────────────────────
@@ -220,9 +350,21 @@ func (h *Handler) DeleteGlossaryTerm(c *gin.Context) {
 // ── Task Queue ────────────────────────────────────────────────────────────────
 
 func (h *Handler) ListTasks(c *gin.Context) {
-	projectID := c.Param("id")
+	params := taskListParamsFromRequest(c)
 
-	// Parse query params
+	tasks, total, err := h.taskQueue.List(c.Request.Context(), params)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"data":       tasks,
+		"pagination": taskPagination(total, params.PageSize, params.Page),
+	})
+}
+
+func taskListParamsFromRequest(c *gin.Context) services.TaskListParams {
 	page := 1
 	if p := c.Query("page"); p != "" {
 		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
@@ -237,30 +379,101 @@ func (h *Handler) ListTasks(c *gin.Context) {
 		}
 	}
 
-	params := services.TaskListParams{
-		ProjectID: projectID,
+	return services.TaskListParams{
+		ProjectID: c.Param("id"),
 		Status:    c.Query("status"),
 		TaskType:  c.Query("type"),
 		Page:      page,
 		PageSize:  pageSize,
 	}
+}
 
-	tasks, total, err := h.taskQueue.List(c.Request.Context(), params)
+func taskPagination(total, pageSize, page int) gin.H {
+	totalPages := 0
+	if pageSize > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	return gin.H{
+		"page":        page,
+		"page_size":   pageSize,
+		"total":       total,
+		"total_pages": totalPages,
+	}
+}
+
+func (h *Handler) taskSnapshot(ctx context.Context, params services.TaskListParams) (gin.H, error) {
+	tasks, total, err := h.taskQueue.List(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := h.taskQueue.Stats(ctx, params.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	return gin.H{
+		"data":       tasks,
+		"pagination": taskPagination(total, params.PageSize, params.Page),
+		"stats":      stats,
+		"sent_at":    time.Now().UTC(),
+	}, nil
+}
+
+func (h *Handler) StreamTasks(c *gin.Context) {
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(500, gin.H{"error": "streaming unsupported"})
+		return
+	}
+
+	params := taskListParamsFromRequest(c)
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	sendSnapshot := func() bool {
+		payload, err := h.taskSnapshot(c.Request.Context(), params)
+		eventName := "snapshot"
+		if err != nil {
+			eventName = "task_error"
+			payload = gin.H{"error": err.Error(), "sent_at": time.Now().UTC()}
+		}
+		b, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			b, _ = json.Marshal(gin.H{"error": marshalErr.Error(), "sent_at": time.Now().UTC()})
+			eventName = "task_error"
+		}
+		if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventName, b); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	if !sendSnapshot() {
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-ticker.C:
+			if !sendSnapshot() {
+				return
+			}
+		}
+	}
+}
+
+func (h *Handler) GetTaskStats(c *gin.Context) {
+	stats, err := h.taskQueue.Stats(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-
-	totalPages := (total + pageSize - 1) / pageSize
-	c.JSON(200, gin.H{
-		"data": tasks,
-		"pagination": gin.H{
-			"page":        page,
-			"page_size":   pageSize,
-			"total":       total,
-			"total_pages": totalPages,
-		},
-	})
+	c.JSON(200, gin.H{"data": stats})
 }
 
 func (h *Handler) EnqueueTask(c *gin.Context) {
@@ -328,6 +541,30 @@ func (h *Handler) RetryTask(c *gin.Context) {
 	}
 	h.syncTaskArtifactState(c.Request.Context(), taskID, "running") //nolint
 	c.JSON(200, gin.H{"message": "task queued for retry"})
+}
+
+func (h *Handler) UpdateTaskPayload(c *gin.Context) {
+	var req struct {
+		Payload json.RawMessage `json:"payload" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if !json.Valid(req.Payload) {
+		c.JSON(400, gin.H{"error": "payload must be valid JSON"})
+		return
+	}
+	task, err := h.taskQueue.UpdatePayload(c.Request.Context(), c.Param("id"), req.Payload)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if task == nil {
+		c.JSON(404, gin.H{"error": "task not found"})
+		return
+	}
+	c.JSON(200, gin.H{"data": task})
 }
 
 func (h *Handler) syncTaskArtifactState(ctx context.Context, taskID, state string) {

@@ -87,12 +87,26 @@
           </el-select>
         </el-form-item>
         <el-form-item label="内容" prop="content">
-          <el-input
-            v-model="form.content"
-            type="textarea"
-            :rows="8"
-            placeholder="提示词内容，可使用 {{变量名}} 语法插入变量"
-          />
+          <div class="prompt-editor">
+            <el-input
+              v-model="form.content"
+              type="textarea"
+              :rows="8"
+              placeholder="提示词内容，可使用 {{变量名}} 语法插入变量"
+            />
+            <div class="prompt-editor-actions">
+              <el-button
+                size="small"
+                :icon="MagicStick"
+                :loading="optimizing"
+                :disabled="!form.content.trim()"
+                @click="optimizePromptContent"
+              >
+                AI 精简
+              </el-button>
+              <span v-if="optimizeHint" class="optimize-hint">{{ optimizeHint }}</span>
+            </div>
+          </div>
         </el-form-item>
         <el-form-item label="变量（可选）">
           <div style="width:100%">
@@ -134,7 +148,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, Delete } from '@element-plus/icons-vue'
+import { Plus, Search, Delete, MagicStick } from '@element-plus/icons-vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { promptPresetApi } from '@/api'
 
@@ -162,6 +176,8 @@ const filterCategory = ref('')
 const dialogVisible = ref(false)
 const editingPreset = ref<PromptPreset | null>(null)
 const submitting = ref(false)
+const optimizing = ref(false)
+const optimizeHint = ref('')
 const formRef = ref<FormInstance>()
 const variablesKV = ref<Array<{ key: string; value: string }>>([])
 
@@ -204,6 +220,14 @@ function truncate(text: string, len: number) {
 
 function validateVariablesJson() { /* no-op: replaced by KV editor */ }
 
+function normalizePresetList(payload: any): PromptPreset[] {
+  if (Array.isArray(payload)) return payload
+  if (!payload || typeof payload !== 'object') return []
+
+  const nested = payload.data ?? payload.items ?? payload.presets
+  return Array.isArray(nested) ? nested : []
+}
+
 async function loadPresets() {
   loading.value = true
   try {
@@ -213,7 +237,7 @@ async function loadPresets() {
     } else {
       res = await promptPresetApi.listGlobal()
     }
-    presets.value = res.data ?? []
+    presets.value = normalizePresetList(res.data?.data ?? res.data)
   } catch {
     ElMessage.error('加载预设列表失败')
   } finally {
@@ -229,6 +253,7 @@ function openCreateDialog() {
   editingPreset.value = null
   form.value = { name: '', content: '', category: 'system', is_global: activeTab.value === 'global', sort_order: 0 }
   variablesKV.value = []
+  optimizeHint.value = ''
   dialogVisible.value = true
 }
 
@@ -245,7 +270,34 @@ function openEditDialog(preset: PromptPreset) {
     ? preset.variables as Record<string, string>
     : {}
   variablesKV.value = Object.entries(vars).map(([key, value]) => ({ key, value: String(value) }))
+  optimizeHint.value = ''
   dialogVisible.value = true
+}
+
+async function optimizePromptContent() {
+  const content = form.value.content.trim()
+  if (!content) return
+  optimizing.value = true
+  optimizeHint.value = ''
+  try {
+    const res = await promptPresetApi.optimize({
+      content,
+      target_chars: Math.max(280, Math.floor(content.length * 0.7)),
+      language: 'zh-CN',
+    })
+    const data = res.data?.data ?? {}
+    if (data.content) {
+      form.value.content = data.content
+      optimizeHint.value = `${data.original_chars ?? content.length} → ${data.optimized_chars ?? data.content.length}`
+      ElMessage.success('已生成精简版本')
+    } else {
+      ElMessage.warning('未返回可用内容')
+    }
+  } catch (e: any) {
+    ElMessage.error(e.normalized?.message || e.response?.data?.error || 'AI 精简失败')
+  } finally {
+    optimizing.value = false
+  }
 }
 
 async function submitForm() {
@@ -414,6 +466,22 @@ onMounted(loadPresets)
   color: #f56c6c;
   font-size: 12px;
   margin-top: 4px;
+}
+
+.prompt-editor {
+  width: 100%;
+}
+
+.prompt-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.optimize-hint {
+  color: var(--nb-text-secondary);
+  font-size: 12px;
 }
 
 .empty-state {

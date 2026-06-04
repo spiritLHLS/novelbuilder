@@ -127,6 +127,9 @@ func validateCreateLLMProfileRequest(req models.CreateLLMProfileRequest) error {
 	if req.RPMLimit < 0 {
 		return fmt.Errorf("rpm_limit must be 0 or greater")
 	}
+	if req.TPMLimit < 0 {
+		return fmt.Errorf("tpm_limit must be 0 or greater")
+	}
 	return nil
 }
 
@@ -154,6 +157,9 @@ func validateUpdateLLMProfileRequest(req models.UpdateLLMProfileRequest) error {
 	}
 	if req.RPMLimit != nil && *req.RPMLimit < 0 {
 		return fmt.Errorf("rpm_limit must be 0 or greater")
+	}
+	if req.TPMLimit != nil && *req.TPMLimit < 0 {
+		return fmt.Errorf("tpm_limit must be 0 or greater")
 	}
 	return nil
 }

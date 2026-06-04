@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	anthropic "github.com/liushuangls/go-anthropic/v2"
@@ -70,18 +69,7 @@ type resolvedModel struct {
 	OmitTemperature bool
 	ProfileName     string
 	RPMLimit        int // 0 = unlimited
-}
-
-// ── Sliding-window RPM rate limiter ──────────────────────────────────────────
-
-var (
-	rpmMu      sync.Mutex
-	rpmBuckets = map[string]*rpmBucket{}
-)
-
-type rpmBucket struct {
-	mu         sync.Mutex
-	timestamps []time.Time
+	TPMLimit        int // 0 = unlimited
 }
 
 type chatSessionState struct {
@@ -121,52 +109,6 @@ func SessionIDFromContext(ctx context.Context) string {
 		return ""
 	}
 	return normalizeSessionID(value)
-}
-
-// rpmWait blocks until a request slot is available within the rpm limit.
-// key should be "baseURL|modelID" to scope the counter per endpoint+model.
-func rpmWait(key string, limit int, logger *zap.Logger) {
-	if limit <= 0 {
-		return
-	}
-	rpmMu.Lock()
-	b, ok := rpmBuckets[key]
-	if !ok {
-		b = &rpmBucket{}
-		rpmBuckets[key] = b
-	}
-	rpmMu.Unlock()
-
-	for {
-		b.mu.Lock()
-		now := time.Now()
-		cutoff := now.Add(-60 * time.Second)
-		var fresh []time.Time
-		for _, t := range b.timestamps {
-			if t.After(cutoff) {
-				fresh = append(fresh, t)
-			}
-		}
-		b.timestamps = fresh
-
-		if len(b.timestamps) < limit {
-			b.timestamps = append(b.timestamps, now)
-			b.mu.Unlock()
-			return
-		}
-
-		// Wait until the oldest timestamp exits the 60-second window.
-		waitDur := b.timestamps[0].Add(60*time.Second).Sub(now) + 50*time.Millisecond
-		b.mu.Unlock()
-
-		if logger != nil {
-			logger.Debug("RPM limit reached, waiting",
-				zap.String("key", key),
-				zap.Int("limit", limit),
-				zap.Duration("wait", waitDur))
-		}
-		time.Sleep(waitDur)
-	}
 }
 
 func NewAIGateway(profiles ProfileResolver, sessions *redis.Client, logger *zap.Logger) *AIGateway {
@@ -259,6 +201,7 @@ func (gw *AIGateway) resolveModel(ctx context.Context, req ChatRequest) (resolve
 		OmitTemperature: profile.OmitTemperature,
 		ProfileName:     profile.Name,
 		RPMLimit:        profile.RPMLimit,
+		TPMLimit:        profile.TPMLimit,
 	}
 	if req.MaxTokens > 0 {
 		resolved.MaxTokens = req.MaxTokens
@@ -361,6 +304,15 @@ func resolvedFromCfg(cfg map[string]interface{}, req ChatRequest) resolvedModel 
 			rpmLimit = int(rv)
 		}
 	}
+	tpmLimit := 0
+	if v, ok := cfg["tpm_limit"]; ok {
+		switch tv := v.(type) {
+		case int:
+			tpmLimit = tv
+		case float64:
+			tpmLimit = int(tv)
+		}
+	}
 
 	return resolvedModel{
 		Provider:        provider,
@@ -373,6 +325,7 @@ func resolvedFromCfg(cfg map[string]interface{}, req ChatRequest) resolvedModel 
 		OmitMaxTokens:   omitMaxTokens,
 		OmitTemperature: omitTemperature,
 		RPMLimit:        rpmLimit,
+		TPMLimit:        tpmLimit,
 	}
 }
 
@@ -605,6 +558,24 @@ func totalMessageRunes(messages []ChatMessage) int {
 	return total
 }
 
+func estimatedTokenCharge(r resolvedModel, messages []ChatMessage) int {
+	inputEstimate := (totalMessageRunes(messages) + 3) / 4
+	outputReserve := r.MaxTokens
+	if outputReserve <= 0 || r.OmitMaxTokens {
+		outputReserve = 4096
+	}
+	if inputEstimate <= 0 {
+		inputEstimate = 1
+	}
+	return inputEstimate + outputReserve
+}
+
+func (gw *AIGateway) waitRateLimits(r resolvedModel, messages []ChatMessage) {
+	key := r.BaseURL + "|" + r.ModelID
+	rpmWait(key, r.RPMLimit, gw.logger)
+	tpmWait(key, r.TPMLimit, estimatedTokenCharge(r, messages), gw.logger)
+}
+
 // ── OpenAI / Chat Completions ──────────────────────────────────────────────
 
 func (gw *AIGateway) openaiClient(r resolvedModel) *openai.Client {
@@ -616,7 +587,7 @@ func (gw *AIGateway) openaiClient(r resolvedModel) *openai.Client {
 }
 
 func (gw *AIGateway) chatOpenAI(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
-	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
+	gw.waitRateLimits(r, msgs)
 	oaiMsgs := make([]openai.ChatCompletionMessage, len(msgs))
 	for i, m := range msgs {
 		oaiMsgs[i] = openai.ChatCompletionMessage{Role: m.Role, Content: m.Content}
@@ -681,7 +652,7 @@ func buildAnthropicRequest(r resolvedModel, msgs []ChatMessage) anthropic.Messag
 }
 
 func (gw *AIGateway) chatAnthropic(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
-	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
+	gw.waitRateLimits(r, msgs)
 	resp, err := gw.anthropicClient(r).CreateMessages(ctx, buildAnthropicRequest(r, msgs))
 	if err != nil {
 		return nil, fmt.Errorf("anthropic chat: %w", err)
@@ -721,7 +692,7 @@ func buildResponsesBody(r resolvedModel, msgs []ChatMessage) map[string]interfac
 }
 
 func (gw *AIGateway) chatResponses(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
-	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
+	gw.waitRateLimits(r, msgs)
 	bodyBytes, err := json.Marshal(buildResponsesBody(r, msgs))
 	if err != nil {
 		return nil, fmt.Errorf("responses marshal: %w", err)
@@ -811,7 +782,7 @@ func buildGeminiBody(r resolvedModel, msgs []ChatMessage) map[string]interface{}
 }
 
 func (gw *AIGateway) chatGemini(ctx context.Context, r resolvedModel, msgs []ChatMessage) (*ChatResponse, error) {
-	rpmWait(r.BaseURL+"|"+r.ModelID, r.RPMLimit, gw.logger)
+	gw.waitRateLimits(r, msgs)
 	bodyBytes, err := json.Marshal(buildGeminiBody(r, msgs))
 	if err != nil {
 		return nil, fmt.Errorf("gemini marshal: %w", err)

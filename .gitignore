@@ -25,6 +25,20 @@ Thumbs.db
 # Env
 .env
 .env.local
+.env.*
+*.env
+!.env.example
 
 # Logs
 *.log
+
+# Local data and generated artifacts
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+result.json
+screenshots/
+.cache/
+data/
+uploads/

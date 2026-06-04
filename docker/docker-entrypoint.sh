@@ -11,11 +11,22 @@ set -euo pipefail
 export DB_HOST="${DB_HOST:-127.0.0.1}"
 export DB_PORT="${DB_PORT:-5432}"
 export DB_USER="${DB_USER:-novelbuilder}"
-export DB_PASSWORD="${DB_PASSWORD:-novelbuilder}"
+export DB_PASSWORD="${DB_PASSWORD:-}"
 export DB_NAME="${DB_NAME:-novelbuilder}"
 export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
 export NEO4J_USER="${NEO4J_USER:-neo4j}"
-export NEO4J_PASSWORD="${NEO4J_PASSWORD:-novelbuilder}"
+export NEO4J_PASSWORD="${NEO4J_PASSWORD:-}"
+
+require_env() {
+    local name="$1"
+    if [ -z "${!name:-}" ]; then
+        echo "ERROR: ${name} must be set to a strong value before starting this Docker profile." >&2
+        exit 64
+    fi
+}
+
+require_env DB_PASSWORD
+require_env NEO4J_PASSWORD
 
 # Ensure Neo4j runtime directories exist as real directories.
 # Symlinks (or files) from the image layer are removed first so mkdir never fails.
@@ -36,7 +47,7 @@ if [ ! -d "$PGDATA/base" ]; then
     mkdir -p "$PGDATA"
     chown -R postgres:postgres "$PGDATA"
     chmod 700 "$PGDATA"
-    su - postgres -c "$PG_BIN/initdb -D $PGDATA"
+    gosu postgres "$PG_BIN/initdb" -D "$PGDATA"
 
     # Trust local connections
     cat >> "$PGDATA/pg_hba.conf" <<'HBA'
@@ -45,25 +56,30 @@ local all  all               trust
 HBA
 
     # Bring up temporarily for initial setup
-    su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA -l /tmp/pg_init.log start -w"
+    gosu postgres "$PG_BIN/pg_ctl" -D "$PGDATA" -l /tmp/pg_init.log start -w
 
-    su - postgres -c "psql -c \"CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';\""
-    su - postgres -c "psql -c \"CREATE DATABASE $DB_NAME OWNER $DB_USER;\""
-    su - postgres -c "psql -c \"ALTER USER $DB_USER CREATEDB;\""
+    gosu postgres psql -v ON_ERROR_STOP=1 \
+        -v db_user="$DB_USER" \
+        -v db_password="$DB_PASSWORD" \
+        -v db_name="$DB_NAME" <<'SQL'
+CREATE USER :"db_user" WITH PASSWORD :'db_password';
+CREATE DATABASE :"db_name" OWNER :"db_user";
+ALTER USER :"db_user" CREATEDB;
+SQL
 
-    su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
-    su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";'"
+    gosu postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+    gosu postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
 
-    su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA stop -w"
+    gosu postgres "$PG_BIN/pg_ctl" -D "$PGDATA" stop -w
     echo "==> PostgreSQL ready. Go backend will create schema with GORM AutoMigrate."
 else
     # DB already initialised — start PG briefly to ensure required extensions.
     # The Go backend owns schema creation through GORM AutoMigrate.
     echo "==> Existing PostgreSQL data found. Ensuring PostgreSQL extensions..."
-    su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA -l /tmp/pg_extensions.log start -w"
-    su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS vector;'" 2>/dev/null || true
-    su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";'" 2>/dev/null || true
-    su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA stop -w"
+    gosu postgres "$PG_BIN/pg_ctl" -D "$PGDATA" -l /tmp/pg_extensions.log start -w
+    gosu postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c 'CREATE EXTENSION IF NOT EXISTS vector;' 2>/dev/null || true
+    gosu postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";' 2>/dev/null || true
+    gosu postgres "$PG_BIN/pg_ctl" -D "$PGDATA" stop -w
     echo "==> PostgreSQL extensions ensured."
 fi
 
@@ -75,8 +91,7 @@ if [ ! -d "$NEO4J_DATA/databases/neo4j" ]; then
     chown -R neo4j:neo4j "${NEO4J_HOME}" 2>/dev/null || true
 
     # Set initial password via neo4j-admin (Neo4j 5.x syntax)
-    if ! su - neo4j -s /bin/bash -c "/opt/neo4j/bin/neo4j-admin dbms set-initial-password '${NEO4J_PASSWORD}'" 2>/dev/null && \
-       ! gosu neo4j /opt/neo4j/bin/neo4j-admin dbms set-initial-password "${NEO4J_PASSWORD}" 2>/dev/null; then
+    if ! gosu neo4j /opt/neo4j/bin/neo4j-admin dbms set-initial-password "${NEO4J_PASSWORD}" 2>/dev/null; then
         echo "ERROR: failed to set initial Neo4j password." >&2
         exit 1
     fi

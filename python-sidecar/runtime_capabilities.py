@@ -28,6 +28,25 @@ def _first_line(cmd: list[str], timeout: float = 2.0) -> str:
     return output.splitlines()[0] if output else ""
 
 
+def _detect_mps() -> AcceleratorInfo:
+    if platform.system().lower() != "darwin":
+        return AcceleratorInfo(kind="mps", available=False, reason="not running on macOS")
+    if platform.machine().lower() not in {"arm64", "aarch64"}:
+        return AcceleratorInfo(kind="mps", available=False, reason="not running on Apple Silicon")
+    try:
+        import torch  # type: ignore
+
+        available = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+    except Exception as exc:
+        return AcceleratorInfo(kind="mps", available=False, reason=f"torch MPS check failed: {exc!r}")
+    return AcceleratorInfo(
+        kind="mps",
+        available=available,
+        name="Apple Metal Performance Shaders" if available else "",
+        reason="" if available else "torch MPS backend is not available",
+    )
+
+
 def detect_accelerators() -> dict:
     preferred = os.getenv("NB_ACCELERATOR", "auto").strip().lower()
     accelerators: list[AcceleratorInfo] = []
@@ -55,6 +74,8 @@ def detect_accelerators() -> dict:
         name=rocm_name[:120],
         reason="" if rocm_name else "rocminfo not found or no ROCm device visible",
     ))
+
+    accelerators.append(_detect_mps())
 
     npu_name = ""
     for cmd in ("vainfo", "npu-smi", "xpu-smi"):

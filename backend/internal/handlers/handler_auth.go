@@ -10,15 +10,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/novelbuilder/backend/internal/models"
+	"github.com/novelbuilder/backend/internal/services"
 	"github.com/novelbuilder/backend/internal/sessions"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // Authhandler handles login, logout, and session-check for the built-in
 // single-user authentication system.
 type AuthHandler struct {
-	username     string
-	pwHash       []byte // bcrypt hash of the configured password
+	users        *services.UserService
 	sessions     sessions.Store
 	sessionTTL   time.Duration
 	loginLimiter loginLimiter
@@ -38,14 +38,8 @@ type loginLimiter struct {
 	lockout     time.Duration
 }
 
-// NewAuthHandler creates an AuthHandler. The plain-text password is hashed
-// once at startup so every login attempt uses bcrypt comparison.
-func NewAuthHandler(username, password string, sessionStore sessions.Store, sessionTTLHours, loginMaxAttempts, loginWindowSeconds, loginLockoutSeconds int) *AuthHandler {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		// bcrypt should never fail here; panic so the misconfiguration is obvious.
-		panic("auth: failed to hash admin password: " + err.Error())
-	}
+// NewAuthHandler creates an AuthHandler backed by database users.
+func NewAuthHandler(users *services.UserService, sessionStore sessions.Store, sessionTTLHours, loginMaxAttempts, loginWindowSeconds, loginLockoutSeconds int) *AuthHandler {
 	if sessionTTLHours <= 0 {
 		sessionTTLHours = 24
 	}
@@ -59,8 +53,7 @@ func NewAuthHandler(username, password string, sessionStore sessions.Store, sess
 		loginLockoutSeconds = 900
 	}
 	return &AuthHandler{
-		username:   username,
-		pwHash:     hash,
+		users:      users,
 		sessions:   sessionStore,
 		sessionTTL: time.Duration(sessionTTLHours) * time.Hour,
 		loginLimiter: loginLimiter{
@@ -165,9 +158,8 @@ func (a *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	usernameOK := strings.EqualFold(strings.TrimSpace(req.Username), a.username)
-	passwordErr := bcrypt.CompareHashAndPassword(a.pwHash, []byte(req.Password))
-	if !usernameOK || passwordErr != nil {
+	user, authErr := a.users.Authenticate(c.Request.Context(), req.Username, req.Password)
+	if authErr != nil || user == nil {
 		if wait := a.recordFailure(keys, now); wait > 0 {
 			c.Header("Retry-After", retryAfterSeconds(wait))
 			c.JSON(429, gin.H{"error": "too many login attempts; try again later"})
@@ -187,14 +179,17 @@ func (a *AuthHandler) Login(c *gin.Context) {
 	token := hex.EncodeToString(raw)
 
 	// Persist in the configured session store; expiry is slid on each request by middleware.
-	if err := a.sessions.Set(context.Background(), token, a.username, a.sessionTTL); err != nil {
+	session := models.UserSession{UserID: user.ID, Username: user.Username, Role: user.Role}
+	if err := a.sessions.Set(context.Background(), token, session, a.sessionTTL); err != nil {
 		c.JSON(500, gin.H{"error": "failed to store session"})
 		return
 	}
 
 	c.JSON(200, gin.H{
 		"token":      token,
-		"username":   a.username,
+		"user_id":    user.ID,
+		"username":   user.Username,
+		"role":       user.Role,
 		"expires_in": int(a.sessionTTL.Seconds()),
 	})
 }
@@ -216,5 +211,7 @@ func (a *AuthHandler) Logout(c *gin.Context) {
 //	GET /api/auth/check
 func (a *AuthHandler) Check(c *gin.Context) {
 	username, _ := c.Get("username")
-	c.JSON(200, gin.H{"username": username, "authenticated": true})
+	userID, _ := c.Get("user_id")
+	role, _ := c.Get("user_role")
+	c.JSON(200, gin.H{"user_id": userID, "username": username, "role": role, "authenticated": true})
 }

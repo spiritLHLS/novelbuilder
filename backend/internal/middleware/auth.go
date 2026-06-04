@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/sessions"
 )
 
@@ -27,16 +28,21 @@ func RequireAuth(store sessions.Store, sessionTTL time.Duration) gin.HandlerFunc
 			return
 		}
 
-		username, err := store.Get(context.Background(), token)
-		if err != nil || username == "" {
+		session, err := store.Get(context.Background(), token)
+		if err != nil || session.Username == "" {
 			c.AbortWithStatusJSON(401, gin.H{"error": "unauthorized"})
 			return
+		}
+		if session.Role == "" {
+			session.Role = models.UserRoleUser
 		}
 
 		// Slide the expiry window on every successful request.
 		_ = store.Extend(context.Background(), token, sessionTTL)
 
-		c.Set("username", username)
+		c.Set("user_id", session.UserID)
+		c.Set("username", session.Username)
+		c.Set("user_role", session.Role)
 		c.Next()
 	}
 }

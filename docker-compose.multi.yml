@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: novelbuilder
       POSTGRES_USER: novelbuilder
-      POSTGRES_PASSWORD: novelbuilder
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env before starting docker-compose.multi.yml}
     volumes:
       - novelbuilder-multi-pg:/var/lib/postgresql/data
     healthcheck:
@@ -33,7 +33,7 @@ services:
   neo4j:
     image: neo4j:5.24-community
     environment:
-      NEO4J_AUTH: neo4j/novelbuilder
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env before starting graph profiles}
       NEO4J_server_memory_heap_initial__size: 256m
       NEO4J_server_memory_heap_max__size: 512m
       NEO4J_server_memory_pagecache_size: 128m
@@ -60,13 +60,13 @@ services:
       DB_PORT: "5432"
       DB_NAME: novelbuilder
       DB_USER: novelbuilder
-      DB_PASSWORD: novelbuilder
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env before starting docker-compose.multi.yml}
       REDIS_ENABLED: "true"
       REDIS_ADDR: redis:6379
       REDIS_URL: redis://redis:6379
       NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
       NEO4J_USER: ${NEO4J_USER:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-novelbuilder}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env before starting graph profiles}
       QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
     volumes:
       - novelbuilder-multi-uploads:/data/uploads

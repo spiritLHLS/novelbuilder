@@ -122,6 +122,11 @@ const router = createRouter({
       component: () => import('@/views/SystemLogs.vue'),
     },
     {
+      path: '/settings/users',
+      name: 'user-management',
+      component: () => import('@/views/Users.vue'),
+    },
+    {
       path: '/tasks',
       name: 'global-task-queue',
       component: () => import('@/views/TaskQueue.vue'),
@@ -231,6 +236,13 @@ router.beforeEach(async (to, _from, next) => {
     }
   } else if (!auth.token) {
     return next({ name: 'login', query: { redirect: to.fullPath } })
+  }
+
+  if (to.path.startsWith('/settings') || to.path === '/tasks') {
+    const allowedForUser = new Set(['prompt-presets'])
+    if (auth.role !== 'admin' && !allowedForUser.has(String(to.name))) {
+      return next({ name: 'projects' })
+    }
   }
 
   next()

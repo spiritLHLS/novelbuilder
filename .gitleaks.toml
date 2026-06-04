@@ -1,0 +1,22 @@
+title = "NovelBuilder Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Historical false positive: Idempotency-Key idempotency cache key is not a secret"
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = [
+  "4885573470712adacde7a8d079772eb61f8d3b9d",
+  "bab9fe0cce9d31f782753507ccd32b2949c80cf0",
+  "e4b1ffc27d0c366e7b0eec68d29f7e6236c70bd7",
+]
+paths = [
+  '''backend/internal/handlers/handler_chapters\.go''',
+  '''backend/internal/handlers/handlers\.go''',
+]
+regexTarget = "line"
+regexes = [
+  '''\b(CheckIdempotency|SaveIdempotency)\(.*idempotencyKey,\s*"chapters/continue"''',
+]

@@ -20,6 +20,14 @@ on:
         options:
           - linux/amd64
           - linux/amd64,linux/arm64
+      accelerator:
+        description: "Torch accelerator build for vector-capable images. cuda is linux/amd64 only."
+        required: true
+        default: cpu
+        type: choice
+        options:
+          - cpu
+          - cuda
       build_binaries:
         description: "Build and upload cross-platform binary packages."
         required: true
@@ -37,6 +45,7 @@ env:
   DOCKER_IMAGE: spiritlhl/novelbuilder
   IMAGE_SET: ${{ github.event_name == 'workflow_dispatch' && inputs.image_set || 'all' }}
   IMAGE_PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux/amd64' }}
+  IMAGE_ACCELERATOR: ${{ github.event_name == 'workflow_dispatch' && inputs.accelerator || 'cpu' }}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -78,6 +87,10 @@ jobs:
               exit 1
               ;;
           esac
+          if [ "${IMAGE_ACCELERATOR}" = "cuda" ] && [ "${IMAGE_PLATFORMS}" != "linux/amd64" ]; then
+            echo "CUDA Docker builds are supported only with platforms=linux/amd64." >&2
+            exit 1
+          fi
 
           platform_scope="$(printf '%s' "${IMAGE_PLATFORMS}" | tr '/,' '--' | tr -cs 'A-Za-z0-9_.-' '-')"
           echo "enabled=${enabled}" >> "$GITHUB_OUTPUT"
@@ -97,17 +110,35 @@ jobs:
           run_tag="run-${GITHUB_RUN_ID}"
           version="${GITHUB_REF_NAME:-dev}"
           profile="${{ matrix.profile }}"
-          dockerhub="${{ env.DOCKER_IMAGE }}:${profile},${{ env.DOCKER_IMAGE }}:${date_tag}-${profile},${{ env.DOCKER_IMAGE }}:${run_tag}-${profile}"
+          accelerator="${IMAGE_ACCELERATOR}"
+          tag_profile="${profile}"
+          cache_profile="${profile}"
+          case "${profile}" in
+            full|app)
+              tag_profile="${profile}-${accelerator}"
+              cache_profile="${profile}-${accelerator}"
+              ;;
+          esac
+          dockerhub="${{ env.DOCKER_IMAGE }}:${tag_profile},${{ env.DOCKER_IMAGE }}:${date_tag}-${tag_profile},${{ env.DOCKER_IMAGE }}:${run_tag}-${tag_profile}"
           ghcr_owner="${GITHUB_REPOSITORY_OWNER,,}"
           ghcr_repo="${GITHUB_REPOSITORY#*/}"
           ghcr_image="ghcr.io/${ghcr_owner}/${ghcr_repo}"
-          ghcr="${ghcr_image}:${profile},${ghcr_image}:${date_tag}-${profile},${ghcr_image}:${run_tag}-${profile}"
+          ghcr="${ghcr_image}:${tag_profile},${ghcr_image}:${date_tag}-${tag_profile},${ghcr_image}:${run_tag}-${tag_profile}"
           if [ "${profile}" = "full" ]; then
-            dockerhub="${dockerhub},${{ env.DOCKER_IMAGE }}:latest,${{ env.DOCKER_IMAGE }}:${date_tag}"
-            ghcr="${ghcr},${ghcr_image}:latest,${ghcr_image}:${date_tag}"
+            dockerhub="${dockerhub},${{ env.DOCKER_IMAGE }}:latest-${accelerator},${{ env.DOCKER_IMAGE }}:${date_tag}-${accelerator}"
+            ghcr="${ghcr},${ghcr_image}:latest-${accelerator},${ghcr_image}:${date_tag}-${accelerator}"
+            if [ "${accelerator}" = "cpu" ]; then
+              dockerhub="${dockerhub},${{ env.DOCKER_IMAGE }}:latest,${{ env.DOCKER_IMAGE }}:${date_tag},${{ env.DOCKER_IMAGE }}:full,${{ env.DOCKER_IMAGE }}:${date_tag}-full,${{ env.DOCKER_IMAGE }}:${run_tag}-full"
+              ghcr="${ghcr},${ghcr_image}:latest,${ghcr_image}:${date_tag},${ghcr_image}:full,${ghcr_image}:${date_tag}-full,${ghcr_image}:${run_tag}-full"
+            fi
+          elif [ "${accelerator}" = "cpu" ] && { [ "${profile}" = "app" ]; }; then
+            dockerhub="${dockerhub},${{ env.DOCKER_IMAGE }}:${profile},${{ env.DOCKER_IMAGE }}:${date_tag}-${profile},${{ env.DOCKER_IMAGE }}:${run_tag}-${profile}"
+            ghcr="${ghcr},${ghcr_image}:${profile},${ghcr_image}:${date_tag}-${profile},${ghcr_image}:${run_tag}-${profile}"
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "date_tag=${date_tag}" >> "$GITHUB_OUTPUT"
+          echo "accelerator=${accelerator}" >> "$GITHUB_OUTPUT"
+          echo "cache_profile=${cache_profile}" >> "$GITHUB_OUTPUT"
           echo "dockerhub=${dockerhub}" >> "$GITHUB_OUTPUT"
           echo "ghcr=${ghcr}" >> "$GITHUB_OUTPUT"
 
@@ -187,9 +218,10 @@ jobs:
           build-args: |
             SERVER_VERSION=${{ steps.meta.outputs.version }}
             BUILD_PROFILE=${{ matrix.profile }}
+            NB_ACCELERATOR=${{ steps.meta.outputs.accelerator }}
             UPX_ENABLED=false
-          cache-from: type=gha,scope=docker-${{ matrix.profile }}-${{ steps.selected.outputs.platform_scope }}
-          cache-to: type=gha,mode=max,scope=docker-${{ matrix.profile }}-${{ steps.selected.outputs.platform_scope }}
+          cache-from: type=gha,scope=docker-${{ steps.meta.outputs.cache_profile }}-${{ steps.selected.outputs.platform_scope }}
+          cache-to: type=gha,mode=max,scope=docker-${{ steps.meta.outputs.cache_profile }}-${{ steps.selected.outputs.platform_scope }}
 
       - name: Update Docker Hub description
         if: steps.selected.outputs.enabled == 'true' && steps.login-dockerhub.outcome == 'success' && matrix.profile == 'full'
@@ -216,19 +248,14 @@ jobs:
         include:
           - profile: no-neo4j
             dockerfile: Dockerfile.no-neo4j
-            base_profile: full
           - profile: no-qdrant
             dockerfile: Dockerfile.no-qdrant
-            base_profile: full
           - profile: no-graph-vector
             dockerfile: Dockerfile.no-graph-vector
-            base_profile: standard
           - profile: no-redis
             dockerfile: Dockerfile.no-redis
-            base_profile: standard
           - profile: sqlite
             dockerfile: Dockerfile.sqlite
-            base_profile: app
 
     steps:
       - uses: actions/checkout@v6
@@ -241,20 +268,31 @@ jobs:
           run_tag="run-${GITHUB_RUN_ID}"
           version="${GITHUB_REF_NAME:-dev}"
           profile="${{ matrix.profile }}"
-          dockerhub="${{ env.DOCKER_IMAGE }}:${profile},${{ env.DOCKER_IMAGE }}:${date_tag}-${profile},${{ env.DOCKER_IMAGE }}:${run_tag}-${profile}"
-          dockerhub_base="${{ env.DOCKER_IMAGE }}:${run_tag}-${{ matrix.base_profile }}"
+          accelerator="${IMAGE_ACCELERATOR}"
+          tag_profile="${profile}"
+          cache_profile="${profile}"
+          case "${profile}" in
+            no-neo4j|no-qdrant)
+              tag_profile="${profile}-${accelerator}"
+              cache_profile="${profile}-${accelerator}"
+              ;;
+          esac
+          dockerhub="${{ env.DOCKER_IMAGE }}:${tag_profile},${{ env.DOCKER_IMAGE }}:${date_tag}-${tag_profile},${{ env.DOCKER_IMAGE }}:${run_tag}-${tag_profile}"
           ghcr_owner="${GITHUB_REPOSITORY_OWNER,,}"
           ghcr_repo="${GITHUB_REPOSITORY#*/}"
           ghcr_image="ghcr.io/${ghcr_owner}/${ghcr_repo}"
-          ghcr="${ghcr_image}:${profile},${ghcr_image}:${date_tag}-${profile},${ghcr_image}:${run_tag}-${profile}"
-          ghcr_base="${ghcr_image}:${run_tag}-${{ matrix.base_profile }}"
+          ghcr="${ghcr_image}:${tag_profile},${ghcr_image}:${date_tag}-${tag_profile},${ghcr_image}:${run_tag}-${tag_profile}"
+          if [ "${accelerator}" = "cpu" ] && [ "${tag_profile}" != "${profile}" ]; then
+            dockerhub="${dockerhub},${{ env.DOCKER_IMAGE }}:${profile},${{ env.DOCKER_IMAGE }}:${date_tag}-${profile},${{ env.DOCKER_IMAGE }}:${run_tag}-${profile}"
+            ghcr="${ghcr},${ghcr_image}:${profile},${ghcr_image}:${date_tag}-${profile},${ghcr_image}:${run_tag}-${profile}"
+          fi
           platform_scope="$(printf '%s' "${IMAGE_PLATFORMS}" | tr '/,' '--' | tr -cs 'A-Za-z0-9_.-' '-')"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "dockerhub=${dockerhub}" >> "$GITHUB_OUTPUT"
-          echo "dockerhub_base=${dockerhub_base}" >> "$GITHUB_OUTPUT"
           echo "ghcr=${ghcr}" >> "$GITHUB_OUTPUT"
-          echo "ghcr_base=${ghcr_base}" >> "$GITHUB_OUTPUT"
           echo "platform_scope=${platform_scope}" >> "$GITHUB_OUTPUT"
+          echo "accelerator=${accelerator}" >> "$GITHUB_OUTPUT"
+          echo "cache_profile=${cache_profile}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v4
         if: contains(env.IMAGE_PLATFORMS, 'arm64')
@@ -283,7 +321,6 @@ jobs:
         shell: bash
         run: |
           tags=""
-          base_image=""
           append_csv_tags() {
             local csv="$1"
             local tag
@@ -297,23 +334,18 @@ jobs:
 
           if [ "${{ steps.login-dockerhub.outcome }}" = "success" ]; then
             append_csv_tags "${{ steps.meta.outputs.dockerhub }}"
-            base_image="${{ steps.meta.outputs.dockerhub_base }}"
           fi
           if [ "${{ steps.login-ghcr.outcome }}" = "success" ]; then
             append_csv_tags "${{ steps.meta.outputs.ghcr }}"
-            if [ -z "${base_image}" ]; then
-              base_image="${{ steps.meta.outputs.ghcr_base }}"
-            fi
           fi
 
-          if [ -z "${tags}" ] || [ -z "${base_image}" ]; then
+          if [ -z "${tags}" ]; then
             echo "push_enabled=false" >> "$GITHUB_OUTPUT"
             echo "No registry login succeeded; skipping Docker push."
             exit 0
           fi
 
           echo "push_enabled=true" >> "$GITHUB_OUTPUT"
-          echo "base_image=${base_image}" >> "$GITHUB_OUTPUT"
           {
             echo "tags<<EOF"
             printf "%s" "${tags}"
@@ -334,9 +366,9 @@ jobs:
           build-args: |
             SERVER_VERSION=${{ steps.meta.outputs.version }}
             BUILD_PROFILE=${{ matrix.profile }}
-            BASE_IMAGE=${{ steps.tags.outputs.base_image }}
-          cache-from: type=gha,scope=docker-${{ matrix.profile }}-${{ steps.meta.outputs.platform_scope }}
-          cache-to: type=gha,mode=max,scope=docker-${{ matrix.profile }}-${{ steps.meta.outputs.platform_scope }}
+            NB_ACCELERATOR=${{ steps.meta.outputs.accelerator }}
+          cache-from: type=gha,scope=docker-${{ steps.meta.outputs.cache_profile }}-${{ steps.meta.outputs.platform_scope }}
+          cache-to: type=gha,mode=max,scope=docker-${{ steps.meta.outputs.cache_profile }}-${{ steps.meta.outputs.platform_scope }}
 
   binaries:
     runs-on: ubuntu-latest

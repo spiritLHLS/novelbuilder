@@ -26,6 +26,8 @@ Go 服务负责登录、持久化数据、任务调度、静态前端托管和 L
 完整单容器：
 
 ```bash
+cp .env.example .env
+# 编辑 .env，替换 ADMIN_PASSWORD、DB_PASSWORD、POSTGRES_PASSWORD、NEO4J_PASSWORD
 docker compose up -d
 open http://127.0.0.1:8080/setup
 ```
@@ -33,6 +35,8 @@ open http://127.0.0.1:8080/setup
 不启用图谱/向量的标准档：
 
 ```bash
+cp .env.example .env
+# 编辑 .env，替换 ADMIN_PASSWORD 和 DB_PASSWORD
 docker compose -f docker-compose.standard.yml up -d
 ```
 
@@ -68,9 +72,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 | `standard`, `YYYYMMDD-standard` | `Dockerfile.standard` | 单容器内置 PostgreSQL、Redis、Python、Go、Vue | 2 CPU、4 GB 内存、10 GB 磁盘 | 只安装 base Python 依赖，关闭图谱/向量/浏览器能力 |
 | `app`, `YYYYMMDD-app` | `Dockerfile.app` | 只包含应用、Sidecar 和前端 | 2 CPU、2 GB 内存，外部服务另算 | 保留外部 Neo4j/Qdrant 所需依赖，不内置浏览器自动化 |
 | `sqlite` | `Dockerfile.sqlite` | 独立最小镜像，使用 SQLite，并关闭可选服务 | 1 CPU、2 GB 内存、5 GB 磁盘 | 只安装 base Python 依赖，适合单用户本地使用 |
-| `no-neo4j`, `no-qdrant`, `no-graph-vector`, `no-redis` | overlay Dockerfile | 从 `full` 或 `standard` 派生并禁用部分运行时能力 | 视基础档位而定 | 这些标签主要禁用服务/配置；如需明显减小物理体积，优先选 `standard`、`app` 或 `sqlite` |
+| `no-neo4j` | `Dockerfile.no-neo4j` | 独立单容器内置 PostgreSQL、Redis、Qdrant、浏览器自动化、Python、Go、Vue | 3 CPU、6 GB 内存、15 GB 磁盘 | 不安装 Neo4j 和 graph Python/runtime 依赖 |
+| `no-qdrant` | `Dockerfile.no-qdrant` | 独立单容器内置 PostgreSQL、Redis、Neo4j、浏览器自动化、Python、Go、Vue | 3 CPU、6 GB 内存、15 GB 磁盘 | 不安装 Qdrant 和 vector Python/runtime 依赖 |
+| `no-graph-vector` | `Dockerfile.no-graph-vector` | 独立单容器内置 PostgreSQL、Redis、Python、Go、Vue | 2 CPU、4 GB 内存、10 GB 磁盘 | 不安装图谱/向量/浏览器 runtime 依赖 |
+| `no-redis` | `Dockerfile.no-redis` | 独立单容器内置 PostgreSQL、Python、Go、Vue | 2 CPU、3 GB 内存、10 GB 磁盘 | 不安装 Redis 服务，也不安装图谱/向量/浏览器 runtime 依赖 |
 
-发布 workflow 会先构建并推送 `full`、`standard`、`app`，再用同一次运行内稳定的 `run-${GITHUB_RUN_ID}-profile` 基础 tag 构建派生镜像；Docker Hub 和 GHCR 各自引用自己的基础镜像。
+发布 workflow 会分别从各自 Dockerfile 构建 `full`、`standard`、`app` 和所有变体镜像。变体 Dockerfile 不再继承同一次运行内的基础 tag。
 
 ## 配置
 
@@ -82,24 +89,27 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 | `SERVER_HOST`, `SERVER_PORT`, `SERVER_MODE` | `0.0.0.0`, `8080`, `release` | Go 网关监听地址 |
 | `ALLOWED_ORIGINS` | 本地开发与 `:8080` 来源 | CORS 白名单，公网部署请设置为你的 HTTPS 域名 |
 | `TRUSTED_PROXIES` | 空 | 可信反向代理 CIDR，只有放在可信代理后面时才设置 |
-| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `spiritlhl`, 演示密码 | 公网暴露前必须修改 `ADMIN_PASSWORD` |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `admin`，未设置时启动期临时生成 | 请设置强 `ADMIN_PASSWORD`；未设置时从启动日志读取临时密码 |
 | `SESSION_TTL_HOURS` | `24` | 滑动会话有效期 |
 | `LOGIN_MAX_ATTEMPTS` | `5` | 登录失败多少次后锁定 |
 | `LOGIN_WINDOW_SECONDS` | `300` | 登录失败统计窗口 |
 | `LOGIN_LOCKOUT_SECONDS` | `900` | 触发限制后的锁定时长 |
 | `DB_DRIVER` | 容器默认 `postgres`，本地脚本默认 `sqlite` | `sqlite`/`sqlite3` 或 `postgres` |
 | `SQLITE_PATH` | `/data/novelbuilder.db` 或 `./data/novelbuilder.db` | `DB_DRIVER=sqlite` 时使用 |
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSLMODE` | 本地 PostgreSQL 默认值 | `DB_DRIVER=postgres` 时使用 |
-| `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS` | `25`, `5` | Go 数据库连接池 |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSLMODE` | host/user/name 有默认值；PostgreSQL Docker 档必须显式设置密码 | `DB_DRIVER=postgres` 时使用 |
+| `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME_MINUTES` | `25`, `5`, `60` | Go 数据库连接池；open/idle 最低归一化为 `20`/`5`，生命周期最长 `60` 分钟 |
 | `REDIS_ENABLED`, `REDIS_ADDR`, `REDIS_URL`, `REDIS_PASSWORD`, `REDIS_DB` | 按档位设置 | Go 使用 `REDIS_ADDR`，Python 使用 `REDIS_URL` |
 | `SIDECAR_URL`, `SIDECAR_TIMEOUT` | `http://127.0.0.1:8081`, `600` | Go 调用 Python Sidecar |
-| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` | 按档位设置 | `NEO4J_URI` 为空时关闭图谱能力 |
+| `SIDECAR_DB_MIN_CONNS`, `SIDECAR_DB_MAX_CONNS` | `5`, `20` | Python Sidecar 旧版数据库分析路由使用的 PostgreSQL 连接池配置 |
+| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` | 按档位设置；启用 Neo4j 时必须显式设置密码 | `NEO4J_URI` 为空时关闭图谱能力 |
 | `QDRANT_URL` | 按档位设置 | 为空时关闭向量能力 |
 | `TASK_WORKERS`, `TASK_MAX_RETRIES` | `4`, `3` | 后台任务队列 |
-| `NB_ACCELERATOR` | `auto` | 可设为 `auto`、`cpu`、`cuda`、`rocm`、`npu` |
+| `NB_ACCELERATOR` | `auto` | 可设为 `auto`、`cpu`、`cuda`、`rocm`、`mps`、`npu` |
 | `VECTOR_EMBED_CONCURRENCY` | `4` | Python Sidecar 重建向量时的本地 embedding 并发度 |
 
 参考文件上传支持 `.txt`、`.md`、`.markdown`、`.pdf`、`.epub`，单文件上限 50 MiB。上传文件统一保存到 `/data/uploads`，Sidecar 只允许读取该目录内的路径。
+
+受保护的 API 文档位于 `/api/docs` 和 `/api/docs/openapi.json`。文档路由使用与主 API 相同的管理员会话中间件；命令行调用请传 `Authorization: Bearer <token>`，直接浏览器访问可使用 `/api/docs?token=<token>`。
 
 ## 构建与瘦身
 

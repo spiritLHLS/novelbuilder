@@ -141,6 +141,34 @@ type TaskQueueItem struct {
 	RuntimeMs    int64           `json:"runtime_ms,omitempty"`
 }
 
+type TaskQueueFailureReason struct {
+	Message string `json:"message"`
+	Count   int    `json:"count"`
+}
+
+type TaskQueueProjectThroughput struct {
+	ProjectID string `json:"project_id"`
+	Done24h   int    `json:"done_24h"`
+}
+
+type TaskQueueStats struct {
+	Total             int                          `json:"total"`
+	ByStatus          map[string]int               `json:"by_status"`
+	ByType            map[string]int               `json:"by_type"`
+	Pending           int                          `json:"pending"`
+	Running           int                          `json:"running"`
+	Paused            int                          `json:"paused"`
+	Done              int                          `json:"done"`
+	Failed            int                          `json:"failed"`
+	Cancelled         int                          `json:"cancelled"`
+	Retried           int                          `json:"retried"`
+	Done24h           int                          `json:"done_24h"`
+	AverageQueueMs    int64                        `json:"average_queue_ms"`
+	AverageRuntimeMs  int64                        `json:"average_runtime_ms"`
+	FailureReasons    []TaskQueueFailureReason     `json:"failure_reasons"`
+	ProjectThroughput []TaskQueueProjectThroughput `json:"project_throughput"`
+}
+
 type CreateTaskRequest struct {
 	ProjectID   string          `json:"project_id"`
 	TaskType    string          `json:"task_type" binding:"required"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +28,24 @@ func NewProjectService(db *database.DB, orm *gorm.DB, logger *zap.Logger) *Proje
 	return &ProjectService{db: db, orm: orm, logger: logger}
 }
 
+func nullableString(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func normalizeCreationMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "scratch", "own_outline", "prompt_only", "reference_style", "rewrite_original", "continuation", "same_style_new_world":
+		return mode
+	default:
+		return "prompt_only"
+	}
+}
+
 func (s *ProjectService) Ping(ctx context.Context) error {
 	if s.orm != nil {
 		sqlDB, err := s.orm.DB()
@@ -44,9 +63,17 @@ func (s *ProjectService) DB() *database.DB {
 }
 
 func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
+	return s.ListForUser(ctx, "", true)
+}
+
+func (s *ProjectService) ListForUser(ctx context.Context, userID string, includeAll bool) ([]models.Project, error) {
 	if s.orm != nil {
 		var rows []database.ProjectSchema
-		if err := s.orm.WithContext(ctx).Order("created_at DESC").Find(&rows).Error; err != nil {
+		query := s.orm.WithContext(ctx).Order("created_at DESC")
+		if !includeAll {
+			query = query.Where("owner_id = ?", userID)
+		}
+		if err := query.Find(&rows).Error; err != nil {
 			return nil, fmt.Errorf("list projects: %w", err)
 		}
 		projects := make([]models.Project, 0, len(rows))
@@ -56,11 +83,17 @@ func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 		return projects, nil
 	}
 
+	where := ""
+	args := []interface{}{}
+	if !includeAll {
+		where = "WHERE owner_id = $1"
+		args = append(args, userID)
+	}
 	rows, err := s.db.Query(ctx,
-		`SELECT id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
-		        COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
+		`SELECT id, COALESCE(owner_id::text, ''), title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
+		        COALESCE(creation_mode, 'prompt_only'), COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
 		        created_at, updated_at
-		 FROM projects ORDER BY created_at DESC`)
+		 FROM projects `+where+` ORDER BY created_at DESC`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
@@ -70,10 +103,10 @@ func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 	for rows.Next() {
 		var p models.Project
 		if err := rows.Scan(
-			&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
+			&p.ID, &p.OwnerID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
 			&p.Language,
 			&p.TargetWords, &p.ChapterWords, &p.Status,
-			&p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
+			&p.CreationMode, &p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
 			&p.CreatedAt, &p.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -87,6 +120,10 @@ func (s *ProjectService) List(ctx context.Context) ([]models.Project, error) {
 }
 
 func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectRequest) (*models.Project, error) {
+	return s.CreateForOwner(ctx, req, "")
+}
+
+func (s *ProjectService) CreateForOwner(ctx context.Context, req models.CreateProjectRequest, ownerID string) (*models.Project, error) {
 	if req.TargetWords <= 0 {
 		req.TargetWords = 500000
 	}
@@ -95,6 +132,10 @@ func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectReq
 	}
 	if req.ProjectType == "" {
 		req.ProjectType = "original"
+	}
+	req.CreationMode = normalizeCreationMode(req.CreationMode)
+	if req.CreationMode == "continuation" {
+		req.ProjectType = "continuation"
 	}
 	if req.Language == "" {
 		req.Language = "zh-CN"
@@ -107,6 +148,7 @@ func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectReq
 		now := time.Now()
 		row := database.ProjectSchema{
 			ID:                       id,
+			OwnerID:                  nullableString(ownerID),
 			Title:                    req.Title,
 			Genre:                    req.Genre,
 			Description:              req.Description,
@@ -115,6 +157,7 @@ func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectReq
 			TargetWords:              req.TargetWords,
 			ChapterWords:             req.ChapterWords,
 			Status:                   "draft",
+			CreationMode:             req.CreationMode,
 			ProjectType:              req.ProjectType,
 			ContinuationRefID:        req.ContinuationRefID,
 			ContinuationStartChapter: req.ContinuationStartChapter,
@@ -129,19 +172,19 @@ func (s *ProjectService) Create(ctx context.Context, req models.CreateProjectReq
 	}
 	var p models.Project
 	err := s.db.QueryRow(ctx,
-		`INSERT INTO projects (id, title, genre, description, style_description, language, target_words, chapter_words, status,
-		                       project_type, continuation_ref_id, continuation_start_chapter, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9, $10, $11, NOW(), NOW())
-		 RETURNING id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
-		           COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
+		`INSERT INTO projects (id, owner_id, title, genre, description, style_description, language, target_words, chapter_words, status,
+		                       creation_mode, project_type, continuation_ref_id, continuation_start_chapter, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', $10, $11, $12, $13, NOW(), NOW())
+		 RETURNING id, COALESCE(owner_id::text, ''), title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
+		           COALESCE(creation_mode, 'prompt_only'), COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
 		           created_at, updated_at`,
-		id, req.Title, req.Genre, req.Description, req.StyleDescription, req.Language, req.TargetWords, req.ChapterWords,
-		req.ProjectType, req.ContinuationRefID, req.ContinuationStartChapter,
+		id, nullableString(ownerID), req.Title, req.Genre, req.Description, req.StyleDescription, req.Language, req.TargetWords, req.ChapterWords,
+		req.CreationMode, req.ProjectType, req.ContinuationRefID, req.ContinuationStartChapter,
 	).Scan(
-		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
+		&p.ID, &p.OwnerID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
 		&p.Language,
 		&p.TargetWords, &p.ChapterWords, &p.Status,
-		&p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
+		&p.CreationMode, &p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
@@ -166,15 +209,15 @@ func (s *ProjectService) Get(ctx context.Context, id string) (*models.Project, e
 
 	var p models.Project
 	err := s.db.QueryRow(ctx,
-		`SELECT id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
-		        COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
+		`SELECT id, COALESCE(owner_id::text, ''), title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
+		        COALESCE(creation_mode, 'prompt_only'), COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
 		        created_at, updated_at
 		 FROM projects WHERE id = $1`, id,
 	).Scan(
-		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
+		&p.ID, &p.OwnerID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
 		&p.Language,
 		&p.TargetWords, &p.ChapterWords, &p.Status,
-		&p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
+		&p.CreationMode, &p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
 	if errors.Is(err, database.ErrNoRows) {
@@ -206,6 +249,10 @@ func (s *ProjectService) Update(ctx context.Context, id string, req models.Creat
 	if req.Language == "" {
 		req.Language = "zh-CN"
 	}
+	if req.CreationMode == "" {
+		req.CreationMode = existing.CreationMode
+	}
+	req.CreationMode = normalizeCreationMode(req.CreationMode)
 	if s.orm != nil {
 		updates := map[string]interface{}{
 			"title":             req.Title,
@@ -215,6 +262,7 @@ func (s *ProjectService) Update(ctx context.Context, id string, req models.Creat
 			"language":          req.Language,
 			"target_words":      req.TargetWords,
 			"chapter_words":     req.ChapterWords,
+			"creation_mode":     req.CreationMode,
 			"updated_at":        time.Now(),
 		}
 		tx := s.orm.WithContext(ctx).Model(&database.ProjectSchema{}).Where("id = ?", id).Updates(updates)
@@ -230,18 +278,18 @@ func (s *ProjectService) Update(ctx context.Context, id string, req models.Creat
 	err = s.db.QueryRow(ctx,
 		`UPDATE projects
 		 SET title = $1, genre = $2, description = $3, style_description = $4,
-		     language = $5, target_words = $6, chapter_words = $7, updated_at = NOW()
-		 WHERE id = $8
-		 RETURNING id, title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
-		           COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
+		     language = $5, target_words = $6, chapter_words = $7, creation_mode = $8, updated_at = NOW()
+		 WHERE id = $9
+		 RETURNING id, COALESCE(owner_id::text, ''), title, genre, description, style_description, COALESCE(language, 'zh-CN'), target_words, chapter_words, status,
+		           COALESCE(creation_mode, 'prompt_only'), COALESCE(project_type, 'original'), continuation_ref_id, COALESCE(continuation_start_chapter, 1),
 		           created_at, updated_at`,
 		req.Title, req.Genre, req.Description, req.StyleDescription,
-		req.Language, req.TargetWords, req.ChapterWords, id,
+		req.Language, req.TargetWords, req.ChapterWords, req.CreationMode, id,
 	).Scan(
-		&p.ID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
+		&p.ID, &p.OwnerID, &p.Title, &p.Genre, &p.Description, &p.StyleDescription,
 		&p.Language,
 		&p.TargetWords, &p.ChapterWords, &p.Status,
-		&p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
+		&p.CreationMode, &p.ProjectType, &p.ContinuationRefID, &p.ContinuationStartChapter,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
@@ -334,6 +382,7 @@ func (s *ProjectService) SetContinuationMode(ctx context.Context, id string, ref
 	}
 	if s.orm != nil {
 		err := s.orm.WithContext(ctx).Model(&database.ProjectSchema{}).Where("id = ?", id).Updates(map[string]interface{}{
+			"creation_mode":              "continuation",
 			"project_type":               "continuation",
 			"continuation_ref_id":        refID,
 			"continuation_start_chapter": startChapter,
@@ -350,7 +399,7 @@ func (s *ProjectService) SetContinuationMode(ctx context.Context, id string, ref
 	}
 	_, err := s.db.Exec(ctx,
 		`UPDATE projects
-		 SET project_type = 'continuation', continuation_ref_id = $2, continuation_start_chapter = $3, updated_at = NOW()
+		 SET creation_mode = 'continuation', project_type = 'continuation', continuation_ref_id = $2, continuation_start_chapter = $3, updated_at = NOW()
 		 WHERE id = $1`,
 		id, refID, startChapter)
 	if err != nil {
@@ -376,6 +425,10 @@ func projectSchemaToModel(row database.ProjectSchema) models.Project {
 	if projectType == "" {
 		projectType = "original"
 	}
+	creationMode := row.CreationMode
+	if creationMode == "" {
+		creationMode = "prompt_only"
+	}
 	startChapter := row.ContinuationStartChapter
 	if startChapter <= 0 {
 		startChapter = 1
@@ -386,6 +439,7 @@ func projectSchemaToModel(row database.ProjectSchema) models.Project {
 	}
 	return models.Project{
 		ID:                       row.ID,
+		OwnerID:                  stringFromPtr(row.OwnerID),
 		Title:                    row.Title,
 		Genre:                    row.Genre,
 		Description:              row.Description,
@@ -394,10 +448,18 @@ func projectSchemaToModel(row database.ProjectSchema) models.Project {
 		TargetWords:              row.TargetWords,
 		ChapterWords:             row.ChapterWords,
 		Status:                   row.Status,
+		CreationMode:             creationMode,
 		ProjectType:              projectType,
 		ContinuationRefID:        row.ContinuationRefID,
 		ContinuationStartChapter: startChapter,
 		CreatedAt:                createdAt,
 		UpdatedAt:                updatedAt,
 	}
+}
+
+func stringFromPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

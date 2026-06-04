@@ -11,13 +11,11 @@ import os
 import re
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from json_repair import repair_json
 from analyzers.style_analyzer import StyleAnalyzer
@@ -26,6 +24,18 @@ from analyzers.atmosphere_analyzer import AtmosphereAnalyzer
 from analyzers.plot_extractor import PlotExtractor
 from humanizer.pipeline import HumanizationPipeline
 from humanizer.metrics import PerplexityBurstinessEstimator
+from api_models import (
+    AgentRunRequest,
+    BatchAgentRunRequest,
+    EmbedRequest,
+    GraphQueryRequest,
+    GraphUpsertRequest,
+    VectorDeleteBySourceRequest,
+    VectorDeleteProjectRequest,
+    VectorRebuildRequest,
+    VectorSearchRequest,
+    VectorUpsertRequest,
+)
 from app_config import parse_allowed_origins
 from db_compat import SQLiteCompatConnection
 from runtime_capabilities import detect_accelerators
@@ -47,6 +57,13 @@ _db_pool = None
 def _db_driver() -> str:
     return os.getenv("DB_DRIVER", "postgres").strip().lower()
 
+def _env_int_min(name: str, default: int, minimum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(value, minimum)
+
 def get_db():
     global _db_pool
     if _db_driver() in ("sqlite", "sqlite3"):
@@ -55,14 +72,16 @@ def get_db():
         raise RuntimeError("psycopg2 is required when DB_DRIVER=postgres")
     if _db_pool is None:
         from psycopg2 import pool as pg_pool
+        minconn = _env_int_min("SIDECAR_DB_MIN_CONNS", 5, 5)
+        maxconn = max(_env_int_min("SIDECAR_DB_MAX_CONNS", 20, 20), minconn)
         _db_pool = pg_pool.ThreadedConnectionPool(
-            minconn=1,
-            maxconn=10,
+            minconn=minconn,
+            maxconn=maxconn,
             host=os.getenv("DB_HOST", "127.0.0.1"),
             port=int(os.getenv("DB_PORT", "5432")),
             dbname=os.getenv("DB_NAME", "novelbuilder"),
             user=os.getenv("DB_USER", "novelbuilder"),
-            password=os.getenv("DB_PASSWORD", "novelbuilder"),
+            password=os.getenv("DB_PASSWORD", ""),
             options="-c client_encoding=UTF8",
         )
     return _db_pool.getconn()
@@ -202,111 +221,6 @@ atmosphere_analyzer = AtmosphereAnalyzer()
 plot_extractor = PlotExtractor()
 humanizer = HumanizationPipeline()
 metrics_estimator = PerplexityBurstinessEstimator()
-
-# ── Pydantic models ───────────────────────────────────────────────────────────
-class AnalyzeRequest(BaseModel):
-    file_path: str
-    material_id: str
-    project_id: str
-
-class HumanizeRequest(BaseModel):
-    text: str
-    style_fingerprint: Optional[dict] = None
-    intensity: float = 0.7
-
-class MetricsRequest(BaseModel):
-    text: str
-
-class EmbedRequest(BaseModel):
-    text: str
-
-class AgentRunRequest(BaseModel):
-    project_id: str
-    task_type: str = "generate_chapter"
-    user_prompt: str = ""
-    chapter_num: Optional[int] = None
-    outline_hint: Optional[str] = None
-    style_profile: Optional[dict] = None
-    llm_config: dict = {}
-    max_retries: int = 2
-
-class GraphUpsertRequest(BaseModel):
-    project_id: str
-    entity_type: str   # Character | Rule | Foreshadowing | Event
-    entity_id: str
-    name: str
-    properties: dict = {}
-    relations: list[dict] = []  # [{target_id, target_name, rel_type, description}]
-
-class GraphQueryRequest(BaseModel):
-    cypher: str
-    params: dict = {}
-
-class VectorUpsertRequest(BaseModel):
-    project_id: str
-    collection: str
-    content: str
-    metadata: dict = {}
-    point_id: Optional[str] = None
-
-class VectorSearchRequest(BaseModel):
-    project_id: str
-    collection: Optional[str] = None
-    collections: Optional[list[str]] = None
-    query: str
-    limit: int = 5
-    top_k: Optional[int] = None
-    score_threshold: Optional[float] = None
-
-class VectorRebuildRequest(BaseModel):
-    project_id: str
-    items: list[dict]   # [{collection, content, metadata}]
-
-class VectorDeleteBySourceRequest(BaseModel):
-    project_id: str
-    source_id: str
-
-class VectorDeleteProjectRequest(BaseModel):
-    project_id: str
-
-# ── New feature request models ────────────────────────────────────────────────
-
-class AuditChapterRequest(BaseModel):
-    chapter_id: str
-    project_id: str
-    chapter_text: str
-    chapter_num: int = 1
-    context: dict = {}  # outline_hint, characters, previous_summaries, foreshadowings, book_rules
-    llm_config: dict = {}
-
-class AntiDetectRequest(BaseModel):
-    chapter_id: str
-    text: str
-    intensity: str = "medium"  # light | medium | heavy
-    style_guide: str = ""
-    anti_ai_wordlist: list[str] = []
-    banned_patterns: list[str] = []
-    llm_config: dict = {}
-
-class CreativeBriefRequest(BaseModel):
-    brief_text: str
-    genre: str = "现代都市"
-    llm_config: dict = {}
-
-class ImportChaptersRequest(BaseModel):
-    project_id: str
-    import_id: str
-    source_text: str
-    split_pattern: str = r"第.{1,4}[章节回]"
-    fanfic_mode: Optional[str] = None  # canon|au|ooc|cp
-    llm_config: dict = {}
-
-class NarrativeReviseRequest(BaseModel):
-    chapter_id: str
-    chapter_text: str
-    failing_dimensions: list[str] = []
-    top_issues: list[str] = []
-    llm_config: dict = {}
 
 # ── Sensory words ─────────────────────────────────────────────────────────────
 _SENSORY_WORDS = [
@@ -520,20 +434,6 @@ async def agent_stream(session_id: str):
 # ── Batch agent session store ──────────────────────────────────────────────────
 # Tracks multi-chapter sequential generation sessions.
 _batch_sessions: dict[str, dict] = {}
-
-
-class BatchAgentRunRequest(BaseModel):
-    """Request body for POST /agent/batch-run.
-
-    Chapters are generated *sequentially* in the order given so that each
-    chapter's summary and state update feed into the next runtime evidence pack.
-    """
-    project_id: str
-    chapter_nums: list[int]       # ordered list of chapter numbers to generate
-    outline_hints: dict = {}      # str(chapter_num) -> hint text
-    style_profile: Optional[dict] = None
-    llm_config: dict = {}
-    max_retries: int = 2
 
 
 @app.post("/agent/batch-run")

@@ -18,6 +18,7 @@ type LLMProfile struct {
 	MaxTokens       int       `json:"max_tokens"`
 	Temperature     float64   `json:"temperature"`
 	RPMLimit        int       `json:"rpm_limit"`
+	TPMLimit        int       `json:"tpm_limit"`
 	OmitMaxTokens   bool      `json:"omit_max_tokens"`
 	OmitTemperature bool      `json:"omit_temperature"`
 	APIStyle        string    `json:"api_style"`
@@ -43,6 +44,7 @@ type CreateLLMProfileRequest struct {
 	MaxTokens       int     `json:"max_tokens"`
 	Temperature     float64 `json:"temperature"`
 	RPMLimit        int     `json:"rpm_limit"`
+	TPMLimit        int     `json:"tpm_limit"`
 	OmitMaxTokens   bool    `json:"omit_max_tokens"`
 	OmitTemperature bool    `json:"omit_temperature"`
 	APIStyle        string  `json:"api_style"`
@@ -58,6 +60,7 @@ type UpdateLLMProfileRequest struct {
 	MaxTokens       int      `json:"max_tokens"`
 	Temperature     *float64 `json:"temperature"`
 	RPMLimit        *int     `json:"rpm_limit"`
+	TPMLimit        *int     `json:"tpm_limit"`
 	OmitMaxTokens   *bool    `json:"omit_max_tokens"`
 	OmitTemperature *bool    `json:"omit_temperature"`
 	APIStyle        string   `json:"api_style"`

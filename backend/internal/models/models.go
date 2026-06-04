@@ -7,6 +7,7 @@ import (
 
 type Project struct {
 	ID                       string    `json:"id" db:"id"`
+	OwnerID                  string    `json:"owner_id,omitempty" db:"owner_id"`
 	Title                    string    `json:"title" db:"title"`
 	Genre                    string    `json:"genre" db:"genre"`
 	Description              string    `json:"description" db:"description"`
@@ -15,6 +16,7 @@ type Project struct {
 	TargetWords              int       `json:"target_words" db:"target_words"`
 	ChapterWords             int       `json:"chapter_words" db:"chapter_words"`
 	Status                   string    `json:"status" db:"status"`
+	CreationMode             string    `json:"creation_mode" db:"creation_mode"`             // scratch | own_outline | prompt_only | reference_style | rewrite_original | continuation | same_style_new_world
 	ProjectType              string    `json:"project_type" db:"project_type"`               // original | continuation
 	ContinuationRefID        *string   `json:"continuation_ref_id" db:"continuation_ref_id"` // reference_materials.id
 	ContinuationStartChapter int       `json:"continuation_start_chapter" db:"continuation_start_chapter"`
@@ -219,6 +221,7 @@ type CreateProjectRequest struct {
 	Language                 string  `json:"language"`
 	TargetWords              int     `json:"target_words"`
 	ChapterWords             int     `json:"chapter_words"`
+	CreationMode             string  `json:"creation_mode"`
 	ProjectType              string  `json:"project_type"`               // optional: "original" (default) | "continuation"
 	ContinuationRefID        *string `json:"continuation_ref_id"`        // required when project_type="continuation"
 	ContinuationStartChapter int     `json:"continuation_start_chapter"` // first AI-generated chapter number

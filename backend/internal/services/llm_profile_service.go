@@ -35,9 +35,12 @@ func maskAPIKey(key string) string {
 	return key[:4] + "****" + key[len(key)-4:]
 }
 
-func validateLLMProfileValues(maxTokens int, temperature float64, rpmLimit int) error {
+func validateLLMProfileValues(maxTokens int, temperature float64, rpmLimit int, tpmLimit int) error {
 	if rpmLimit < 0 {
 		return errors.New("rpm_limit must be >= 0")
+	}
+	if tpmLimit < 0 {
+		return errors.New("tpm_limit must be >= 0")
 	}
 	if maxTokens > 0 && maxTokens < 100 {
 		return errors.New("max_tokens must be at least 100")
@@ -60,7 +63,7 @@ func normalizeModelName(model string) string {
 
 func (s *LLMProfileService) List(ctx context.Context) ([]models.LLMProfile, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit,
+		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit, COALESCE(tpm_limit, 0),
 		        omit_max_tokens, omit_temperature, api_style,
 		        is_default, created_at, updated_at
 		 FROM llm_profiles ORDER BY is_default DESC, created_at ASC`)
@@ -74,7 +77,7 @@ func (s *LLMProfileService) List(ctx context.Context) ([]models.LLMProfile, erro
 		var p models.LLMProfile
 		var rawKey string
 		if err := rows.Scan(&p.ID, &p.Name, &p.Provider, &p.BaseURL, &rawKey,
-			&p.ModelName, &p.MaxTokens, &p.Temperature, &p.RPMLimit,
+			&p.ModelName, &p.MaxTokens, &p.Temperature, &p.RPMLimit, &p.TPMLimit,
 			&p.OmitMaxTokens, &p.OmitTemperature, &p.APIStyle, &p.IsDefault,
 			&p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
@@ -97,12 +100,12 @@ func (s *LLMProfileService) Get(ctx context.Context, id string) (*models.LLMProf
 	var p models.LLMProfile
 	var rawKey string
 	err := s.db.QueryRow(ctx,
-		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit,
+		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit, COALESCE(tpm_limit, 0),
 		        omit_max_tokens, omit_temperature, api_style,
 		        is_default, created_at, updated_at
 		 FROM llm_profiles WHERE id = $1`, id).Scan(
 		&p.ID, &p.Name, &p.Provider, &p.BaseURL, &rawKey,
-		&p.ModelName, &p.MaxTokens, &p.Temperature, &p.RPMLimit,
+		&p.ModelName, &p.MaxTokens, &p.Temperature, &p.RPMLimit, &p.TPMLimit,
 		&p.OmitMaxTokens, &p.OmitTemperature, &p.APIStyle, &p.IsDefault,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
@@ -125,12 +128,12 @@ func (s *LLMProfileService) GetFull(ctx context.Context, id string) (*models.LLM
 	var p models.LLMProfileFull
 	var storedKey string
 	err := s.db.QueryRow(ctx,
-		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit,
+		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit, COALESCE(tpm_limit, 0),
 		        omit_max_tokens, omit_temperature, api_style,
 		        is_default, created_at, updated_at
 		 FROM llm_profiles WHERE id = $1`, id).Scan(
 		&p.ID, &p.Name, &p.Provider, &p.BaseURL, &storedKey,
-		&p.ModelName, &p.MaxTokens, &p.Temperature, &p.RPMLimit,
+		&p.ModelName, &p.MaxTokens, &p.Temperature, &p.RPMLimit, &p.TPMLimit,
 		&p.OmitMaxTokens, &p.OmitTemperature, &p.APIStyle, &p.IsDefault,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
@@ -149,12 +152,12 @@ func (s *LLMProfileService) GetDefault(ctx context.Context) (*models.LLMProfileF
 	var p models.LLMProfileFull
 	var storedKey string
 	err := s.db.QueryRow(ctx,
-		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit,
+		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit, COALESCE(tpm_limit, 0),
 		        omit_max_tokens, omit_temperature, api_style,
 		        is_default, created_at, updated_at
 		 FROM llm_profiles WHERE is_default = TRUE LIMIT 1`).Scan(
 		&p.ID, &p.Name, &p.Provider, &p.BaseURL, &storedKey,
-		&p.ModelName, &p.MaxTokens, &p.Temperature, &p.RPMLimit,
+		&p.ModelName, &p.MaxTokens, &p.Temperature, &p.RPMLimit, &p.TPMLimit,
 		&p.OmitMaxTokens, &p.OmitTemperature, &p.APIStyle, &p.IsDefault,
 		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
@@ -178,7 +181,7 @@ func (s *LLMProfileService) Create(ctx context.Context, req models.CreateLLMProf
 	if req.Temperature == 0 {
 		req.Temperature = 0.7
 	}
-	if err := validateLLMProfileValues(req.MaxTokens, req.Temperature, req.RPMLimit); err != nil {
+	if err := validateLLMProfileValues(req.MaxTokens, req.Temperature, req.RPMLimit, req.TPMLimit); err != nil {
 		return nil, err
 	}
 
@@ -208,10 +211,10 @@ func (s *LLMProfileService) Create(ctx context.Context, req models.CreateLLMProf
 		apiStyle = "chat_completions"
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO llm_profiles (id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit, omit_max_tokens, omit_temperature, api_style, is_default, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)`,
+		`INSERT INTO llm_profiles (id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit, tpm_limit, omit_max_tokens, omit_temperature, api_style, is_default, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)`,
 		id, req.Name, req.Provider, req.BaseURL, encryptedKey, req.ModelName,
-		req.MaxTokens, req.Temperature, req.RPMLimit, req.OmitMaxTokens, req.OmitTemperature, apiStyle, req.IsDefault, now); err != nil {
+		req.MaxTokens, req.Temperature, req.RPMLimit, req.TPMLimit, req.OmitMaxTokens, req.OmitTemperature, apiStyle, req.IsDefault, now); err != nil {
 		return nil, fmt.Errorf("insert llm_profile: %w", err)
 	}
 
@@ -228,6 +231,7 @@ func (s *LLMProfileService) Create(ctx context.Context, req models.CreateLLMProf
 		MaxTokens:       req.MaxTokens,
 		Temperature:     req.Temperature,
 		RPMLimit:        req.RPMLimit,
+		TPMLimit:        req.TPMLimit,
 		OmitMaxTokens:   req.OmitMaxTokens,
 		OmitTemperature: req.OmitTemperature,
 		APIStyle:        apiStyle,
@@ -249,10 +253,10 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 	// Read existing to handle partial updates
 	var existing models.LLMProfileFull
 	if err := tx.QueryRow(ctx,
-		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit, omit_max_tokens, omit_temperature, api_style, is_default, created_at, updated_at
+		`SELECT id, name, provider, base_url, api_key, model_name, max_tokens, temperature, rpm_limit, COALESCE(tpm_limit, 0), omit_max_tokens, omit_temperature, api_style, is_default, created_at, updated_at
 		 FROM llm_profiles WHERE id = $1 FOR UPDATE`, id).Scan(
 		&existing.ID, &existing.Name, &existing.Provider, &existing.BaseURL, &existing.APIKey,
-		&existing.ModelName, &existing.MaxTokens, &existing.Temperature, &existing.RPMLimit,
+		&existing.ModelName, &existing.MaxTokens, &existing.Temperature, &existing.RPMLimit, &existing.TPMLimit,
 		&existing.OmitMaxTokens, &existing.OmitTemperature, &existing.APIStyle, &existing.IsDefault,
 		&existing.CreatedAt, &existing.UpdatedAt); err != nil {
 		return nil, fmt.Errorf("profile not found: %w", err)
@@ -294,6 +298,9 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 	if req.RPMLimit != nil {
 		existing.RPMLimit = *req.RPMLimit
 	}
+	if req.TPMLimit != nil {
+		existing.TPMLimit = *req.TPMLimit
+	}
 	if req.OmitMaxTokens != nil {
 		existing.OmitMaxTokens = *req.OmitMaxTokens
 	}
@@ -306,7 +313,7 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 	if req.IsDefault != nil {
 		existing.IsDefault = *req.IsDefault
 	}
-	if err := validateLLMProfileValues(existing.MaxTokens, existing.Temperature, existing.RPMLimit); err != nil {
+	if err := validateLLMProfileValues(existing.MaxTokens, existing.Temperature, existing.RPMLimit, existing.TPMLimit); err != nil {
 		return nil, err
 	}
 
@@ -320,9 +327,9 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 	now := time.Now()
 	if _, err := tx.Exec(ctx,
 		`UPDATE llm_profiles SET name=$1, provider=$2, base_url=$3, api_key=$4, model_name=$5,
-		 max_tokens=$6, temperature=$7, rpm_limit=$8, omit_max_tokens=$9, omit_temperature=$10, api_style=$11, is_default=$12, updated_at=$13 WHERE id=$14`,
+		 max_tokens=$6, temperature=$7, rpm_limit=$8, tpm_limit=$9, omit_max_tokens=$10, omit_temperature=$11, api_style=$12, is_default=$13, updated_at=$14 WHERE id=$15`,
 		existing.Name, existing.Provider, existing.BaseURL, existing.APIKey, existing.ModelName,
-		existing.MaxTokens, existing.Temperature, existing.RPMLimit,
+		existing.MaxTokens, existing.Temperature, existing.RPMLimit, existing.TPMLimit,
 		existing.OmitMaxTokens, existing.OmitTemperature, existing.APIStyle,
 		existing.IsDefault, now, id); err != nil {
 		return nil, fmt.Errorf("update llm_profile: %w", err)
@@ -341,6 +348,7 @@ func (s *LLMProfileService) Update(ctx context.Context, id string, req models.Up
 		MaxTokens:       existing.MaxTokens,
 		Temperature:     existing.Temperature,
 		RPMLimit:        existing.RPMLimit,
+		TPMLimit:        existing.TPMLimit,
 		OmitMaxTokens:   existing.OmitMaxTokens,
 		OmitTemperature: existing.OmitTemperature,
 		APIStyle:        existing.APIStyle,

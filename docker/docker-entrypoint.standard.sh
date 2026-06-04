@@ -6,9 +6,14 @@ export DB_DRIVER="${DB_DRIVER:-postgres}"
 export DB_HOST="${DB_HOST:-127.0.0.1}"
 export DB_PORT="${DB_PORT:-5432}"
 export DB_USER="${DB_USER:-novelbuilder}"
-export DB_PASSWORD="${DB_PASSWORD:-novelbuilder}"
+export DB_PASSWORD="${DB_PASSWORD:-}"
 export DB_NAME="${DB_NAME:-novelbuilder}"
 export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
+
+if [ -z "${DB_PASSWORD:-}" ]; then
+    echo "ERROR: DB_PASSWORD must be set to a strong value before starting this Docker profile." >&2
+    exit 64
+fi
 
 PGDATA="/var/lib/postgresql/data"
 PG_BIN="/usr/lib/postgresql/16/bin"
@@ -18,20 +23,25 @@ if [ ! -d "$PGDATA/base" ]; then
     mkdir -p "$PGDATA"
     chown -R postgres:postgres "$PGDATA"
     chmod 700 "$PGDATA"
-    su - postgres -c "$PG_BIN/initdb -D $PGDATA"
+    gosu postgres "$PG_BIN/initdb" -D "$PGDATA"
 
     cat >> "$PGDATA/pg_hba.conf" <<'HBA'
 host  all  all  127.0.0.1/32  trust
 local all  all               trust
 HBA
 
-    su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA -l /tmp/pg_init.log start -w"
-    su - postgres -c "psql -c \"CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';\""
-    su - postgres -c "psql -c \"CREATE DATABASE $DB_NAME OWNER $DB_USER;\""
-    su - postgres -c "psql -c \"ALTER USER $DB_USER CREATEDB;\""
-    su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
-    su - postgres -c "psql -d $DB_NAME -c 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";'"
-    su - postgres -c "$PG_BIN/pg_ctl -D $PGDATA stop -w"
+    gosu postgres "$PG_BIN/pg_ctl" -D "$PGDATA" -l /tmp/pg_init.log start -w
+    gosu postgres psql -v ON_ERROR_STOP=1 \
+        -v db_user="$DB_USER" \
+        -v db_password="$DB_PASSWORD" \
+        -v db_name="$DB_NAME" <<'SQL'
+CREATE USER :"db_user" WITH PASSWORD :'db_password';
+CREATE DATABASE :"db_name" OWNER :"db_user";
+ALTER USER :"db_user" CREATEDB;
+SQL
+    gosu postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+    gosu postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
+    gosu postgres "$PG_BIN/pg_ctl" -D "$PGDATA" stop -w
     echo "==> PostgreSQL ready. Go backend will run GORM AutoMigrate."
 fi
 

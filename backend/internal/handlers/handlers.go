@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/gin-gonic/gin"
+	"github.com/novelbuilder/backend/internal/gateway"
 	"github.com/novelbuilder/backend/internal/models"
 	"github.com/novelbuilder/backend/internal/services"
 	"github.com/novelbuilder/backend/internal/workflow"
@@ -15,6 +16,8 @@ import (
 )
 
 type Handler struct {
+	users                 *services.UserService
+	ai                    *gateway.AIGateway
 	projects              *services.ProjectService
 	blueprints            *services.BlueprintService
 	chapters              *services.ChapterService
@@ -57,6 +60,8 @@ type Handler struct {
 }
 
 func NewHandler(
+	users *services.UserService,
+	ai *gateway.AIGateway,
 	projects *services.ProjectService,
 	blueprints *services.BlueprintService,
 	chapters *services.ChapterService,
@@ -94,6 +99,8 @@ func NewHandler(
 	logger *zap.Logger,
 ) *Handler {
 	return &Handler{
+		users:                 users,
+		ai:                    ai,
 		projects:              projects,
 		blueprints:            blueprints,
 		chapters:              chapters,
@@ -140,7 +147,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 	api.GET("/health", h.Health)
 	if len(authMiddleware) > 0 {
 		api.Use(authMiddleware...)
+		api.Use(h.AuthorizeAPI)
 	}
+
+	api.GET("/users", h.ListUsers)
+	api.POST("/users", h.CreateUser)
+	api.GET("/users/:id", h.GetUser)
+	api.PUT("/users/:id", h.UpdateUser)
+	api.DELETE("/users/:id", h.DeleteUser)
 
 	api.GET("/projects", h.ListProjects)
 	api.POST("/projects", h.CreateProject)
@@ -282,6 +296,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 	api.GET("/prompt-presets", h.ListGlobalPromptPresets)
 	api.GET("/projects/:id/prompt-presets", h.ListProjectPromptPresets)
 	api.POST("/prompt-presets", h.CreatePromptPreset)
+	api.POST("/prompt-presets/optimize", h.OptimizePromptPreset)
 	api.GET("/prompt-presets/:id", h.GetPromptPreset)
 	api.PUT("/prompt-presets/:id", h.UpdatePromptPreset)
 	api.DELETE("/prompt-presets/:id", h.DeletePromptPreset)
@@ -294,12 +309,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware ...gin.HandlerFun
 	// Task Queue
 	api.GET("/tasks", h.ListTasks)
 	api.GET("/projects/:id/tasks", h.ListTasks)
+	api.GET("/tasks/stream", h.StreamTasks)
+	api.GET("/projects/:id/tasks/stream", h.StreamTasks)
+	api.GET("/tasks/stats", h.GetTaskStats)
+	api.GET("/projects/:id/tasks/stats", h.GetTaskStats)
 	api.POST("/tasks", h.EnqueueTask)
 	api.GET("/tasks/:id", h.GetTask)
 	api.POST("/tasks/:id/pause", h.PauseTask)
 	api.POST("/tasks/:id/resume", h.ResumeTask)
 	api.POST("/tasks/:id/cancel", h.CancelTask)
 	api.POST("/tasks/:id/retry", h.RetryTask)
+	api.PUT("/tasks/:id/payload", h.UpdateTaskPayload)
 
 	// Resource Ledger (InkOS: particle_ledger)
 	api.GET("/projects/:id/resources", h.ListResources)
@@ -446,6 +466,7 @@ func llmConfigFromProfile(profile *models.LLMProfileFull) map[string]interface{}
 		"max_tokens":       profile.MaxTokens,
 		"temperature":      profile.Temperature,
 		"rpm_limit":        profile.RPMLimit,
+		"tpm_limit":        profile.TPMLimit,
 		"omit_max_tokens":  profile.OmitMaxTokens,
 		"omit_temperature": profile.OmitTemperature,
 		"api_style":        profile.APIStyle,
@@ -480,7 +501,7 @@ func (h *Handler) resolveAgentLLMConfig(ctx context.Context, agentType, projectI
 	// Fill in any fields missing from the agent-specific profile using the default profile.
 	defCfg, defErr := h.resolveLLMConfig(ctx)
 	if defErr == nil && defCfg != nil {
-		for _, key := range []string{"temperature", "max_tokens", "rpm_limit", "omit_max_tokens", "omit_temperature", "api_style"} {
+		for _, key := range []string{"temperature", "max_tokens", "rpm_limit", "tpm_limit", "omit_max_tokens", "omit_temperature", "api_style"} {
 			if _, exists := cfg[key]; !exists {
 				cfg[key] = defCfg[key]
 			}

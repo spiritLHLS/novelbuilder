@@ -1,7 +1,6 @@
 """Shared LLM builder: dispatches to the correct LangChain model class based on api_style."""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -11,6 +10,12 @@ import time
 from typing import Any, Callable
 
 import httpx
+from llm_rate_limit import (
+    apply_max_completion_tokens_fallback,
+    apply_rpm_limit,
+    rate_limit_async,
+    rate_limit_sync,
+)
 
 try:
     import redis
@@ -47,122 +52,6 @@ def _needs_completion_tokens(model: str, cfg: dict) -> bool:
     return cfg.get("use_max_completion_tokens", False) or bool(_O_SERIES_RE.search(model))
 
 
-def _is_max_tokens_unsupported(exc: Exception) -> bool:
-    """Detect the specific 400 error: 'max_tokens is not supported, use max_completion_tokens'."""
-    msg = str(exc)
-    return "max_tokens" in msg and "max_completion_tokens" in msg
-
-
-class _LLMWrapper:
-    """Thin proxy around a LangChain LLM that overrides invoke/ainvoke without
-    mutating the underlying Pydantic model (Pydantic v2 rejects arbitrary field
-    assignment, so we never do ``llm.invoke = fn`` directly)."""
-
-    def __init__(self, delegate, invoke_fn, ainvoke_fn):
-        self._delegate = delegate
-        self._invoke_fn = invoke_fn
-        self._ainvoke_fn = ainvoke_fn
-
-    def invoke(self, input, config=None, **kwargs):
-        return self._invoke_fn(input, config=config, **kwargs)
-
-    async def ainvoke(self, input, config=None, **kwargs):
-        return await self._ainvoke_fn(input, config=config, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._delegate, name)
-
-
-def _apply_max_completion_tokens_fallback(primary, fallback):
-    """Patch invoke/ainvoke on *primary* to transparently retry via *fallback* on the token-param error."""
-    _orig_invoke = primary.invoke
-    _orig_ainvoke = primary.ainvoke
-
-    def _invoke(input, config=None, **kwargs):
-        try:
-            return _orig_invoke(input, config=config, **kwargs)
-        except Exception as exc:
-            if _is_max_tokens_unsupported(exc):
-                return fallback.invoke(input, config=config, **kwargs)
-            raise
-
-    async def _ainvoke(input, config=None, **kwargs):
-        try:
-            return await _orig_ainvoke(input, config=config, **kwargs)
-        except Exception as exc:
-            if _is_max_tokens_unsupported(exc):
-                return await fallback.ainvoke(input, config=config, **kwargs)
-            raise
-
-    return _LLMWrapper(primary, _invoke, _ainvoke)
-
-
-# ── Per-profile sliding-window rate limiter ───────────────────────────────────
-# Async state: key → {"lock": asyncio.Lock, "timestamps": list[float]}
-_rpm_async_state: dict[str, dict] = {}
-# Sync state: separate timestamps dict + threading locks
-_rpm_sync_timestamps: dict[str, list[float]] = {}
-_rpm_sync_locks: dict[str, threading.Lock] = {}
-
-
-async def _rate_limit_async(key: str, rpm_limit: int) -> None:
-    """Enforce rpm_limit req/min using a 60-second sliding window (async version)."""
-    if rpm_limit <= 0:
-        return
-    if key not in _rpm_async_state:
-        _rpm_async_state[key] = {"lock": asyncio.Lock(), "timestamps": []}
-    state = _rpm_async_state[key]
-    async with state["lock"]:
-        while True:
-            now = time.monotonic()
-            cutoff = now - 60.0
-            state["timestamps"] = [t for t in state["timestamps"] if t >= cutoff]
-            if len(state["timestamps"]) < rpm_limit:
-                state["timestamps"].append(now)
-                return
-            wait_secs = state["timestamps"][0] + 60.0 - now + 0.05
-            await asyncio.sleep(max(wait_secs, 0.05))
-
-
-def _rate_limit_sync(key: str, rpm_limit: int) -> None:
-    """Enforce rpm_limit req/min using a 60-second sliding window (sync version)."""
-    if rpm_limit <= 0:
-        return
-    if key not in _rpm_sync_locks:
-        _rpm_sync_locks[key] = threading.Lock()
-    lock = _rpm_sync_locks[key]
-    while True:
-        with lock:
-            if key not in _rpm_sync_timestamps:
-                _rpm_sync_timestamps[key] = []
-            ts = _rpm_sync_timestamps[key]
-            now = time.monotonic()
-            cutoff = now - 60.0
-            _rpm_sync_timestamps[key] = [t for t in ts if t >= cutoff]
-            ts = _rpm_sync_timestamps[key]
-            if len(ts) < rpm_limit:
-                ts.append(now)
-                return
-            wait_secs = ts[0] + 60.0 - now + 0.05
-        time.sleep(max(wait_secs, 0.05))
-
-
-def _apply_rpm_limit(llm, key: str, rpm_limit: int):
-    """Wrap a LangChain model's invoke/ainvoke to enforce RPM rate limiting."""
-    _orig_invoke = llm.invoke
-    _orig_ainvoke = llm.ainvoke
-
-    def _invoke(input, config=None, **kwargs):
-        _rate_limit_sync(key, rpm_limit)
-        return _orig_invoke(input, config=config, **kwargs)
-
-    async def _ainvoke(input, config=None, **kwargs):
-        await asyncio.wait_for(_rate_limit_async(key, rpm_limit), timeout=61.0)
-        return await _orig_ainvoke(input, config=config, **kwargs)
-
-    return _LLMWrapper(llm, _invoke, _ainvoke)
-
-
 def build_llm(
     cfg: dict,
     default_temperature: float = 0.7,
@@ -192,7 +81,7 @@ def build_llm(
     def _maybe_rpm(llm):
         """Apply sliding-window RPM limiter if configured."""
         if rpm_limit > 0:
-            return _apply_rpm_limit(llm, rpm_key, rpm_limit)
+            return apply_rpm_limit(llm, rpm_key, rpm_limit)
         return llm
 
     # ── Anthropic ─────────────────────────────────────────────────────────────
@@ -271,7 +160,7 @@ def build_llm(
         fallback_kwargs.pop("max_tokens", None)
         fallback_kwargs["max_completion_tokens"] = tokens_val
         fallback = ChatOpenAI(**fallback_kwargs)
-        return _maybe_rpm(_apply_max_completion_tokens_fallback(primary, fallback))
+        return _maybe_rpm(apply_max_completion_tokens_fallback(primary, fallback))
 
     return _maybe_rpm(primary)
 
@@ -699,7 +588,7 @@ def invoke_text_sync(
         rpm_limit = int(invoke_cfg.get("rpm_limit", 0) or 0)
 
         if rpm_limit > 0:
-            _rate_limit_sync(f"{base_url}|{model}", rpm_limit)
+            rate_limit_sync(f"{base_url}|{model}", rpm_limit)
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -795,7 +684,7 @@ async def ainvoke_text(
         rpm_limit = int(invoke_cfg.get("rpm_limit", 0) or 0)
 
         if rpm_limit > 0:
-            await _rate_limit_async(f"{base_url}|{model}", rpm_limit)
+            await rate_limit_async(f"{base_url}|{model}", rpm_limit)
 
         headers = {
             "Authorization": f"Bearer {api_key}",

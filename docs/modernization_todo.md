@@ -22,9 +22,32 @@
 - [x] 任务队列列表增加排队时长和运行时长字段，便于定位任务拥堵。
 - [x] 向量搜索协议统一支持单集合/多集合、`top_k` 和 `score_threshold`，并避免跨集合重复计算 query embedding。
 - [x] 增加 `docker-compose.reverse-proxy.yml`、Caddyfile 和双语说明文档。
+- [x] 增加 `scripts/ci_check.sh`、前后端 API 契约检查和 Go/Python Sidecar 契约检查，覆盖非交互式静态冒烟。
+- [x] 增加 `scripts/smoke_sqlite.sh` 端到端烟测：临时 SQLite 启动、登录、创建项目、保存 LLM Profile、读取任务统计。
+- [x] 任务队列增加聚合指标：状态/类型分布、重试数、平均排队与运行时、失败聚类和 24h 项目吞吐。
+- [x] 前端生产构建增加 Rolldown vendor 分组，降低入口包体并稳定大依赖缓存边界。
+- [x] 升级 `pdfminer.six` 到漏洞修复版本，降低参考资料 PDF 解析链路的已知依赖风险。
+- [x] 增加 `scripts/python_dependency_audit.sh`，用于在隔离环境中审计 Python 直接 pin 依赖并暴露剩余漏洞。
+- [x] 数据库连接池配置增加下限/上限归一化：open 至少 20、idle 至少 5、连接生命周期最多 60 分钟。
+- [x] Python Sidecar PostgreSQL 连接池默认提升到 min=5/max=20，并由 CI 检查防回退。
+- [x] 拆分 `handler_references.go` 中的 RAG/Deep Analysis handler，降低单文件规模并保持路由签名不变。
+- [x] 拆分 `blueprint_service.go` 中的无状态 helper 和导入导出 DTO，核心服务文件降至 1000 行以下。
+- [x] 拆分 `chapter_build_service.go` 的提示词规则、标题摘要和 humanize 辅助逻辑，章节构建主流程文件降至 1000 行以下。
+- [x] 拆分 `python-sidecar/main.py` 中的 Pydantic 请求模型，FastAPI 入口文件降至 1000 行以下。
+- [x] 拆分 `python-sidecar/llm_utils.py` 的 RPM 限流与 max_tokens fallback 包装逻辑，LLM 路由主文件继续降至 1000 行以下。
+- [x] 拆分 `gateway.go` 的 Go LLM RPM 滑动窗口限流，provider 路由主文件继续降至 1000 行以下。
+- [x] 任务队列页面补充页面内加载错误状态、刷新 loading 和筛选空态文案。
+- [x] 任务队列失败重试增加退避上限和永久失败完成时间，卡住的 running 任务恢复时按重试状态重新调度。
+- [x] 任务队列增加受鉴权保护的 SSE 实时快照流，前端任务总控按筛选和分页自动订阅并保留手动/轮询兜底。
+- [x] 前端富文本渲染统一经过转义和 URL 协议净化，AgentReview 不再手写未转义 `v-html` 内容。
+- [x] Docker 与运行时代码中的 PostgreSQL/Neo4j 固定默认密码已移除，改为 `.env`/环境变量显式提供并由 CI 防回退。
+- [x] 增加 `scripts/secret_history_scan.sh`，优先调用 `gitleaks`，否则用 `git grep` 扫描当前和历史中的高置信密钥模式。
+- [x] 增加受管理员会话保护的 `/api/docs` Swagger UI 和 `/api/docs/openapi.json` 动态 OpenAPI 路由索引。
+- [x] 将 `no-neo4j`、`no-qdrant` 改为独立 Docker 构建和专用入口脚本，禁用组件不再携带对应系统/Python runtime 或要求对应密码。
+- [x] 将 `no-graph-vector`、`no-redis` 也改为独立 Docker 构建；变体 workflow 不再传递未使用的 `BASE_IMAGE`。
+- [x] 升级 LangChain/LangGraph/Graphiti/Torch 等 Python AI 栈依赖，补齐 Graphiti 0.28 初始化兼容和 `httpx` SOCKS 代理支持；`pip-audit --no-deps` 已无直接依赖漏洞。
+- [x] 增加 `.gitleaks.toml` 继承默认规则并精确放行历史 `Idempotency-Key` 误报；`scripts/secret_history_scan.sh` 已无历史泄露告警。
 
 ## 后续建议
 
-- [ ] 继续将 `no-neo4j`、`no-qdrant` 等 overlay 档位改造成真正的独立 runtime stage，而不只是禁用服务。
-- [ ] 增加非交互式端到端冒烟测试：启动 SQLite 档、调用 API 登录、创建项目、保存 LLM Profile、创建蓝图任务。
-- [ ] 给任务队列增加更多聚合指标：重试原因、平均运行时、失败聚类和按项目分组的吞吐。
+- [ ] 若公开仓库曾使用过真实凭据，发布前仍应执行凭据轮换；历史重写属于破坏性维护流程，需单独安排。

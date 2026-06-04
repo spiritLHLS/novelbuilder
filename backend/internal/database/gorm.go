@@ -18,6 +18,7 @@ import (
 
 type ProjectSchema struct {
 	ID                       string  `gorm:"type:uuid;primaryKey"`
+	OwnerID                  *string `gorm:"type:uuid;index"`
 	Title                    string  `gorm:"type:varchar(300);not null"`
 	Genre                    string  `gorm:"type:varchar(50)"`
 	Description              string  `gorm:"type:text"`
@@ -26,6 +27,7 @@ type ProjectSchema struct {
 	TargetWords              int     `gorm:"not null;default:500000"`
 	ChapterWords             int     `gorm:"not null;default:3000"`
 	Status                   string  `gorm:"type:varchar(20);default:active"`
+	CreationMode             string  `gorm:"type:varchar(40);not null;default:prompt_only;index"`
 	ProjectType              string  `gorm:"type:varchar(20);not null;default:original"`
 	ContinuationRefID        *string `gorm:"type:uuid"`
 	ContinuationStartChapter int     `gorm:"not null;default:1"`
@@ -38,6 +40,20 @@ type ProjectSchema struct {
 }
 
 func (ProjectSchema) TableName() string { return "projects" }
+
+type UserSchema struct {
+	ID           string `gorm:"type:uuid;primaryKey"`
+	Username     string `gorm:"type:varchar(120);not null;uniqueIndex"`
+	PasswordHash string `gorm:"type:text;not null"`
+	DisplayName  string `gorm:"type:varchar(120);not null;default:''"`
+	Role         string `gorm:"type:varchar(20);not null;default:user;index"`
+	Status       string `gorm:"type:varchar(20);not null;default:active;index"`
+	ModelPolicy  JSONB  `gorm:"type:jsonb;not null;default:'{}'"`
+	CreatedAt    *time.Time
+	UpdatedAt    *time.Time
+}
+
+func (UserSchema) TableName() string { return "users" }
 
 type ReferenceMaterialSchema struct {
 	ID                string  `gorm:"type:uuid;primaryKey"`
@@ -440,6 +456,7 @@ type LLMProfileSchema struct {
 	Temperature     float64 `gorm:"not null;default:0.7"`
 	IsDefault       bool    `gorm:"not null;default:false;index"`
 	RPMLimit        int     `gorm:"not null;default:0"`
+	TPMLimit        int     `gorm:"not null;default:0"`
 	OmitMaxTokens   bool    `gorm:"not null;default:false"`
 	OmitTemperature bool    `gorm:"not null;default:false"`
 	APIStyle        string  `gorm:"type:varchar(50);not null;default:chat_completions"`
@@ -826,7 +843,11 @@ func NewGORM(cfg config.DatabaseConfig, logger *zap.Logger) (*gorm.DB, error) {
 	if sqlDB, err := db.DB(); err == nil {
 		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
 		sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
-		sqlDB.SetConnMaxLifetime(time.Hour)
+		lifetimeMinutes := cfg.ConnMaxLifetimeMinutes
+		if lifetimeMinutes <= 0 || lifetimeMinutes > 60 {
+			lifetimeMinutes = 60
+		}
+		sqlDB.SetConnMaxLifetime(time.Duration(lifetimeMinutes) * time.Minute)
 	}
 	if logger != nil {
 		logger.Info("GORM database opened", zap.String("driver", db.Dialector.Name()))
@@ -851,7 +872,7 @@ func AutoMigrate(ctx context.Context, db *gorm.DB, logger *zap.Logger) error {
 	}
 
 	models := []interface{}{
-		&ProjectSchema{}, &ReferenceMaterialSchema{},
+		&UserSchema{}, &ProjectSchema{}, &ReferenceMaterialSchema{},
 		&WorldBibleSchema{}, &WorldBibleConstitutionSchema{}, &CharacterSchema{}, &OutlineSchema{},
 		&ForeshadowingSchema{}, &BookBlueprintSchema{}, &VolumeSchema{}, &ChapterSchema{}, &ChapterSnapshotSchema{},
 		&WorkflowRunSchema{}, &WorkflowStepSchema{}, &WorkflowReviewSchema{}, &WorkflowSnapshotSchema{}, &IdempotencyKeySchema{},
@@ -890,6 +911,7 @@ func ensurePostgresIndexes(ctx context.Context, db *gorm.DB) error {
 	}
 	statements := []string{
 		`CREATE INDEX IF NOT EXISTS idx_projects_continuation_ref ON projects(continuation_ref_id) WHERE continuation_ref_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_projects_owner_created ON projects(owner_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_ref_book_chapters_ref_all ON reference_book_chapters(ref_id, chapter_no)`,
 		`CREATE INDEX IF NOT EXISTS idx_task_queue_pending ON task_queue(priority DESC, scheduled_at ASC) WHERE status = 'pending'`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_profiles_single_default ON llm_profiles(is_default) WHERE is_default = TRUE`,

@@ -12,6 +12,7 @@ export interface Project {
   chapter_words: number
   style_description: string
   status: string
+  creation_mode: 'scratch' | 'own_outline' | 'prompt_only' | 'reference_style' | 'rewrite_original' | 'continuation' | 'same_style_new_world'
   project_type: 'original' | 'continuation'
   continuation_ref_id?: string | null
   continuation_start_chapter: number

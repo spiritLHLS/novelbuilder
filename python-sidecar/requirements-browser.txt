@@ -1,2 +1,3 @@
 # Browser automation for Fanqie auto-upload
 playwright>=1.40.0
+camoufox>=0.4.11

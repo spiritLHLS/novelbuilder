@@ -334,7 +334,7 @@ async def audit_chapter(req: AuditChapterRequest):
 
     if req.llm_config.get("api_key"):
         try:
-            from langchain.schema import SystemMessage, HumanMessage
+            from langchain_core.messages import SystemMessage, HumanMessage
 
             llm_cfg, _ = _prepare_llm_call(
                 req.llm_config,
@@ -498,7 +498,7 @@ async def anti_detect_rewrite(req: AntiDetectRequest):
     ai_prob_before = metrics_before.get("ai_probability", 0.0)
 
     try:
-        from langchain.schema import SystemMessage, HumanMessage
+        from langchain_core.messages import SystemMessage, HumanMessage
 
         style_guide = req.style_guide or "保持与原作品一致的风格"
         wordlist_note = ""
@@ -600,7 +600,7 @@ async def narrative_revise(req: NarrativeReviseRequest):
         raise HTTPException(status_code=400, detail="llm_config.api_key is required for narrative revision")
 
     try:
-        from langchain.schema import SystemMessage, HumanMessage
+        from langchain_core.messages import SystemMessage, HumanMessage
 
         dims_note = ""
         if req.failing_dimensions:
@@ -699,7 +699,7 @@ async def generate_creative_brief(req: CreativeBriefRequest):
         raise HTTPException(status_code=400, detail="llm_config.api_key is required")
 
     try:
-        from langchain.schema import SystemMessage, HumanMessage
+        from langchain_core.messages import SystemMessage, HumanMessage
 
         llm_cfg, _ = _prepare_llm_call(
             req.llm_config,
@@ -791,7 +791,7 @@ async def import_chapters_analyze(req: ImportChaptersRequest):
     reverse_engineered: dict = {}
     if req.llm_config.get("api_key") and chapters:
         try:
-            from langchain.schema import SystemMessage, HumanMessage
+            from langchain_core.messages import SystemMessage, HumanMessage
 
             sample_text = "\n\n".join(
                 ch["content"][:2000] for ch in chapters[:3]

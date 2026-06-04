@@ -23,11 +23,22 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response: AxiosResponse) => response,
   (error) => {
-    const msg = error.response?.data?.message || error.response?.data?.error || error.message
+    const payload = error.response?.data ?? {}
+    const msg = payload.message || payload.error || payload.detail || error.message
+    error.normalized = {
+      status: error.response?.status ?? 0,
+      code: payload.code || '',
+      message: msg,
+      requestId: error.response?.headers?.['x-request-id'] || '',
+      details: payload.details ?? null,
+    }
     console.error('API Error:', msg)
     // Redirect to login on auth failure (skip login endpoint itself to avoid loops).
     if (error.response?.status === 401 && !error.config?.url?.includes('/auth/')) {
       localStorage.removeItem(TOKEN_KEY)
+      localStorage.removeItem('nb_user_id')
+      localStorage.removeItem('nb_username')
+      localStorage.removeItem('nb_role')
       window.location.href = '/login'
     }
     return Promise.reject(error)
@@ -43,6 +54,38 @@ export const authApi = {
 
 export const setupApi = {
   status: () => api.get('/setup/status'),
+}
+
+export interface UserRecord {
+  id: string
+  username: string
+  display_name: string
+  role: 'admin' | 'user' | string
+  status: 'active' | 'disabled' | string
+  model_policy: string
+  created_at: string
+  updated_at: string
+}
+
+export const userApi = {
+  list: () => api.get<{ data: UserRecord[] }>('/users'),
+  get: (id: string) => api.get<{ data: UserRecord }>(`/users/${id}`),
+  create: (data: {
+    username: string
+    password: string
+    display_name?: string
+    role?: string
+    status?: string
+    model_policy?: string
+  }) => api.post<{ data: UserRecord }>('/users', data),
+  update: (id: string, data: {
+    password?: string
+    display_name?: string
+    role?: string
+    status?: string
+    model_policy?: string
+  }) => api.put<{ data: UserRecord }>(`/users/${id}`, data),
+  delete: (id: string) => api.delete(`/users/${id}`),
 }
 
 // Projects
@@ -505,6 +548,8 @@ export const promptPresetApi = {
   get: (id: string) => api.get(`/prompt-presets/${id}`),
   create: (data: any, projectId?: string) =>
     api.post(`/prompt-presets${projectId ? `?project_id=${projectId}` : ''}`, data),
+  optimize: (data: { content: string; target_chars?: number; language?: string }) =>
+    api.post('/prompt-presets/optimize', data),
   update: (id: string, data: any) => api.put(`/prompt-presets/${id}`, data),
   delete: (id: string) => api.delete(`/prompt-presets/${id}`),
 }
@@ -517,15 +562,60 @@ export const glossaryApi = {
 }
 
 // Task Queue
+export type TaskListParams = { page?: number; page_size?: number; status?: string; type?: string }
+export type TaskStreamSnapshot = {
+  data?: any[]
+  pagination?: { page?: number; page_size?: number; total?: number; total_pages?: number }
+  stats?: any
+  sent_at?: string
+  error?: string
+}
+
 export const taskApi = {
-  list: (projectId?: string, params?: { page?: number; page_size?: number; status?: string; type?: string }) =>
+  list: (projectId?: string, params?: TaskListParams) =>
     api.get(projectId ? `/projects/${projectId}/tasks` : '/tasks', { params }),
+  stats: (projectId?: string) => api.get(projectId ? `/projects/${projectId}/tasks/stats` : '/tasks/stats'),
+  stream: (
+    projectId?: string,
+    params?: TaskListParams,
+    onSnapshot?: (snapshot: TaskStreamSnapshot) => void,
+    onError?: (event: Event) => void,
+  ): EventSource => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries(params ?? {})) {
+      if (value !== undefined && value !== null && value !== '') {
+        query.set(key, String(value))
+      }
+    }
+    const token = localStorage.getItem(TOKEN_KEY)
+    if (token) query.set('token', token)
+    const path = projectId ? `/api/projects/${projectId}/tasks/stream` : '/api/tasks/stream'
+    const queryString = query.toString()
+    const es = new EventSource(`${path}${queryString ? `?${queryString}` : ''}`)
+    es.addEventListener('snapshot', (event: MessageEvent<string>) => {
+      try {
+        onSnapshot?.(JSON.parse(event.data))
+      } catch (err) {
+        console.error('Task stream parse error:', err)
+      }
+    })
+    es.addEventListener('task_error', (event: MessageEvent<string>) => {
+      try {
+        onSnapshot?.(JSON.parse(event.data))
+      } catch (err) {
+        console.error('Task stream error parse error:', err)
+      }
+    })
+    es.onerror = (event) => onError?.(event)
+    return es
+  },
   get: (id: string) => api.get(`/tasks/${id}`),
   enqueue: (data: any) => api.post('/tasks', data),
   pause: (id: string) => api.post(`/tasks/${id}/pause`),
   resume: (id: string) => api.post(`/tasks/${id}/resume`),
   cancel: (id: string) => api.post(`/tasks/${id}/cancel`),
   retry: (id: string) => api.post(`/tasks/${id}/retry`),
+  updatePayload: (id: string, payload: unknown) => api.put(`/tasks/${id}/payload`, { payload }),
 }
 
 // Resource Ledger (InkOS particle_ledger)

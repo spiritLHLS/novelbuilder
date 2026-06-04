@@ -34,6 +34,8 @@ WRITER_LOGIN = f"{FANQIE_BASE}/writer/login"
 # Playwright 浏览器实例（延迟初始化）
 _playwright = None
 _browser = None
+_browser_engine = ""
+_camoufox_manager = None
 
 # ── 请求模型 ──────────────────────────────────────────────────────────────────
 
@@ -84,10 +86,31 @@ def _parse_cookies(raw: str) -> list[dict]:
 
 
 async def _ensure_browser():
-    """确保 Playwright 浏览器已启动。"""
-    global _playwright, _browser
+    """确保反检测浏览器已启动，优先 Camoufox，失败时降级 Chromium。"""
+    global _playwright, _browser, _browser_engine, _camoufox_manager
     if _browser is not None:
         return _browser
+
+    engine = os.getenv("FANQIE_BROWSER_ENGINE", "camoufox").strip().lower() or "camoufox"
+    if engine in {"camoufox", "auto"}:
+        try:
+            from camoufox.async_api import AsyncCamoufox
+
+            _camoufox_manager = AsyncCamoufox(
+                headless=True,
+                locale="zh-CN",
+                os=["windows", "macos"],
+                block_webrtc=True,
+                humanize=True,
+            )
+            _browser = await _camoufox_manager.__aenter__()
+            _browser_engine = "camoufox"
+            logger.info("Fanqie browser started with Camoufox")
+            return _browser
+        except Exception as exc:
+            logger.warning("Camoufox unavailable, falling back to Playwright Chromium: %s", exc)
+            if engine == "camoufox" and os.getenv("FANQIE_BROWSER_STRICT", "").lower() in {"1", "true", "yes"}:
+                raise HTTPException(503, f"Camoufox 启动失败: {exc}")
 
     try:
         from playwright.async_api import async_playwright
@@ -101,23 +124,46 @@ async def _ensure_browser():
     _playwright = await async_playwright().start()
     _browser = await _playwright.chromium.launch(
         headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--disable-features=IsolateOrigins,site-per-process",
+        ],
     )
+    _browser_engine = "chromium"
     return _browser
 
 
 async def _create_context(cookies: list[dict]):
     """创建带有 Cookie 的浏览器上下文。"""
     browser = await _ensure_browser()
-    context = await browser.new_context(
-        user_agent=(
+    context_options = {
+        "viewport": {"width": 1440, "height": 900},
+        "locale": "zh-CN",
+        "timezone_id": "Asia/Shanghai",
+        "permissions": [],
+    }
+    if _browser_engine != "camoufox":
+        context_options["user_agent"] = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/131.0.0.0 Safari/537.36"
-        ),
-        viewport={"width": 1440, "height": 900},
-        locale="zh-CN",
-    )
+        )
+    context = await browser.new_context(**context_options)
+    await context.set_extra_http_headers({
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "DNT": "1",
+        "Sec-GPC": "1",
+    })
+    if _browser_engine != "camoufox":
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+            window.chrome = window.chrome || { runtime: {} };
+        """)
     if cookies:
         await context.add_cookies(cookies)
     return context
@@ -490,7 +536,7 @@ async def fanqie_health():
         browser = await _ensure_browser()
         return {
             "status": "ok",
-            "browser": "chromium",
+            "browser": _browser_engine or "unknown",
             "connected": browser.is_connected(),
         }
     except Exception as e:

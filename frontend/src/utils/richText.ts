@@ -14,6 +14,36 @@ function escapeHtml(input: string): string {
     .replace(/'/g, '&#39;')
 }
 
+function decodeHtmlAttribute(input: string): string {
+  return input
+    .replace(/&amp;/gi, '&')
+    .replace(/&colon;/gi, ':')
+    .replace(/&#0*58;/gi, ':')
+    .replace(/&#x0*3a;/gi, ':')
+}
+
+function isSafeUrl(raw: string): boolean {
+  const decoded = decodeHtmlAttribute(raw).trim()
+  if (!decoded) return false
+  if (decoded.startsWith('#') || decoded.startsWith('/') || decoded.startsWith('./') || decoded.startsWith('../')) {
+    return true
+  }
+  const compact = decoded.replace(/[\u0000-\u001F\u007F\s]+/g, '')
+  const scheme = compact.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase()
+  if (!scheme) return true
+  return scheme === 'http' || scheme === 'https' || scheme === 'mailto'
+}
+
+function sanitizeRenderedHtml(html: string): string {
+  return html
+    .replace(/\s(?:on[a-z]+|style)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s(href|src)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/gi, (_match, attr, _value, doubleQuoted, singleQuoted, bare) => {
+      const raw = doubleQuoted ?? singleQuoted ?? bare ?? ''
+      if (!isSafeUrl(raw)) return ''
+      return ` ${String(attr).toLowerCase()}="${escapeHtml(raw)}"`
+    })
+}
+
 export function toPlainText(value: unknown): string {
   if (value == null) return ''
   if (typeof value === 'string') return value
@@ -25,5 +55,5 @@ export function toPlainText(value: unknown): string {
 export function renderRichText(value: unknown): string {
   const plain = toPlainText(value).replace(/\r\n/g, '\n').trim()
   if (!plain) return ''
-  return String(marked.parse(escapeHtml(plain), { async: false }))
+  return sanitizeRenderedHtml(String(marked.parse(escapeHtml(plain), { async: false })))
 }

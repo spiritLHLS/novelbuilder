@@ -1,7 +1,116 @@
-ARG BASE_IMAGE=spiritlhl/novelbuilder:full
-FROM ${BASE_IMAGE}
+# ===========================================================
+# NovelBuilder - no-neo4j Docker image
+#
+# Single-container profile with PostgreSQL, Redis, Qdrant, browser automation,
+# the Go backend and Python sidecar. Neo4j and graph dependencies are omitted.
+# ===========================================================
+
+FROM golang:1.22-alpine AS go-builder
+
+RUN apk add --no-cache git gcc musl-dev
+ARG SERVER_VERSION=dev
+ARG UPX_ENABLED=false
+WORKDIR /build/backend
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags "-s -w -buildid= -X main.version=${SERVER_VERSION}" \
+      -o /build/server ./cmd/server \
+    && if [ "${UPX_ENABLED}" = "true" ]; then \
+      (apk add --no-cache upx && upx -9 /build/server) || true; \
+    fi
+
+FROM node:24-alpine AS vue-builder
+
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --legacy-peer-deps
+COPY frontend/ ./
+RUN npm run build
+
+FROM qdrant/qdrant:v1.12.0 AS qdrant-source
+
+FROM python:3.11.11-slim
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gnupg curl lsb-release ca-certificates \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+       -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+       https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+       > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       postgresql-16 postgresql-16-pgvector postgresql-client-16 \
+       redis-server supervisor libunwind8 libgcc-s1 libgomp1 \
+       netcat-openbsd gosu \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=qdrant-source /qdrant/qdrant /usr/local/bin/qdrant
+RUN chmod +x /usr/local/bin/qdrant \
+    && mkdir -p /var/lib/qdrant \
+    && chmod 755 /var/lib/qdrant
+
+WORKDIR /app/python-sidecar
+COPY python-sidecar/requirements*.txt ./
+COPY python-sidecar/novel-downloader ./novel-downloader
+ARG TARGETARCH
+ARG NB_ACCELERATOR=cpu
+ARG TORCH_VERSION=2.12.0
+ENV NB_ACCELERATOR=${NB_ACCELERATOR}
+RUN case "${NB_ACCELERATOR}" in \
+      cpu|auto) \
+        if [ "$TARGETARCH" = "amd64" ]; then \
+          pip install --no-cache-dir --no-compile "torch==${TORCH_VERSION}" --index-url https://download.pytorch.org/whl/cpu; \
+        else \
+          pip install --no-cache-dir --no-compile "torch==${TORCH_VERSION}"; \
+        fi ;; \
+      cuda|gpu) \
+        if [ "$TARGETARCH" != "amd64" ]; then \
+          echo "CUDA torch wheels are only supported for linux/amd64 in this image" >&2; exit 64; \
+        fi; \
+        pip install --no-cache-dir --no-compile "torch==${TORCH_VERSION}" ;; \
+      *) echo "Unsupported NB_ACCELERATOR=${NB_ACCELERATOR}; use cpu or cuda" >&2; exit 64 ;; \
+    esac
+RUN pip install --no-cache-dir --no-compile \
+        -r requirements-base.txt \
+        -r requirements-vector.txt \
+        -r requirements-browser.txt
+RUN python -m playwright install --with-deps chromium \
+    && (python -m camoufox fetch || echo "WARNING: Camoufox fetch failed; Playwright Chromium fallback remains available") \
+    && rm -rf /var/lib/apt/lists/*
+RUN if [ -f "./novel-downloader/pyproject.toml" ]; then \
+        pip install --no-cache-dir --no-compile ./novel-downloader; \
+    else \
+        echo "WARNING: novel-downloader submodule is empty; downloading from GitHub..." \
+        && curl -fsSL https://github.com/spiritLHLS/novel-downloader/archive/refs/heads/main.tar.gz \
+           | tar -xz -C /tmp \
+        && pip install --no-cache-dir --no-compile /tmp/novel-downloader-main \
+        && rm -rf /tmp/novel-downloader-main; \
+    fi
+COPY python-sidecar/ ./
+
+COPY --from=go-builder /build/server /app/server
+COPY --from=vue-builder /build/frontend/dist /app/frontend/dist
+
+COPY docker/supervisord.no-neo4j.conf /etc/supervisor/conf.d/supervisord.conf
+COPY docker/wait-for-pg.sh /app/docker/wait-for-pg.sh
+COPY docker/wait-for-port.sh /app/docker/wait-for-port.sh
+COPY docker/docker-entrypoint.no-neo4j.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker/*.sh /app/docker-entrypoint.sh
 
 ENV APP_PROFILE=no-neo4j
 ENV NEO4J_URI=""
 
-COPY docker/supervisord.no-neo4j.conf /etc/supervisor/conf.d/supervisord.conf
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+    CMD curl -f http://localhost:8080/api/health || exit 1
+
+EXPOSE 8080
+VOLUME ["/var/lib/postgresql/data", "/var/lib/qdrant", "/data/uploads"]
+WORKDIR /app
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

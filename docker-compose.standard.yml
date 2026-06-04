@@ -10,6 +10,7 @@ services:
     environment:
       APP_PROFILE: standard
       DB_DRIVER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env before starting the standard Docker profile}
     volumes:
       - novelbuilder-standard-pg:/var/lib/postgresql/data
       - novelbuilder-standard-uploads:/data/uploads

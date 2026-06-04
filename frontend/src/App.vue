@@ -1,5 +1,5 @@
 <template>
-  <el-config-provider>
+  <el-config-provider :locale="localeStore.elementLocale">
     <!-- Public bootstrap pages get a clean fullscreen layout (no sidebar) -->
     <router-view v-if="isFullscreenRoute" />
 
@@ -9,35 +9,35 @@
           <span class="logo-icon">📖</span>
           <div class="logo-text">
             <h2>NovelBuilder</h2>
-            <p>AI小说生成平台</p>
+            <p>{{ localeStore.t('appSubtitle') }}</p>
           </div>
         </div>
         <nav class="sidebar-nav">
           <a class="nav-item" :class="{ active: route.path === '/projects' }"
             @click.prevent="router.push('/projects')" href="#">
-            <el-icon><Folder /></el-icon><span>项目管理</span>
+            <el-icon><Folder /></el-icon><span>{{ localeStore.t('projects') }}</span>
           </a>
           <template v-if="currentProjectId">
-            <div class="nav-group-title">写书流程</div>
+            <div class="nav-group-title">{{ localeStore.t('writingFlow') }}</div>
             <a v-for="item in workshopItems" :key="item.path" class="nav-item"
               :class="{ active: route.path === item.path }"
               @click.prevent="router.push(item.path)" href="#">
               <el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span>
             </a>
-            <div class="nav-group-title">资产与知识</div>
+            <div class="nav-group-title">{{ localeStore.t('assetsKnowledge') }}</div>
             <a v-for="item in pipelineItems" :key="item.path" class="nav-item"
               :class="{ active: route.path === item.path }"
               @click.prevent="router.push(item.path)" href="#">
               <el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span>
             </a>
-            <div class="nav-group-title">质量与发布</div>
+            <div class="nav-group-title">{{ localeStore.t('qualityPublish') }}</div>
             <a v-for="item in toolItems" :key="item.path" class="nav-item"
               :class="{ active: route.path === item.path }"
               @click.prevent="router.push(item.path)" href="#">
               <el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span>
             </a>
           </template>
-          <div class="nav-group-title">系统</div>
+          <div v-if="systemItems.length" class="nav-group-title">{{ localeStore.t('system') }}</div>
           <a v-for="item in systemItems" :key="item.path" class="nav-item"
             :class="{ active: route.path === item.path }"
             @click.prevent="router.push(item.path)" href="#">
@@ -51,15 +51,19 @@
           </div>
           <button class="theme-btn" @click="themeStore.toggleTheme()">
             <span>{{ isDark ? '☀️' : '🌙' }}</span>
-            <span>{{ isDark ? '切换亮色' : '切换暗色' }}</span>
+            <span>{{ isDark ? localeStore.t('lightMode') : localeStore.t('darkMode') }}</span>
+          </button>
+          <button class="locale-btn" @click="localeStore.toggleLocale()">
+            <el-icon><Switch /></el-icon>
+            <span>{{ localeStore.t('languageToggle') }}</span>
           </button>
           <button class="guide-btn" @click="openGuide">
             <el-icon><QuestionFilled /></el-icon>
-            <span>使用向导</span>
+            <span>{{ localeStore.t('guide') }}</span>
           </button>
           <button class="logout-btn" @click="handleLogout">
             <el-icon><SwitchButton /></el-icon>
-            <span>退出登录</span>
+            <span>{{ localeStore.t('logout') }}</span>
           </button>
         </div>
       </aside>
@@ -78,6 +82,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useProjectStore } from '@/stores/project'
 import { useThemeStore } from '@/stores/theme'
+import { useLocaleStore } from '@/stores/locale'
 import { useDownloadStore } from '@/stores/download'
 import { useAuthStore } from '@/stores/auth'
 import DownloadWidget from '@/components/DownloadWidget.vue'
@@ -87,6 +92,7 @@ const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
 const themeStore = useThemeStore()
+const localeStore = useLocaleStore()
 const downloadStore = useDownloadStore()
 const auth = useAuthStore()
 const GUIDE_KEY = 'nb_first_run_guide_done'
@@ -112,7 +118,7 @@ watch(() => auth.token, (token) => {
 
 async function handleLogout() {
   await auth.logout()
-  ElMessage.info('已退出登录')
+  ElMessage.info(localeStore.t('logoutSuccess'))
   router.push('/login')
 }
 
@@ -123,46 +129,54 @@ function openGuide() {
 const workshopItems = computed(() => {
   const pid = currentProjectId.value
   return [
-    { path: `/projects/${pid}/studio`, icon: 'Edit', label: '创作中枢' },
-    { path: `/projects/${pid}/blueprint`, icon: 'Document', label: '蓝图规划' },
-    { path: `/projects/${pid}/chapters`, icon: 'Notebook', label: '章节生成' },
-    { path: `/projects/${pid}/workflow`, icon: 'SetUp', label: '流程状态' },
-    { path: `/projects/${pid}/tasks`, icon: 'Timer', label: '任务总控' },
+    { path: `/projects/${pid}/studio`, icon: 'Edit', label: localeStore.t('studio') },
+    { path: `/projects/${pid}/blueprint`, icon: 'Document', label: localeStore.t('blueprint') },
+    { path: `/projects/${pid}/chapters`, icon: 'Notebook', label: localeStore.t('chapters') },
+    { path: `/projects/${pid}/workflow`, icon: 'SetUp', label: localeStore.t('workflow') },
+    { path: `/projects/${pid}/tasks`, icon: 'Timer', label: localeStore.t('projectTasks') },
   ]
 })
 
 const pipelineItems = computed(() => {
   const pid = currentProjectId.value
   return [
-    { path: `/projects/${pid}/references`, icon: 'Reading', label: '参考书与导入' },
-    { path: `/projects/${pid}/rag`, icon: 'Management', label: 'RAG 知识库' },
-    { path: `/projects/${pid}/graph-memory`, icon: 'Share', label: '图谱与向量记忆' },
-    { path: `/projects/${pid}/world`, icon: 'Place', label: '世界设定' },
-    { path: `/projects/${pid}/characters`, icon: 'Avatar', label: '角色档案' },
-    { path: `/projects/${pid}/outline`, icon: 'List', label: '章节大纲' },
-    { path: `/projects/${pid}/glossary`, icon: 'Collection', label: '术语与资源' },
+    { path: `/projects/${pid}/references`, icon: 'Reading', label: localeStore.t('references') },
+    { path: `/projects/${pid}/rag`, icon: 'Management', label: localeStore.t('rag') },
+    { path: `/projects/${pid}/graph-memory`, icon: 'Share', label: localeStore.t('graphMemory') },
+    { path: `/projects/${pid}/world`, icon: 'Place', label: localeStore.t('world') },
+    { path: `/projects/${pid}/characters`, icon: 'Avatar', label: localeStore.t('characters') },
+    { path: `/projects/${pid}/outline`, icon: 'List', label: localeStore.t('outline') },
+    { path: `/projects/${pid}/glossary`, icon: 'Collection', label: localeStore.t('glossary') },
   ]
 })
 
 const toolItems = computed(() => {
   const pid = currentProjectId.value
   return [
-    { path: `/projects/${pid}/quality`, icon: 'DataAnalysis', label: '质量审稿' },
-    { path: `/projects/${pid}/agent-review`, icon: 'ChatDotRound', label: '智能体评审' },
-    { path: `/projects/${pid}/analytics`, icon: 'TrendCharts', label: '统计分析' },
-    { path: `/projects/${pid}/fanqie`, icon: 'Promotion', label: '发布上传' },
+    { path: `/projects/${pid}/quality`, icon: 'DataAnalysis', label: localeStore.t('quality') },
+    { path: `/projects/${pid}/agent-review`, icon: 'ChatDotRound', label: localeStore.t('agentReview') },
+    { path: `/projects/${pid}/analytics`, icon: 'TrendCharts', label: localeStore.t('analytics') },
+    { path: `/projects/${pid}/fanqie`, icon: 'Promotion', label: localeStore.t('fanqie') },
   ]
 })
 
-const systemItems = [
-  { path: '/tasks', icon: 'Timer', label: '全局任务' },
-  { path: '/settings/llm', icon: 'Setting', label: 'AI 模型配置' },
-  { path: '/settings/agent-routing', icon: 'Share', label: '多模型路由' },
-  { path: '/settings/prompt-presets', icon: 'DocumentCopy', label: '提示词预设' },
-  { path: '/settings/system', icon: 'Tools', label: '系统设置' },
-  { path: '/settings/genre-templates', icon: 'Files', label: '题材规则' },
-  { path: '/settings/logs', icon: 'Monitor', label: '系统日志' },
-]
+const systemItems = computed(() => {
+  if (auth.role !== 'admin') {
+    return [
+      { path: '/settings/prompt-presets', icon: 'DocumentCopy', label: localeStore.t('promptPresets') },
+    ]
+  }
+  return [
+    { path: '/tasks', icon: 'Timer', label: localeStore.t('globalTasks') },
+    { path: '/settings/users', icon: 'User', label: localeStore.t('users') },
+    { path: '/settings/llm', icon: 'Setting', label: localeStore.t('llmSettings') },
+    { path: '/settings/agent-routing', icon: 'Share', label: localeStore.t('agentRouting') },
+    { path: '/settings/prompt-presets', icon: 'DocumentCopy', label: localeStore.t('promptPresets') },
+    { path: '/settings/system', icon: 'Tools', label: localeStore.t('systemSettings') },
+    { path: '/settings/genre-templates', icon: 'Files', label: localeStore.t('genreTemplates') },
+    { path: '/settings/logs', icon: 'Monitor', label: localeStore.t('systemLogs') },
+  ]
+})
 </script>
 
 <style>
@@ -207,14 +221,16 @@ body {
   white-space: nowrap; overflow: hidden;
 }
 .user-info .username { overflow: hidden; text-overflow: ellipsis; }
-.theme-btn {
+.theme-btn,
+.locale-btn {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
   border: 1px solid var(--nb-border-sidebar); border-radius: 6px; background: transparent;
   color: var(--nb-text-sidebar); font-size: 12px; cursor: pointer;
   transition: background-color 0.12s, color 0.12s;
   margin-bottom: 6px;
 }
-.theme-btn:hover { background-color: var(--nb-bg-sidebar-hover); color: var(--nb-accent); }
+.theme-btn:hover,
+.locale-btn:hover { background-color: var(--nb-bg-sidebar-hover); color: var(--nb-accent); }
 .guide-btn {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
   border: 1px solid transparent; border-radius: 6px; background: transparent;
@@ -248,6 +264,7 @@ body {
   .nav-group-title,
   .nav-item span,
   .theme-btn span:last-child,
+  .locale-btn span,
   .guide-btn span,
   .logout-btn span,
   .user-info .username {
@@ -256,6 +273,7 @@ body {
 
   .nav-item,
   .theme-btn,
+  .locale-btn,
   .guide-btn,
   .logout-btn {
     justify-content: center;

@@ -202,6 +202,7 @@ import { ref, reactive, nextTick, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { agentReviewApi, chapterApi } from '@/api/index'
 import { ElMessage } from 'element-plus'
+import { renderRichText } from '@/utils/richText'
 
 const route = useRoute()
 const projectId = route.params.projectId as string
@@ -280,10 +281,7 @@ function formatTime(iso: string) {
 }
 
 function formatContent(text: string) {
-  // Very simple markdown-like rendering: bold, line breaks
-  return text
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\n/g, '<br/>')
+  return renderRichText(text)
 }
 
 async function scrollToBottom() {

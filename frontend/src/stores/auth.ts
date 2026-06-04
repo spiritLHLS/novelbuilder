@@ -3,10 +3,21 @@ import { ref } from 'vue'
 import axios from 'axios'
 
 const TOKEN_KEY = 'nb_token'
+const USER_ID_KEY = 'nb_user_id'
+const USERNAME_KEY = 'nb_username'
+const ROLE_KEY = 'nb_role'
+
+type SessionPayload = {
+  user_id?: string
+  username?: string
+  role?: string
+}
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string>(localStorage.getItem(TOKEN_KEY) ?? '')
-  const username = ref<string>('')
+  const userId = ref<string>(localStorage.getItem(USER_ID_KEY) ?? '')
+  const username = ref<string>(localStorage.getItem(USERNAME_KEY) ?? '')
+  const role = ref<string>(localStorage.getItem(ROLE_KEY) ?? '')
   const checked = ref(false)
 
   function setToken(t: string) {
@@ -18,10 +29,22 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  function setSession(payload: SessionPayload) {
+    userId.value = payload.user_id ?? ''
+    username.value = payload.username ?? ''
+    role.value = payload.role ?? ''
+    if (userId.value) localStorage.setItem(USER_ID_KEY, userId.value)
+    else localStorage.removeItem(USER_ID_KEY)
+    if (username.value) localStorage.setItem(USERNAME_KEY, username.value)
+    else localStorage.removeItem(USERNAME_KEY)
+    if (role.value) localStorage.setItem(ROLE_KEY, role.value)
+    else localStorage.removeItem(ROLE_KEY)
+  }
+
   async function login(user: string, password: string) {
     const res = await axios.post('/api/auth/login', { username: user, password })
     setToken(res.data.token)
-    username.value = res.data.username
+    setSession(res.data)
     checked.value = true
   }
 
@@ -34,7 +57,7 @@ export const useAuthStore = defineStore('auth', () => {
       // ignore errors on logout
     }
     setToken('')
-    username.value = ''
+    setSession({})
     checked.value = false
   }
 
@@ -47,15 +70,16 @@ export const useAuthStore = defineStore('auth', () => {
       const res = await axios.get('/api/auth/check', {
         headers: { Authorization: `Bearer ${token.value}` },
       })
-      username.value = res.data.username ?? ''
+      setSession(res.data)
       checked.value = true
       return true
     } catch {
       setToken('')
+      setSession({})
       checked.value = true
       return false
     }
   }
 
-  return { token, username, checked, login, logout, check, setToken }
+  return { token, userId, username, role, checked, login, logout, check, setToken, setSession }
 })

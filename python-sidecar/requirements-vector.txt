@@ -1,8 +1,8 @@
 # Vector store and local embeddings
-qdrant-client==1.13.0
-sentence-transformers==3.3.1
+qdrant-client==1.16.2
+sentence-transformers==5.1.2
 
 # torch is installed before this file is read in Docker builds (arch-conditional
 # CPU wheel step); listing it here pins local installs and prevents accidental
 # upgrades.
-torch==2.5.1
+torch==2.12.0
