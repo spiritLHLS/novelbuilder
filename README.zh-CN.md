@@ -70,7 +70,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1
 | --- | --- | --- | --- | --- |
 | `latest`, `full`, `YYYYMMDD` | `Dockerfile` | 单容器内置 PostgreSQL、Redis、Qdrant、Neo4j、Python、Go、Vue、Playwright | 4 CPU、8 GB 内存、20 GB 磁盘 | 完整本地部署 |
 | `standard`, `YYYYMMDD-standard` | `Dockerfile.standard` | 单容器内置 PostgreSQL、Redis、Python、Go、Vue | 2 CPU、4 GB 内存、10 GB 磁盘 | 只安装 base Python 依赖，关闭图谱/向量/浏览器能力 |
-| `app`, `YYYYMMDD-app` | `Dockerfile.app` | 只包含应用、Sidecar 和前端 | 2 CPU、2 GB 内存，外部服务另算 | 保留外部 Neo4j/Qdrant 所需依赖，不内置浏览器自动化 |
+| `app`, `YYYYMMDD-app` | `Dockerfile.app` | 只包含应用、Sidecar 和前端 | 2 CPU、2 GB 内存，外部服务另算 | 保留外部 Neo4j/Qdrant 和浏览器自动化所需依赖 |
 | `sqlite` | `Dockerfile.sqlite` | 独立最小镜像，使用 SQLite，并关闭可选服务 | 1 CPU、2 GB 内存、5 GB 磁盘 | 只安装 base Python 依赖，适合单用户本地使用 |
 | `no-neo4j` | `Dockerfile.no-neo4j` | 独立单容器内置 PostgreSQL、Redis、Qdrant、浏览器自动化、Python、Go、Vue | 3 CPU、6 GB 内存、15 GB 磁盘 | 不安装 Neo4j 和 graph Python/runtime 依赖 |
 | `no-qdrant` | `Dockerfile.no-qdrant` | 独立单容器内置 PostgreSQL、Redis、Neo4j、浏览器自动化、Python、Go、Vue | 3 CPU、6 GB 内存、15 GB 磁盘 | 不安装 Qdrant 和 vector Python/runtime 依赖 |

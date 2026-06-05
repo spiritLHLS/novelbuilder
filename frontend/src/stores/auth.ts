@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import axios from 'axios'
+import { authApi } from '@/api'
 
 const TOKEN_KEY = 'nb_token'
 const USER_ID_KEY = 'nb_user_id'
@@ -42,7 +42,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(user: string, password: string) {
-    const res = await axios.post('/api/auth/login', { username: user, password })
+    const res = await authApi.login(user, password)
     setToken(res.data.token)
     setSession(res.data)
     checked.value = true
@@ -50,9 +50,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function logout() {
     try {
-      await axios.post('/api/auth/logout', {}, {
-        headers: { Authorization: `Bearer ${token.value}` },
-      })
+      await authApi.logout()
     } catch {
       // ignore errors on logout
     }
@@ -67,9 +65,7 @@ export const useAuthStore = defineStore('auth', () => {
       return false
     }
     try {
-      const res = await axios.get('/api/auth/check', {
-        headers: { Authorization: `Bearer ${token.value}` },
-      })
+      const res = await authApi.check()
       setSession(res.data)
       checked.value = true
       return true

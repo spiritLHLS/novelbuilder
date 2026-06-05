@@ -6,7 +6,7 @@
 | --- | --- | --- | --- | --- |
 | `full` | Complete local workstation | Largest | PostgreSQL, Redis, Qdrant, Neo4j | RAG, graph memory, Playwright upload automation |
 | `standard` | Daily writing on smaller hosts | Medium | PostgreSQL, Redis | Base Python deps only; graph/vector/browser routes disabled |
-| `app` | Multi-container or managed services | Small | External PostgreSQL/Redis/Qdrant/Neo4j | Graph/vector deps installed; external services decide what is enabled; no browser automation |
+| `app` | Multi-container or managed services | Small | External PostgreSQL/Redis/Qdrant/Neo4j | Graph/vector/browser deps installed; external services decide what is enabled |
 | `sqlite` | Single-user trial or offline local use | Smallest | SQLite | Independent minimal image; base Python deps only; Redis/Qdrant/Neo4j disabled |
 | `no-neo4j` | Keep RAG/vector and browser upload automation, disable graph memory | Large | PostgreSQL, Redis, Qdrant | Independent image with vector/browser deps, no Neo4j/Graph runtime |
 | `no-qdrant` | Keep graph memory and browser upload automation, disable vector search | Large | PostgreSQL, Redis, Neo4j | Independent image with graph/browser deps, no Qdrant/Vector runtime |
@@ -20,9 +20,9 @@ All `no-*` profiles are now independent single-container builds, so disabled com
 | File | Profiles | Contents |
 | --- | --- | --- |
 | `requirements-base.txt` | all | FastAPI, DB/Redis, LangGraph/LangChain, reference analysis, novel-source import |
-| `requirements-graph.txt` | `full`, `app` | Graphiti and Neo4j driver |
-| `requirements-vector.txt` | `full`, `app` | Qdrant, sentence-transformers, torch pin |
-| `requirements-browser.txt` | `full`, `no-neo4j`, `no-qdrant` | Playwright upload automation |
+| `requirements-graph.txt` | `full`, `app`, `no-qdrant` | Graphiti and Neo4j driver |
+| `requirements-vector.txt` | `full`, `app`, `no-neo4j` | Qdrant, sentence-transformers, torch pin |
+| `requirements-browser.txt` | `full`, `app`, `no-neo4j`, `no-qdrant` | Playwright/Camoufox upload automation |
 
 `no-neo4j` installs base + vector + browser dependencies. `no-qdrant` installs base + graph + browser dependencies. This keeps the non-disabled heavy capability available while omitting the disabled component's Python and system runtime.
 
@@ -33,14 +33,13 @@ When graph or vector services are disabled, those APIs return 503 while core wri
 ```mermaid
 flowchart LR
   Checkout["checkout + submodules"] --> Base["build base matrix<br/>full / standard / app"]
-  Base --> DockerHubBase["push Docker Hub run-stable base tags"]
-  Base --> GHCRBase["push GHCR run-stable base tags"]
-  DockerHubBase --> VariantsHub["build Docker Hub variants<br/>FROM Docker Hub run tag"]
-  GHCRBase --> VariantsGHCR["build GHCR variants<br/>FROM GHCR run tag"]
+  Checkout --> Variants["build variant matrix<br/>no-neo4j / no-qdrant / no-graph-vector / no-redis / sqlite"]
+  Base --> RegistriesBase["push base tags<br/>Docker Hub / GHCR"]
+  Variants --> RegistriesVariants["push variant tags<br/>Docker Hub / GHCR"]
   Checkout --> Binaries["build binary packages"]
 ```
 
-All variant Dockerfiles now build independently and no longer depend on a same-run `BASE_IMAGE`. The workflow still builds base profiles before variants to keep publish ordering and tag semantics clear.
+All variant Dockerfiles now build independently and no longer depend on a same-run `BASE_IMAGE`. The workflow builds base profiles and variants in parallel; Docker cache scopes include profile, accelerator, and platform so CPU/CUDA and amd64/arm64 layers do not collide.
 
 The workflow uses Node 24-compatible actions, including `actions/checkout@v6`, `actions/setup-go@v6`, `actions/setup-node@v6`, `actions/upload-artifact@v6`, and current Docker official build/login/setup actions. It also sets `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`.
 

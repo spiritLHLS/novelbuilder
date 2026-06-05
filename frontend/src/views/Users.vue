@@ -103,7 +103,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
-import { userApi, type UserRecord } from '@/api'
+import { getApiErrorMessage, userApi, type UserRecord } from '@/api'
 import type { FormInstance, FormRules } from 'element-plus'
 
 const users = ref<UserRecord[]>([])
@@ -119,7 +119,7 @@ const form = reactive({
   display_name: '',
   role: 'user',
   status: 'active',
-  model_policy: '{}',
+  model_policy: '{"scope":"all"}',
 })
 
 const roleOptions = [
@@ -172,7 +172,7 @@ async function fetchUsers() {
     const res = await userApi.list()
     users.value = res.data.data ?? []
   } catch (e: any) {
-    ElMessage.error(e.normalized?.message || e.response?.data?.error || '加载用户失败')
+    ElMessage.error(getApiErrorMessage(e, '加载用户失败'))
   } finally {
     loading.value = false
   }
@@ -201,7 +201,7 @@ function resetForm() {
   form.display_name = ''
   form.role = 'user'
   form.status = 'active'
-  form.model_policy = '{}'
+  form.model_policy = '{"scope":"all"}'
   formRef.value?.clearValidate()
 }
 
@@ -232,7 +232,7 @@ async function submit() {
     dialogVisible.value = false
     await fetchUsers()
   } catch (e: any) {
-    ElMessage.error(e.normalized?.message || e.response?.data?.error || '保存用户失败')
+    ElMessage.error(getApiErrorMessage(e, '保存用户失败'))
   } finally {
     submitting.value = false
   }

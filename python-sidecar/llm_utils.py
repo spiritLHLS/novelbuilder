@@ -11,10 +11,13 @@ from typing import Any, Callable
 
 import httpx
 from llm_rate_limit import (
+    apply_llm_limits,
     apply_max_completion_tokens_fallback,
-    apply_rpm_limit,
+    estimate_tokens,
     rate_limit_async,
     rate_limit_sync,
+    rate_limit_tokens_async,
+    rate_limit_tokens_sync,
 )
 
 try:
@@ -75,13 +78,19 @@ def build_llm(
     omit_max_tokens  = cfg.get("omit_max_tokens", False)
 
     rpm_limit = int(cfg.get("rpm_limit", 0) or 0)
-    # Key uses the original base_url (before any SDK-specific stripping) + model.
-    rpm_key = f"{base_url}|{model}"
+    tpm_limit = int(cfg.get("tpm_limit", 0) or 0)
+    limit_key = f"{base_url}|{model}"
 
-    def _maybe_rpm(llm):
-        """Apply sliding-window RPM limiter if configured."""
-        if rpm_limit > 0:
-            return apply_rpm_limit(llm, rpm_key, rpm_limit)
+    def _maybe_limits(llm):
+        """Apply sliding-window RPM/TPM limiters if configured."""
+        if rpm_limit > 0 or tpm_limit > 0:
+            return apply_llm_limits(
+                llm,
+                limit_key,
+                rpm_limit,
+                tpm_limit,
+                int(cfg.get("max_tokens", default_max_tokens) or 0),
+            )
         return llm
 
     # ── Anthropic ─────────────────────────────────────────────────────────────
@@ -101,7 +110,7 @@ def build_llm(
             kwargs["temperature"] = float(cfg.get("temperature", default_temperature))
         if not omit_max_tokens:
             kwargs["max_tokens"] = int(cfg.get("max_tokens", default_max_tokens))
-        return _maybe_rpm(ChatAnthropic(**kwargs))
+        return _maybe_limits(ChatAnthropic(**kwargs))
 
     # ── Google Gemini ─────────────────────────────────────────────────────────
     if api_style == "gemini":
@@ -112,7 +121,7 @@ def build_llm(
             kwargs["temperature"] = float(cfg.get("temperature", default_temperature))
         if not omit_max_tokens:
             kwargs["max_output_tokens"] = int(cfg.get("max_tokens", default_max_tokens))
-        return _maybe_rpm(ChatGoogleGenerativeAI(**kwargs))
+        return _maybe_limits(ChatGoogleGenerativeAI(**kwargs))
 
     # ── OpenAI / OpenAI-compatible (default) ──────────────────────────────────
     from langchain_openai import ChatOpenAI
@@ -160,9 +169,9 @@ def build_llm(
         fallback_kwargs.pop("max_tokens", None)
         fallback_kwargs["max_completion_tokens"] = tokens_val
         fallback = ChatOpenAI(**fallback_kwargs)
-        return _maybe_rpm(apply_max_completion_tokens_fallback(primary, fallback))
+        return _maybe_limits(apply_max_completion_tokens_fallback(primary, fallback))
 
-    return _maybe_rpm(primary)
+    return _maybe_limits(primary)
 
 
 def build_invoke_config(
@@ -586,9 +595,16 @@ def invoke_text_sync(
         endpoint = f"{base_url}/responses"
         model = invoke_cfg.get("model", "gpt-4o")
         rpm_limit = int(invoke_cfg.get("rpm_limit", 0) or 0)
+        tpm_limit = int(invoke_cfg.get("tpm_limit", 0) or 0)
+        max_output_tokens = int(invoke_cfg.get("max_tokens", 4096) or 4096)
 
+        prepared_messages = _prepare_session_messages(current_messages, resolved_session, use_session_history=use_session_history)
+        limit_key = f"{base_url}|{model}"
+        if tpm_limit > 0:
+            output_budget = 0 if invoke_cfg.get("omit_max_tokens", False) else max_output_tokens
+            rate_limit_tokens_sync(limit_key, tpm_limit, estimate_tokens(prepared_messages, output_budget))
         if rpm_limit > 0:
-            rate_limit_sync(f"{base_url}|{model}", rpm_limit)
+            rate_limit_sync(limit_key, rpm_limit)
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -597,14 +613,13 @@ def invoke_text_sync(
         if resolved_session:
             headers["X-NovelBuilder-Session"] = resolved_session[:128]
 
-        prepared_messages = _prepare_session_messages(current_messages, resolved_session, use_session_history=use_session_history)
         payload: dict[str, Any] = {
             "model": model,
             "input": _response_messages_payload(prepared_messages),
             "store": False,
         }
         if not invoke_cfg.get("omit_max_tokens", False):
-            payload["max_output_tokens"] = int(invoke_cfg.get("max_tokens", 4096))
+            payload["max_output_tokens"] = max_output_tokens
 
         timeout_seconds = float(invoke_cfg.get("timeout", 600) or 600)
         http_timeout = httpx.Timeout(connect=30.0, read=timeout_seconds, write=30.0, pool=30.0)
@@ -682,9 +697,16 @@ async def ainvoke_text(
         endpoint = f"{base_url}/responses"
         model = invoke_cfg.get("model", "gpt-4o")
         rpm_limit = int(invoke_cfg.get("rpm_limit", 0) or 0)
+        tpm_limit = int(invoke_cfg.get("tpm_limit", 0) or 0)
+        max_output_tokens = int(invoke_cfg.get("max_tokens", 4096) or 4096)
 
+        prepared_messages = _prepare_session_messages(current_messages, resolved_session, use_session_history=use_session_history)
+        limit_key = f"{base_url}|{model}"
+        if tpm_limit > 0:
+            output_budget = 0 if invoke_cfg.get("omit_max_tokens", False) else max_output_tokens
+            await rate_limit_tokens_async(limit_key, tpm_limit, estimate_tokens(prepared_messages, output_budget))
         if rpm_limit > 0:
-            await rate_limit_async(f"{base_url}|{model}", rpm_limit)
+            await rate_limit_async(limit_key, rpm_limit)
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -693,14 +715,13 @@ async def ainvoke_text(
         if resolved_session:
             headers["X-NovelBuilder-Session"] = resolved_session[:128]
 
-        prepared_messages = _prepare_session_messages(current_messages, resolved_session, use_session_history=use_session_history)
         payload: dict[str, Any] = {
             "model": model,
             "input": _response_messages_payload(prepared_messages),
             "store": False,
         }
         if not invoke_cfg.get("omit_max_tokens", False):
-            payload["max_output_tokens"] = int(invoke_cfg.get("max_tokens", 4096))
+            payload["max_output_tokens"] = max_output_tokens
 
         timeout_seconds = float(invoke_cfg.get("timeout", 600) or 600)
         http_timeout = httpx.Timeout(connect=30.0, read=timeout_seconds, write=30.0, pool=30.0)

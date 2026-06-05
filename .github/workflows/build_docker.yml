@@ -235,7 +235,6 @@ jobs:
 
   docker-variants:
     name: docker variant (${{ matrix.profile }})
-    needs: docker-base
     if: github.event_name != 'workflow_dispatch' || inputs.image_set == 'all'
     runs-on: ubuntu-latest
     timeout-minutes: 3600

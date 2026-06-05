@@ -188,6 +188,7 @@ async def merge_chunks(req: MergeRequest):
             max_tokens=req.llm_config.max_tokens,
             temperature=req.llm_config.temperature,
             rpm_limit=req.llm_config.rpm_limit,
+            tpm_limit=req.llm_config.tpm_limit,
             omit_max_tokens=req.llm_config.omit_max_tokens,
             omit_temperature=req.llm_config.omit_temperature,
             api_style=req.llm_config.api_style,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 import time
 from typing import Any
@@ -64,6 +65,66 @@ _rpm_async_state: dict[str, dict[str, Any]] = {}
 _rpm_sync_timestamps: dict[str, list[float]] = {}
 _rpm_sync_locks: dict[str, threading.Lock] = {}
 
+# Token state stores (timestamp, token_charge) entries in a 60-second window.
+_tpm_async_state: dict[str, dict[str, Any]] = {}
+_tpm_sync_usage: dict[str, list[tuple[float, int]]] = {}
+_tpm_sync_locks: dict[str, threading.Lock] = {}
+
+
+def _text_token_estimate(text: str) -> int:
+    """Conservative local token estimate without tokenizer dependencies."""
+    if not text:
+        return 0
+    cjk = 0
+    other = 0
+    for ch in text:
+        if ch.isspace():
+            continue
+        code = ord(ch)
+        if (
+            0x4E00 <= code <= 0x9FFF
+            or 0x3400 <= code <= 0x4DBF
+            or 0x3040 <= code <= 0x30FF
+            or 0xAC00 <= code <= 0xD7AF
+        ):
+            cjk += 1
+        else:
+            other += 1
+    return cjk + math.ceil(other / 4)
+
+
+def estimate_tokens(value: Any, max_output_tokens: int = 0) -> int:
+    """Estimate request token charge from common LangChain/OpenAI payload shapes."""
+    total = max(0, int(max_output_tokens or 0))
+    if value is None:
+        return max(total, 1)
+    if isinstance(value, str):
+        return max(total + _text_token_estimate(value), 1)
+    if isinstance(value, dict):
+        for key in ("content", "text", "value", "input"):
+            if key in value:
+                total += estimate_tokens(value[key], 0)
+        return max(total, 1)
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            total += estimate_tokens(item, 0)
+        return max(total, 1)
+
+    content = getattr(value, "content", None)
+    if content is not None:
+        total += estimate_tokens(content, 0)
+    else:
+        total += _text_token_estimate(str(value))
+    return max(total, 1)
+
+
+def _clamp_token_charge(tpm_limit: int, token_count: int) -> int:
+    if tpm_limit <= 0:
+        return 0
+    # A single oversized prompt should not deadlock forever; count it as a full
+    # minute's budget and let the provider enforce its hard context limit.
+    return max(1, min(int(token_count or 1), tpm_limit))
+
 
 async def rate_limit_async(key: str, rpm_limit: int) -> None:
     """Enforce rpm_limit req/min using a 60-second sliding window."""
@@ -81,6 +142,28 @@ async def rate_limit_async(key: str, rpm_limit: int) -> None:
                 state["timestamps"].append(now)
                 return
             wait_secs = state["timestamps"][0] + 60.0 - now + 0.05
+            await asyncio.sleep(max(wait_secs, 0.05))
+
+
+async def rate_limit_tokens_async(key: str, tpm_limit: int, token_count: int) -> None:
+    """Enforce tpm_limit tokens/min using a 60-second sliding window."""
+    charge = _clamp_token_charge(tpm_limit, token_count)
+    if charge <= 0:
+        return
+    if key not in _tpm_async_state:
+        _tpm_async_state[key] = {"lock": asyncio.Lock(), "usage": []}
+    state = _tpm_async_state[key]
+    async with state["lock"]:
+        while True:
+            now = time.monotonic()
+            cutoff = now - 60.0
+            state["usage"] = [(ts, n) for ts, n in state["usage"] if ts >= cutoff]
+            used = sum(n for _, n in state["usage"])
+            if used + charge <= tpm_limit:
+                state["usage"].append((now, charge))
+                return
+            oldest_ts = state["usage"][0][0] if state["usage"] else now
+            wait_secs = oldest_ts + 60.0 - now + 0.05
             await asyncio.sleep(max(wait_secs, 0.05))
 
 
@@ -107,17 +190,54 @@ def rate_limit_sync(key: str, rpm_limit: int) -> None:
         time.sleep(max(wait_secs, 0.05))
 
 
-def apply_rpm_limit(llm: Any, key: str, rpm_limit: int) -> Any:
-    """Wrap invoke/ainvoke to enforce per-profile RPM throttling."""
+def rate_limit_tokens_sync(key: str, tpm_limit: int, token_count: int) -> None:
+    """Synchronous counterpart to rate_limit_tokens_async."""
+    charge = _clamp_token_charge(tpm_limit, token_count)
+    if charge <= 0:
+        return
+    if key not in _tpm_sync_locks:
+        _tpm_sync_locks[key] = threading.Lock()
+    lock = _tpm_sync_locks[key]
+    while True:
+        with lock:
+            if key not in _tpm_sync_usage:
+                _tpm_sync_usage[key] = []
+            usage = _tpm_sync_usage[key]
+            now = time.monotonic()
+            cutoff = now - 60.0
+            _tpm_sync_usage[key] = [(ts, n) for ts, n in usage if ts >= cutoff]
+            usage = _tpm_sync_usage[key]
+            used = sum(n for _, n in usage)
+            if used + charge <= tpm_limit:
+                usage.append((now, charge))
+                return
+            oldest_ts = usage[0][0] if usage else now
+            wait_secs = oldest_ts + 60.0 - now + 0.05
+        time.sleep(max(wait_secs, 0.05))
+
+
+def apply_llm_limits(llm: Any, key: str, rpm_limit: int, tpm_limit: int, max_output_tokens: int = 0) -> Any:
+    """Wrap invoke/ainvoke to enforce per-profile RPM and TPM throttling."""
     orig_invoke = llm.invoke
     orig_ainvoke = llm.ainvoke
 
     def invoke(input: Any, config: Any = None, **kwargs: Any) -> Any:
-        rate_limit_sync(key, rpm_limit)
+        if tpm_limit > 0:
+            rate_limit_tokens_sync(key, tpm_limit, estimate_tokens(input, max_output_tokens))
+        if rpm_limit > 0:
+            rate_limit_sync(key, rpm_limit)
         return orig_invoke(input, config=config, **kwargs)
 
     async def ainvoke(input: Any, config: Any = None, **kwargs: Any) -> Any:
-        await asyncio.wait_for(rate_limit_async(key, rpm_limit), timeout=61.0)
+        if tpm_limit > 0:
+            await rate_limit_tokens_async(key, tpm_limit, estimate_tokens(input, max_output_tokens))
+        if rpm_limit > 0:
+            await asyncio.wait_for(rate_limit_async(key, rpm_limit), timeout=61.0)
         return await orig_ainvoke(input, config=config, **kwargs)
 
     return LLMWrapper(llm, invoke, ainvoke)
+
+
+def apply_rpm_limit(llm: Any, key: str, rpm_limit: int) -> Any:
+    """Backward-compatible RPM-only wrapper."""
+    return apply_llm_limits(llm, key, rpm_limit, 0, 0)

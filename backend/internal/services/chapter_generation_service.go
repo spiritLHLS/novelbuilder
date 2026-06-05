@@ -98,6 +98,83 @@ func (s *ChapterService) loadOutlineEvents(ctx context.Context, projectID string
 	return strings.Join(eventLines, "\n")
 }
 
+type ChapterPromptPreview struct {
+	ChapterNum    int       `json:"chapter_num"`
+	WordsMin      int       `json:"words_min"`
+	WordsMax      int       `json:"words_max"`
+	OutlineEvents string    `json:"outline_events"`
+	SystemPrompt  string    `json:"system_prompt"`
+	UserPrompt    string    `json:"user_prompt"`
+	GeneratedAt   time.Time `json:"generated_at"`
+}
+
+type promptPreviewContextKey struct{}
+
+func contextWithoutPromptRAG(ctx context.Context) context.Context {
+	return context.WithValue(ctx, promptPreviewContextKey{}, true)
+}
+
+func skipPromptRAG(ctx context.Context) bool {
+	skip, _ := ctx.Value(promptPreviewContextKey{}).(bool)
+	return skip
+}
+
+func (s *ChapterService) resolveChapterWordRange(ctx context.Context, projectID string, req models.GenerateChapterRequest) (int, int) {
+	wordsMin := req.ChapterWordsMin
+	wordsMax := req.ChapterWordsMax
+	if wordsMin <= 0 {
+		var pw int
+		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&pw)
+		if pw > 0 {
+			wordsMin = pw * 2 / 3
+			wordsMax = pw * 4 / 3
+		} else {
+			wordsMin, wordsMax = 2000, 3500
+		}
+	}
+	if wordsMax <= 0 {
+		wordsMax = 3500
+	}
+	if wordsMin > wordsMax {
+		wordsMin, wordsMax = wordsMax, wordsMin
+	}
+	if wordsMax > 3500 && req.ChapterWordsMax <= 0 {
+		wordsMax = 3500
+	}
+	return wordsMin, wordsMax
+}
+
+func (s *ChapterService) BuildChapterPromptPreview(ctx context.Context, projectID string, chapterNum int, req models.GenerateChapterRequest) (*ChapterPromptPreview, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	if chapterNum <= 0 {
+		return nil, fmt.Errorf("chapter_num is required")
+	}
+
+	req.ChapterNum = chapterNum
+	wordsMin, wordsMax := s.resolveChapterWordRange(ctx, projectID, req)
+	req.ChapterWordsMin = wordsMin
+	req.ChapterWordsMax = wordsMax
+
+	previewCtx := contextWithoutPromptRAG(ctx)
+	systemPrompt := s.buildSystemPrompt(previewCtx, projectID, chapterNum, req)
+	outlineEvents := s.loadOutlineEvents(ctx, projectID, chapterNum)
+	var projectLanguage string
+	_ = s.db.QueryRow(ctx, `SELECT COALESCE(language, 'zh-CN') FROM projects WHERE id = $1`, projectID).Scan(&projectLanguage)
+	userPrompt := buildChapterUserPrompt(projectLanguage, chapterNum, req, outlineEvents, wordsMin, wordsMax)
+
+	return &ChapterPromptPreview{
+		ChapterNum:    chapterNum,
+		WordsMin:      wordsMin,
+		WordsMax:      wordsMax,
+		OutlineEvents: outlineEvents,
+		SystemPrompt:  systemPrompt,
+		UserPrompt:    userPrompt,
+		GeneratedAt:   time.Now().UTC(),
+	}, nil
+}
+
 func (s *ChapterService) generateChapter(ctx context.Context, projectID string, chapterNum int, req models.GenerateChapterRequest) (*models.Chapter, error) {
 	ctx = contextWithLLMSession(ctx, req.LLMConfig, fmt.Sprintf("chapter_generation:%s:%d", projectID, chapterNum))
 
@@ -117,29 +194,7 @@ func (s *ChapterService) generateChapter(ctx context.Context, projectID string, 
 		return nil, err
 	}
 
-	// Resolve word-count range (request > project default > sensible defaults).
-	wordsMin := req.ChapterWordsMin
-	wordsMax := req.ChapterWordsMax
-	if wordsMin <= 0 {
-		var pw int
-		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&pw)
-		if pw > 0 {
-			wordsMin = pw * 2 / 3
-			wordsMax = pw * 4 / 3
-		} else {
-			wordsMin, wordsMax = 2000, 3500
-		}
-	}
-	if wordsMax <= 0 {
-		wordsMax = 3500 // hard default cap
-	}
-	if wordsMin > wordsMax {
-		wordsMin, wordsMax = wordsMax, wordsMin
-	}
-	// Enforce absolute ceiling: never allow max to exceed 3500 unless explicitly configured
-	if wordsMax > 3500 && req.ChapterWordsMax <= 0 {
-		wordsMax = 3500
-	}
+	wordsMin, wordsMax := s.resolveChapterWordRange(ctx, projectID, req)
 
 	// Pass resolved word-count limits into req so buildSystemPrompt can embed them as anchor constraints
 	req.ChapterWordsMin = wordsMin
@@ -294,27 +349,7 @@ func (s *ChapterService) regenerateChapter(ctx context.Context, id string, req m
 	ctx = contextWithLLMSession(ctx, req.LLMConfig, fmt.Sprintf("chapter_regeneration:%s:%d", projectID, chapterNum))
 	_ = s.CreateSnapshot(ctx, id, "before_regenerate", "before chapter regenerate")
 
-	wordsMin := req.ChapterWordsMin
-	wordsMax := req.ChapterWordsMax
-	if wordsMin <= 0 {
-		var pw int
-		s.db.QueryRow(ctx, `SELECT chapter_words FROM projects WHERE id = $1`, projectID).Scan(&pw)
-		if pw > 0 {
-			wordsMin = pw * 2 / 3
-			wordsMax = pw * 4 / 3
-		} else {
-			wordsMin, wordsMax = 2000, 3500
-		}
-	}
-	if wordsMax <= 0 {
-		wordsMax = 3500
-	}
-	if wordsMin > wordsMax {
-		wordsMin, wordsMax = wordsMax, wordsMin
-	}
-	if wordsMax > 3500 && req.ChapterWordsMax <= 0 {
-		wordsMax = 3500
-	}
+	wordsMin, wordsMax := s.resolveChapterWordRange(ctx, projectID, req)
 
 	req.ChapterWordsMin = wordsMin
 	req.ChapterWordsMax = wordsMax

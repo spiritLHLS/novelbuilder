@@ -123,22 +123,23 @@ type CreateGlossaryTermRequest struct {
 // ── Task Queue ────────────────────────────────────────────────────────────────
 
 type TaskQueueItem struct {
-	ID           string          `json:"id"`
-	ProjectID    *string         `json:"project_id"`
-	TaskType     string          `json:"task_type"`
-	Payload      json.RawMessage `json:"payload"`
-	Status       string          `json:"status"` // pending|running|paused|done|failed|cancelled
-	Priority     int             `json:"priority"`
-	Attempts     int             `json:"attempts"`
-	MaxAttempts  int             `json:"max_attempts"`
-	ErrorMessage string          `json:"error_message"`
-	ScheduledAt  time.Time       `json:"scheduled_at"`
-	StartedAt    *time.Time      `json:"started_at"`
-	CompletedAt  *time.Time      `json:"completed_at"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-	QueueWaitMs  int64           `json:"queue_wait_ms,omitempty"`
-	RuntimeMs    int64           `json:"runtime_ms,omitempty"`
+	ID            string          `json:"id"`
+	ProjectID     *string         `json:"project_id"`
+	TaskType      string          `json:"task_type"`
+	Payload       json.RawMessage `json:"payload"`
+	Status        string          `json:"status"` // pending|running|paused|done|failed|cancelled
+	Priority      int             `json:"priority"`
+	Attempts      int             `json:"attempts"`
+	MaxAttempts   int             `json:"max_attempts"`
+	ErrorMessage  string          `json:"error_message"`
+	ScheduledAt   time.Time       `json:"scheduled_at"`
+	StartedAt     *time.Time      `json:"started_at"`
+	CompletedAt   *time.Time      `json:"completed_at"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+	QueueWaitMs   int64           `json:"queue_wait_ms,omitempty"`
+	RuntimeMs     int64           `json:"runtime_ms,omitempty"`
+	PromptPreview interface{}     `json:"prompt_preview,omitempty"`
 }
 
 type TaskQueueFailureReason struct {

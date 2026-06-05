@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 
@@ -106,7 +107,7 @@ func (h *Handler) projectIDForRequest(c *gin.Context, routePath string) (string,
 	}
 	switch {
 	case routePath == "/api/workflows/:id/history":
-		return id, true, nil
+		return h.projectIDFromTable(c, "workflow_runs", id)
 	case strings.HasPrefix(routePath, "/api/blueprints/:id"):
 		return h.projectIDFromTable(c, "book_blueprints", id)
 	case strings.HasPrefix(routePath, "/api/chapters/:id"):
@@ -122,7 +123,7 @@ func (h *Handler) projectIDForRequest(c *gin.Context, routePath string) (string,
 	case strings.HasPrefix(routePath, "/api/references/:id"):
 		return h.projectIDFromTable(c, "reference_materials", id)
 	case strings.HasPrefix(routePath, "/api/reference-chapters/:id"):
-		return h.projectIDFromJoin(c, `SELECT COALESCE(r.project_id::text, '')
+		return h.projectIDFromJoin(c, `SELECT r.project_id
 			FROM reference_book_chapters rc
 			JOIN reference_materials r ON r.id = rc.ref_id
 			WHERE rc.id = $1`, id)
@@ -131,7 +132,7 @@ func (h *Handler) projectIDForRequest(c *gin.Context, routePath string) (string,
 	case strings.HasPrefix(routePath, "/api/workflows/:id"):
 		return h.projectIDFromTable(c, "workflow_runs", id)
 	case strings.HasPrefix(routePath, "/api/workflow-steps/:id"):
-		return h.projectIDFromJoin(c, `SELECT COALESCE(wr.project_id::text, '')
+		return h.projectIDFromJoin(c, `SELECT wr.project_id
 			FROM workflow_steps ws
 			JOIN workflow_runs wr ON wr.id = ws.run_id
 			WHERE ws.id = $1`, id)
@@ -169,12 +170,12 @@ func (h *Handler) projectIDForRequest(c *gin.Context, routePath string) (string,
 }
 
 func (h *Handler) projectIDFromTable(c *gin.Context, table, id string) (string, bool, error) {
-	query := "SELECT COALESCE(project_id::text, '') FROM " + table + " WHERE id = $1"
+	query := "SELECT project_id FROM " + table + " WHERE id = $1"
 	return h.projectIDFromJoin(c, query, id)
 }
 
 func (h *Handler) projectIDFromJoin(c *gin.Context, query, id string) (string, bool, error) {
-	var projectID string
+	var projectID sql.NullString
 	err := h.projects.DB().QueryRow(c.Request.Context(), query, id).Scan(&projectID)
 	if errors.Is(err, database.ErrNoRows) {
 		return "", true, nil
@@ -182,7 +183,10 @@ func (h *Handler) projectIDFromJoin(c *gin.Context, query, id string) (string, b
 	if err != nil {
 		return "", true, err
 	}
-	return projectID, true, nil
+	if !projectID.Valid {
+		return "", true, nil
+	}
+	return projectID.String, true, nil
 }
 
 func (h *Handler) projectIDFromBatchSession(c *gin.Context, id string) (string, bool, error) {

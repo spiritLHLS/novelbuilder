@@ -70,6 +70,7 @@ import { ElMessage } from 'element-plus'
 import { User, Lock } from '@element-plus/icons-vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { getApiErrorMessage } from '@/api'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -104,7 +105,7 @@ async function handleLogin() {
         : '/projects'
     router.replace(redirect)
   } catch (e: any) {
-    const msg = e?.response?.data?.error || '用户名或密码错误'
+    const msg = getApiErrorMessage(e, '用户名或密码错误')
     errorMsg.value = msg
   } finally {
     loading.value = false

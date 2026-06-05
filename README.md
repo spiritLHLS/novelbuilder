@@ -70,7 +70,7 @@ Open `/setup` first. It checks runtime readiness and then the in-app guide walks
 | --- | --- | --- | --- | --- |
 | `latest`, `full`, `YYYYMMDD` | `Dockerfile` | Single container with PostgreSQL, Redis, Qdrant, Neo4j, Python, Go, Vue, Playwright | 4 CPU, 8 GB RAM, 20 GB disk | Complete local deployment |
 | `standard`, `YYYYMMDD-standard` | `Dockerfile.standard` | Single container with PostgreSQL, Redis, Python, Go, Vue | 2 CPU, 4 GB RAM, 10 GB disk | Installs base Python deps only; graph/vector/browser routes are disabled |
-| `app`, `YYYYMMDD-app` | `Dockerfile.app` | App, sidecar, and Vue only | 2 CPU, 2 GB RAM plus external services | Includes graph/vector Python deps for external Neo4j/Qdrant; omits browser automation |
+| `app`, `YYYYMMDD-app` | `Dockerfile.app` | App, sidecar, and Vue only | 2 CPU, 2 GB RAM plus external services | Includes graph/vector/browser Python deps for external services and upload automation |
 | `sqlite` | `Dockerfile.sqlite` | Independent minimal image with SQLite and optional services disabled | 1 CPU, 2 GB RAM, 5 GB disk | Base Python deps only; intended for single-user local use |
 | `no-neo4j` | `Dockerfile.no-neo4j` | Independent single container with PostgreSQL, Redis, Qdrant, browser automation, Python, Go, Vue | 3 CPU, 6 GB RAM, 15 GB disk | Omits Neo4j and graph Python/runtime deps |
 | `no-qdrant` | `Dockerfile.no-qdrant` | Independent single container with PostgreSQL, Redis, Neo4j, browser automation, Python, Go, Vue | 3 CPU, 6 GB RAM, 15 GB disk | Omits Qdrant and vector Python/runtime deps |

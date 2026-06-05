@@ -26,6 +26,7 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 	existingOutlines, _ := s.outlines.List(ctx, projectID)
 	existingRefs, _ := s.references.List(ctx, projectID)
 	glossaryBlock := s.glossary.BuildPromptBlock(ctx, projectID)
+	promptPresetBlock := buildPromptPresetPromptBlock(ctx, s.db, projectID, "system", "worldbuilding", "character", "chapter", "other")
 	genreTemplate, _ := s.genreTemplates.Get(ctx, project.Genre)
 
 	logger.Info("blueprint generation: existing data gathered",
@@ -172,6 +173,9 @@ func (s *BlueprintService) doGenerateBlueprintWork(ctx context.Context, projectI
 	if glossaryBlock != "" {
 		sb.WriteString(glossaryBlock)
 		sb.WriteString("\n")
+	}
+	if promptPresetBlock != "" {
+		sb.WriteString(promptPresetBlock)
 	}
 
 	contextSection := sb.String()

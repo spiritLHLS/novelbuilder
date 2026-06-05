@@ -372,6 +372,9 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	if rulesBlock := s.buildBookRulesPromptBlock(ctx, projectID); rulesBlock != "" {
 		sb.WriteString(rulesBlock)
 	}
+	if presetBlock := buildPromptPresetPromptBlock(ctx, s.db, projectID, "system", "worldbuilding", "character", "chapter", "other"); presetBlock != "" {
+		sb.WriteString(presetBlock)
+	}
 
 	// Character states
 	sb.WriteString("=== 角色状态 ===\n")
@@ -481,7 +484,7 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	}
 
 	// ===== Qdrant Narrative context retrieval (plot-relevant past content) =====
-	if s.rag != nil {
+	if s.rag != nil && !skipPromptRAG(ctx) {
 		// Query for plot-relevant narrative context using the current chapter outline
 		var outlineQuery string
 		var outJSON json.RawMessage
@@ -765,7 +768,7 @@ func (s *ChapterService) buildSystemPrompt(ctx context.Context, projectID string
 	}
 
 	// ===== TAIL (continued): RAG sensory / style samples =====
-	if s.rag != nil {
+	if s.rag != nil && !skipPromptRAG(ctx) {
 		// Query for style samples that match the current chapter outline context
 		queryContext := fmt.Sprintf("第%d章 %s %s", chapterNum, req.TargetPace, req.NarrativeOrder)
 		samples, err := s.rag.SearchSensory(ctx, projectID, queryContext, "style_samples", 3)

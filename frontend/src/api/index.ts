@@ -23,8 +23,10 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response: AxiosResponse) => response,
   (error) => {
-    const payload = error.response?.data ?? {}
-    const msg = payload.message || payload.error || payload.detail || error.message
+    const rawPayload = error.response?.data
+    const payload: Record<string, any> =
+      rawPayload && typeof rawPayload === 'object' ? rawPayload as Record<string, any> : {}
+    const msg = payload.message || payload.error || payload.detail || (typeof rawPayload === 'string' ? rawPayload : '') || error.message
     error.normalized = {
       status: error.response?.status ?? 0,
       code: payload.code || '',
@@ -44,6 +46,25 @@ api.interceptors.response.use(
     return Promise.reject(error)
   }
 )
+
+export type NormalizedApiError = {
+  status: number
+  code: string
+  message: string
+  requestId: string
+  details: unknown
+}
+
+export function getApiErrorMessage(error: any, fallback = '请求失败'): string {
+  return (
+    error?.normalized?.message ||
+    error?.response?.data?.message ||
+    error?.response?.data?.error ||
+    error?.response?.data?.detail ||
+    error?.message ||
+    fallback
+  )
+}
 
 // Auth
 export const authApi = {

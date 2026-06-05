@@ -6,7 +6,7 @@
 | --- | --- | --- | --- | --- |
 | `full` | 单机完整体验、本地工作站 | 最大 | PostgreSQL、Redis、Qdrant、Neo4j | RAG、图谱、Playwright 上传自动化 |
 | `standard` | 常规写作、低资源 VPS | 中等 | PostgreSQL、Redis | 只安装 base Python 依赖，关闭 Qdrant/Neo4j/浏览器 |
-| `app` | 多容器或托管数据库 | 小 | 外部 PostgreSQL/Redis/Qdrant/Neo4j | 安装 graph/vector 依赖，外部服务决定是否启用，不内置浏览器 |
+| `app` | 多容器或托管数据库 | 小 | 外部 PostgreSQL/Redis/Qdrant/Neo4j | 安装 graph/vector/browser 依赖，外部服务决定是否启用 |
 | `sqlite` | 单人试用、本地离线、最小部署 | 最小 | SQLite | 独立最小镜像，只安装 base Python 依赖，关闭 Redis、Qdrant、Neo4j |
 | `no-neo4j` | 需要 RAG/向量与浏览器上传，但不启用图谱 | 较大 | PostgreSQL、Redis、Qdrant | 独立镜像，安装 vector/browser 依赖，不安装 Neo4j/Graph |
 | `no-qdrant` | 需要图谱与浏览器上传，但不启用向量检索 | 较大 | PostgreSQL、Redis、Neo4j | 独立镜像，安装 graph/browser 依赖，不安装 Qdrant/Vector |
@@ -20,9 +20,9 @@ Python Sidecar 依赖按能力拆分：
 | 文件 | 适用档位 | 内容 |
 | --- | --- | --- |
 | `requirements-base.txt` | 全部档位 | FastAPI、DB/Redis、LangGraph/LangChain、参考分析、小说站点导入 |
-| `requirements-graph.txt` | `full`、`app` | Graphiti 和 Neo4j 驱动 |
-| `requirements-vector.txt` | `full`、`app` | Qdrant、sentence-transformers、torch pin |
-| `requirements-browser.txt` | `full`、`no-neo4j`、`no-qdrant` | Playwright 上传自动化 |
+| `requirements-graph.txt` | `full`、`app`、`no-qdrant` | Graphiti 和 Neo4j 驱动 |
+| `requirements-vector.txt` | `full`、`app`、`no-neo4j` | Qdrant、sentence-transformers、torch pin |
+| `requirements-browser.txt` | `full`、`app`、`no-neo4j`、`no-qdrant` | Playwright/Camoufox 上传自动化 |
 
 `no-neo4j` 安装 base + vector + browser；`no-qdrant` 安装 base + graph + browser。这样两者保留各自未禁用的重能力，同时避免把被禁用组件的 Python 和系统依赖打进镜像。
 
@@ -33,14 +33,13 @@ Python Sidecar 依赖按能力拆分：
 ```mermaid
 flowchart LR
   Checkout["checkout + submodules"] --> Base["build base matrix<br/>full / standard / app"]
-  Base --> DockerHubBase["push Docker Hub run-stable base tags"]
-  Base --> GHCRBase["push GHCR run-stable base tags"]
-  DockerHubBase --> VariantsHub["build Docker Hub variants<br/>FROM Docker Hub run tag"]
-  GHCRBase --> VariantsGHCR["build GHCR variants<br/>FROM GHCR run tag"]
+  Checkout --> Variants["build variant matrix<br/>no-neo4j / no-qdrant / no-graph-vector / no-redis / sqlite"]
+  Base --> RegistriesBase["push base tags<br/>Docker Hub / GHCR"]
+  Variants --> RegistriesVariants["push variant tags<br/>Docker Hub / GHCR"]
   Checkout --> Binaries["build binary packages"]
 ```
 
-所有变体 Dockerfile 都独立构建，不再依赖同一次运行内的 `BASE_IMAGE`。当前 workflow 仍先构建基础档，再构建变体档，以保持发布顺序和 tag 语义清晰。
+所有变体 Dockerfile 都独立构建，不再依赖同一次运行内的 `BASE_IMAGE`。当前 workflow 会并行构建基础档和变体档；Docker cache scope 按 profile、accelerator 和 platform 拆分，避免 CPU/CUDA 或 amd64/arm64 层互相污染。
 
 Actions 已升级到 Node 24 兼容版本：`actions/checkout@v6`、`actions/setup-go@v6`、`actions/setup-node@v6`、`actions/upload-artifact@v6`、Docker 官方 build/login/setup actions 的新版，并设置 `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`。
 

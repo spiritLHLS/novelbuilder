@@ -18,6 +18,7 @@ class LLMConfig(BaseModel):
     max_tokens: int = 8000  # deepseek-chat max is 8K; use full capacity
     temperature: float = 0.4   # lower for extraction tasks
     rpm_limit: int = 0         # 0 = unlimited
+    tpm_limit: int = 0         # 0 = unlimited
     omit_max_tokens: bool = False   # skip max_tokens field (some providers reject it)
     omit_temperature: bool = False  # skip temperature field
     api_style: str = "chat_completions"  # or "responses" (OpenAI Responses API)

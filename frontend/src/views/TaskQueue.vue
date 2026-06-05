@@ -209,6 +209,33 @@
           :closable="false"
           title="暂停或待执行任务可在此修改 payload。用于检查当前生成 prompt、章节参数、参考书任务参数，并在继续/重试前手工修正。"
         />
+        <el-collapse v-if="selectedTask.prompt_preview" class="prompt-preview">
+          <el-collapse-item name="system" title="当前系统 prompt">
+            <div class="prompt-meta">
+              第 {{ selectedTask.prompt_preview.chapter_num }} 章 ·
+              {{ selectedTask.prompt_preview.words_min }}～{{ selectedTask.prompt_preview.words_max }} 字 ·
+              {{ formatTime(selectedTask.prompt_preview.generated_at) }}
+            </div>
+            <el-input
+              :model-value="selectedTask.prompt_preview.system_prompt || ''"
+              type="textarea"
+              :rows="8"
+              resize="vertical"
+              readonly
+              spellcheck="false"
+            />
+          </el-collapse-item>
+          <el-collapse-item name="user" title="当前用户 prompt">
+            <el-input
+              :model-value="selectedTask.prompt_preview.user_prompt || ''"
+              type="textarea"
+              :rows="8"
+              resize="vertical"
+              readonly
+              spellcheck="false"
+            />
+          </el-collapse-item>
+        </el-collapse>
         <el-input
           v-model="payloadText"
           type="textarea"
@@ -237,7 +264,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import { projectApi, taskApi, type TaskStreamSnapshot } from '@/api'
+import { getApiErrorMessage, projectApi, taskApi, type TaskStreamSnapshot } from '@/api'
 
 interface Task {
   id: string
@@ -254,6 +281,15 @@ interface Task {
   completed_at: string | null
   queue_wait_ms?: number
   runtime_ms?: number
+  prompt_preview?: {
+    chapter_num: number
+    words_min: number
+    words_max: number
+    outline_events?: string
+    system_prompt?: string
+    user_prompt?: string
+    generated_at?: string
+  }
 }
 
 interface TaskStats {
@@ -340,7 +376,7 @@ const statusTagType = (s: string): '' | 'success' | 'warning' | 'danger' | 'info
   return map[s] ?? 'info'
 }
 
-function formatTime(iso: string) {
+function formatTime(iso?: string | null) {
   if (!iso) return '—'
   return new Date(iso).toLocaleString('zh-CN', { hour12: false })
 }
@@ -464,7 +500,7 @@ async function loadTasks() {
     total.value = res.data?.pagination?.total ?? 0
     loadError.value = ''
   } catch (e: any) {
-    loadError.value = e.response?.data?.error || e.message || '加载任务列表失败'
+    loadError.value = getApiErrorMessage(e, '加载任务列表失败')
     ElMessage.error(loadError.value)
   } finally {
     loading.value = false
@@ -528,10 +564,20 @@ async function retryTask(id: string) {
   }
 }
 
-function openTaskDetail(task: Task) {
+async function openTaskDetail(task: Task) {
   selectedTask.value = task
   payloadText.value = JSON.stringify(task.payload || {}, null, 2)
   detailVisible.value = true
+  try {
+    const res = await taskApi.get(task.id)
+    const detail = res.data?.data as Task | undefined
+    if (detail) {
+      selectedTask.value = detail
+      payloadText.value = JSON.stringify(detail.payload || {}, null, 2)
+    }
+  } catch (e: any) {
+    ElMessage.error(getApiErrorMessage(e, '加载任务详情失败'))
+  }
 }
 
 async function copyPayload() {
@@ -559,7 +605,7 @@ async function saveTaskPayload() {
     ElMessage.success('payload 已保存')
     await reloadTaskView()
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.error || '保存 payload 失败')
+    ElMessage.error(getApiErrorMessage(e, '保存 payload 失败'))
   } finally {
     savingPayload.value = false
   }
@@ -572,7 +618,7 @@ async function changeProjectState(action: 'start' | 'pause' | 'resume' | 'termin
     ElMessage.success('项目任务状态已更新')
     await reloadTaskView()
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.error || '项目状态更新失败')
+    ElMessage.error(getApiErrorMessage(e, '项目状态更新失败'))
   }
 }
 
@@ -672,6 +718,25 @@ onUnmounted(() => {
 
 .payload-alert {
   margin-top: 4px;
+}
+
+.prompt-preview {
+  border: 1px solid var(--nb-card-border);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: var(--nb-surface-bg);
+}
+
+.prompt-meta {
+  margin-bottom: 8px;
+  color: var(--nb-text-secondary);
+  font-size: 12px;
+}
+
+.prompt-preview :deep(textarea) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .payload-editor :deep(textarea) {

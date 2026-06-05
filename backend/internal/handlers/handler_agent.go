@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/novelbuilder/backend/internal/models"
+	"github.com/novelbuilder/backend/internal/services"
 	"go.uber.org/zap"
 )
 
@@ -408,6 +409,9 @@ func (h *Handler) UpsertProjectAgentRoute(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	if !h.userCanUseProfile(c, req.LLMProfileID) {
+		return
+	}
 	req.AgentType = agentType
 	req.ProjectID = &projectID
 	route, err := h.agentRouting.Upsert(c.Request.Context(), req)
@@ -425,6 +429,27 @@ func (h *Handler) DeleteProjectAgentRoute(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"ok": true})
+}
+
+func (h *Handler) userCanUseProfile(c *gin.Context, profileID *string) bool {
+	session := currentUser(c)
+	if isAdmin(session) {
+		return true
+	}
+	user, err := h.users.Get(c.Request.Context(), session.UserID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return false
+	}
+	if user == nil || user.Status != models.UserStatusActive {
+		c.JSON(403, gin.H{"error": "user is not allowed to configure model routes"})
+		return false
+	}
+	if !services.ModelPolicyAllowsProfile(user.ModelPolicy, profileID) {
+		c.JSON(403, gin.H{"error": "llm profile is not allowed by this user's model policy"})
+		return false
+	}
+	return true
 }
 
 // ── Batch Agent (Volume-based sequential generation) ─────────────────────────

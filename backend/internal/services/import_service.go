@@ -142,6 +142,13 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 	if err != nil && err != database.ErrNoRows {
 		return nil, err
 	}
+	if profileID != nil && !s.profileAllowedForProject(ctx, projectID, profileID) {
+		s.logger.Warn("ResolveForAgent: project owner is not allowed to use routed profile",
+			zap.String("project_id", projectID),
+			zap.String("agent_type", agentType),
+			zap.Stringp("profile_id", profileID))
+		profileID = nil
+	}
 
 	var apiKey, model, baseURL, provider *string
 	var maxTokens, rpmLimit, tpmLimit *int
@@ -153,6 +160,9 @@ func (s *AgentRoutingService) ResolveForAgent(ctx context.Context, agentType str
 			Scan(&apiKey, &model, &baseURL, &provider, &maxTokens, &rpmLimit, &tpmLimit, &temperature, &omitMaxTokens, &omitTemperature, &apiStyle)
 	}
 	if apiKey == nil {
+		if !s.profileAllowedForProject(ctx, projectID, nil) {
+			return nil, nil
+		}
 		// Fall back to default profile
 		err2 := s.db.QueryRow(ctx,
 			`SELECT api_key, model_name, base_url, provider, max_tokens, rpm_limit, COALESCE(tpm_limit, 0), temperature, omit_max_tokens, omit_temperature, api_style FROM llm_profiles WHERE is_default = TRUE LIMIT 1`,
