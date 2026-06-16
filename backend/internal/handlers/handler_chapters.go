@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -166,6 +167,73 @@ func (h *Handler) ImportChaptersJSON(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "imported", "count": len(body.Chapters)})
 }
 
+func (h *Handler) resolveRequestedChapterNum(c *gin.Context, projectID string, req models.GenerateChapterRequest) (int, bool) {
+	chapterNum := req.ChapterNum
+	if chapterNum == 0 {
+		if n, err := strconv.Atoi(c.Query("chapter_num")); err == nil {
+			chapterNum = n
+		}
+	}
+	if chapterNum == 0 {
+		nextNum, err := h.chapters.NextChapterNum(c.Request.Context(), projectID)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to determine next chapter number"})
+			return 0, false
+		}
+		chapterNum = nextNum
+	} else if nextNum, err := h.chapters.NextChapterNum(c.Request.Context(), projectID); err == nil && chapterNum < nextNum {
+		c.JSON(400, gin.H{
+			"error":            "chapter_num is before the writable continuation range",
+			"message":          "当前项目已设为参考书续写，参考书章节范围不可被新生成章节覆盖。",
+			"next_chapter_num": nextNum,
+		})
+		return 0, false
+	}
+	return chapterNum, true
+}
+
+func (h *Handler) PreviewChapterPrompt(c *gin.Context) {
+	var req models.GenerateChapterRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	projectID := c.Param("id")
+	chapterNum, ok := h.resolveRequestedChapterNum(c, projectID, req)
+	if !ok {
+		return
+	}
+	preview, err := h.chapters.BuildChapterPromptPreview(c.Request.Context(), projectID, chapterNum, req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": preview})
+}
+
+func (h *Handler) PreviewChapterRegeneratePrompt(c *gin.Context) {
+	chapterID := c.Param("id")
+	var req models.GenerateChapterRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	ch, err := h.chapters.Get(c.Request.Context(), chapterID)
+	if err != nil || ch == nil {
+		c.JSON(404, gin.H{"error": "chapter not found"})
+		return
+	}
+	req.ChapterNum = ch.ChapterNum
+	preview, err := h.chapters.BuildChapterPromptPreview(c.Request.Context(), ch.ProjectID, ch.ChapterNum, req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"data": preview})
+}
+
 func (h *Handler) GenerateChapter(c *gin.Context) {
 	var req models.GenerateChapterRequest
 	c.ShouldBindJSON(&req)
@@ -188,26 +256,8 @@ func (h *Handler) GenerateChapter(c *gin.Context) {
 		return
 	}
 
-	// chapter_num: prefer JSON body field, fall back to query param.
-	chapterNum := req.ChapterNum
-	if chapterNum == 0 {
-		if n, err := strconv.Atoi(c.Query("chapter_num")); err == nil {
-			chapterNum = n
-		}
-	}
-	if chapterNum == 0 {
-		nextNum, err := h.chapters.NextChapterNum(c.Request.Context(), projectID)
-		if err != nil {
-			c.JSON(500, gin.H{"error": "failed to determine next chapter number"})
-			return
-		}
-		chapterNum = nextNum
-	} else if nextNum, err := h.chapters.NextChapterNum(c.Request.Context(), projectID); err == nil && chapterNum < nextNum {
-		c.JSON(400, gin.H{
-			"error":            "chapter_num is before the writable continuation range",
-			"message":          "当前项目已设为参考书续写，参考书章节范围不可被新生成章节覆盖。",
-			"next_chapter_num": nextNum,
-		})
+	chapterNum, ok := h.resolveRequestedChapterNum(c, projectID, req)
+	if !ok {
 		return
 	}
 	req.ChapterNum = chapterNum

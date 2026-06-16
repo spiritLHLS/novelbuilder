@@ -12,7 +12,7 @@ type Project struct {
 	Genre                    string    `json:"genre" db:"genre"`
 	Description              string    `json:"description" db:"description"`
 	StyleDescription         string    `json:"style_description" db:"style_description"`
-	Language                 string    `json:"language" db:"language"` // zh-CN | en-US
+	Language                 string    `json:"language" db:"language"` // zh-CN | en-US | ja-JP
 	TargetWords              int       `json:"target_words" db:"target_words"`
 	ChapterWords             int       `json:"chapter_words" db:"chapter_words"`
 	Status                   string    `json:"status" db:"status"`

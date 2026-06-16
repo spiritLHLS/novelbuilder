@@ -17,7 +17,7 @@
       <template #header>
         <div class="flow-header">
           <span>一段 prompt 开始写书</span>
-          <el-tag size="small">{{ project?.language === 'en-US' ? 'English' : '中文' }}</el-tag>
+          <el-tag size="small">{{ languageLabel(project?.language) }}</el-tag>
         </div>
       </template>
       <el-input
@@ -214,6 +214,12 @@ onMounted(async () => {
 
 function goTo(page: string) {
   router.push(`/projects/${projectId}/${page}`)
+}
+
+function languageLabel(language?: string) {
+  if (language === 'en-US') return 'English'
+  if (language === 'ja-JP') return '日本語'
+  return '中文'
 }
 
 async function continueWrite() {

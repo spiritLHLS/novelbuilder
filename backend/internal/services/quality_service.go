@@ -58,7 +58,7 @@ func (s *QualityService) RunFullCheck(ctx context.Context, chapterID string) (*m
 	report.Issues = append(report.Issues, readerIssues...)
 
 	// Role 3: Logic Reviewer (consistency)
-	logicIssues, _ := s.reviewAsLogicReviewer(ctx, content, projectID)
+	logicIssues, _ := s.reviewAsLogicReviewer(ctx, content, projectID, chapterID)
 	report.Issues = append(report.Issues, logicIssues...)
 
 	// Role 4: Anti-AI Expert (AI detection)
@@ -163,37 +163,13 @@ func (s *QualityService) reviewAsReader(ctx context.Context, content string) ([]
 	return parseIssues(resp.Content), nil
 }
 
-func (s *QualityService) reviewAsLogicReviewer(ctx context.Context, content, projectID string) ([]models.QualityIssue, error) {
-	// Get world bible for consistency check
-	var worldContent string
-	s.db.QueryRow(ctx,
-		`SELECT content::text FROM world_bibles WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1`,
-		projectID).Scan(&worldContent)
-
-	// Get character profiles
-	var charInfo []string
-	if rows, err := s.db.Query(ctx,
-		`SELECT name, profile::text FROM characters WHERE project_id = $1`, projectID); err != nil {
-		s.logger.Warn("logic reviewer: failed to load characters", zap.Error(err))
-	} else {
-		for rows.Next() {
-			var name, profile string
-			if rows.Scan(&name, &profile) == nil {
-				charInfo = append(charInfo, fmt.Sprintf("%s: %s", name, profile))
-			}
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			s.logger.Warn("logic reviewer: rows error", zap.Error(err))
-		}
-	}
+func (s *QualityService) reviewAsLogicReviewer(ctx context.Context, content, projectID, chapterID string) ([]models.QualityIssue, error) {
+	contextPack := s.buildLogicReviewContext(ctx, projectID, chapterID)
 
 	systemPrompt := fmt.Sprintf(`你是一位逻辑审稿人，专门检查小说的世界观、人物、时间线一致性。
 
-世界观设定参考：
-%s
+以下是本章审稿必须优先使用的结构化上下文。上下文可能来自蓝图、大纲、前序章节摘要、世界宪法、角色状态、伏笔、术语表和人工编辑后的数据库状态；如果章节正文与这些上下文冲突，应明确指出。若上下文不足，也要标明需要补充的信息。
 
-角色信息：
 %s
 
 请检查以下方面：
@@ -201,9 +177,11 @@ func (s *QualityService) reviewAsLogicReviewer(ctx context.Context, content, pro
 2. 世界观规则是否被违反
 3. 时间线是否有矛盾
 4. 物品/能力/状态是否前后一致
+5. 是否违背本章大纲、前序摘要、伏笔埋设/回收计划或术语定义
+6. 是否出现人工修改后状态未同步导致的连续性错误
 
 返回格式：[{"type": "world|character|timeline|logic", "severity": "critical|warning|info", "location": "第X段", "message": "问题描述", "suggestion": "修正建议"}]
-只返回JSON数组。`, worldContent, strings.Join(charInfo, "\n"))
+只返回JSON数组。`, contextPack)
 
 	resp, err := s.ai.Chat(ctx, gateway.ChatRequest{
 		Messages: []gateway.ChatMessage{
@@ -218,6 +196,202 @@ func (s *QualityService) reviewAsLogicReviewer(ctx context.Context, content, pro
 		return nil, err
 	}
 	return parseIssues(resp.Content), nil
+}
+
+func (s *QualityService) buildLogicReviewContext(ctx context.Context, projectID, chapterID string) string {
+	var sb strings.Builder
+	appendSection := func(title, body string, limit int) {
+		body = strings.TrimSpace(body)
+		if body == "" {
+			return
+		}
+		if limit > 0 {
+			body = truncateRunes(body, limit)
+		}
+		if sb.Len() > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("【")
+		sb.WriteString(title)
+		sb.WriteString("】\n")
+		sb.WriteString(body)
+	}
+	jsonText := func(raw json.RawMessage) string {
+		if len(raw) == 0 {
+			return ""
+		}
+		return string(raw)
+	}
+
+	var chapterNum int
+	var chapterTitle, chapterSummary string
+	if err := s.db.QueryRow(ctx,
+		`SELECT chapter_num, COALESCE(title, ''), COALESCE(summary, '')
+		 FROM chapters WHERE id = $1`,
+		chapterID).Scan(&chapterNum, &chapterTitle, &chapterSummary); err == nil {
+		appendSection("当前章节", fmt.Sprintf("第%d章 %s\n摘要：%s", chapterNum, chapterTitle, chapterSummary), 1200)
+	} else {
+		s.logger.Warn("logic reviewer: failed to load current chapter", zap.Error(err))
+	}
+
+	var title, genre, description, creationMode, language string
+	if err := s.db.QueryRow(ctx,
+		`SELECT title, COALESCE(genre, ''), COALESCE(description, ''),
+		        COALESCE(creation_mode, 'prompt_only'), COALESCE(language, 'zh-CN')
+		 FROM projects WHERE id = $1`,
+		projectID).Scan(&title, &genre, &description, &creationMode, &language); err == nil {
+		appendSection("项目信息", fmt.Sprintf("标题：%s\n题材：%s\n语言：%s\n创作模式：%s\n简介：%s", title, genre, language, creationMode, description), 1200)
+	} else {
+		s.logger.Warn("logic reviewer: failed to load project", zap.Error(err))
+	}
+
+	var worldContent json.RawMessage
+	if err := s.db.QueryRow(ctx,
+		`SELECT content FROM world_bibles WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1`,
+		projectID).Scan(rawJSONScanner{dst: &worldContent}); err == nil {
+		appendSection("世界观设定", jsonText(worldContent), 3200)
+	}
+
+	var immutableRules, mutableRules, forbiddenAnchors json.RawMessage
+	if err := s.db.QueryRow(ctx,
+		`SELECT immutable_rules, mutable_rules, forbidden_anchors
+		 FROM world_bible_constitutions WHERE project_id = $1 ORDER BY updated_at DESC LIMIT 1`,
+		projectID).Scan(
+		rawJSONScanner{dst: &immutableRules},
+		rawJSONScanner{dst: &mutableRules},
+		rawJSONScanner{dst: &forbiddenAnchors},
+	); err == nil {
+		appendSection("世界宪法", fmt.Sprintf("不可变规则：%s\n可变规则：%s\n禁用锚点：%s",
+			jsonText(immutableRules), jsonText(mutableRules), jsonText(forbiddenAnchors)), 2600)
+	}
+
+	var masterOutline, relationGraph, globalTimeline json.RawMessage
+	if err := s.db.QueryRow(ctx,
+		`SELECT master_outline, relation_graph, global_timeline
+		 FROM book_blueprints WHERE project_id = $1 ORDER BY updated_at DESC LIMIT 1`,
+		projectID).Scan(
+		rawJSONScanner{dst: &masterOutline},
+		rawJSONScanner{dst: &relationGraph},
+		rawJSONScanner{dst: &globalTimeline},
+	); err == nil {
+		appendSection("全书蓝图", fmt.Sprintf("主线大纲：%s\n关系图：%s\n全局时间线：%s",
+			jsonText(masterOutline), jsonText(relationGraph), jsonText(globalTimeline)), 3800)
+	}
+
+	if chapterNum > 0 {
+		var outlineTitle string
+		var outlineContent json.RawMessage
+		var tensionTarget float64
+		if err := s.db.QueryRow(ctx,
+			`SELECT COALESCE(title, ''), content, COALESCE(tension_target, 0)
+			 FROM outlines
+			 WHERE project_id = $1 AND level = 'chapter' AND order_num = $2
+			 ORDER BY updated_at DESC LIMIT 1`,
+			projectID, chapterNum).Scan(&outlineTitle, rawJSONScanner{dst: &outlineContent}, &tensionTarget); err == nil {
+			appendSection("本章大纲", fmt.Sprintf("标题：%s\n张力目标：%.2f\n内容：%s", outlineTitle, tensionTarget, jsonText(outlineContent)), 2400)
+		}
+
+		if rows, err := s.db.Query(ctx,
+			`SELECT chapter_num, COALESCE(title, ''), COALESCE(summary, '')
+			 FROM chapters
+			 WHERE project_id = $1 AND chapter_num < $2 AND COALESCE(summary, '') <> ''
+			 ORDER BY chapter_num DESC LIMIT 5`,
+			projectID, chapterNum); err != nil {
+			s.logger.Warn("logic reviewer: failed to load previous summaries", zap.Error(err))
+		} else {
+			var lines []string
+			for rows.Next() {
+				var num int
+				var prevTitle, summary string
+				if rows.Scan(&num, &prevTitle, &summary) == nil {
+					lines = append(lines, fmt.Sprintf("第%d章 %s：%s", num, prevTitle, summary))
+				}
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				s.logger.Warn("logic reviewer: previous summaries rows error", zap.Error(err))
+			}
+			if len(lines) > 1 {
+				for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
+					lines[i], lines[j] = lines[j], lines[i]
+				}
+			}
+			appendSection("前序章节摘要", strings.Join(lines, "\n"), 2600)
+		}
+	}
+
+	if rows, err := s.db.Query(ctx,
+		`SELECT name, COALESCE(role_type, ''), profile, current_state
+		 FROM characters WHERE project_id = $1 ORDER BY role_type, name`,
+		projectID); err != nil {
+		s.logger.Warn("logic reviewer: failed to load characters", zap.Error(err))
+	} else {
+		var lines []string
+		for rows.Next() {
+			var name, roleType string
+			var profile, currentState json.RawMessage
+			if rows.Scan(&name, &roleType, rawJSONScanner{dst: &profile}, rawJSONScanner{dst: &currentState}) == nil {
+				lines = append(lines, fmt.Sprintf("%s（%s）\n档案：%s\n当前状态：%s",
+					name, roleType, jsonText(profile), jsonText(currentState)))
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			s.logger.Warn("logic reviewer: character rows error", zap.Error(err))
+		}
+		appendSection("角色档案与当前状态", strings.Join(lines, "\n"), 3600)
+	}
+
+	if rows, err := s.db.Query(ctx,
+		`SELECT content, COALESCE(status, ''), COALESCE(planned_embed_chapter, 0),
+		        COALESCE(planned_resolve_chapter, 0), COALESCE(priority, 0)
+		 FROM foreshadowings
+		 WHERE project_id = $1
+		 ORDER BY priority DESC, planned_embed_chapter ASC, created_at ASC LIMIT 40`,
+		projectID); err != nil {
+		s.logger.Warn("logic reviewer: failed to load foreshadowings", zap.Error(err))
+	} else {
+		var lines []string
+		for rows.Next() {
+			var item, status string
+			var embedChapter, resolveChapter, priority int
+			if rows.Scan(&item, &status, &embedChapter, &resolveChapter, &priority) == nil {
+				lines = append(lines, fmt.Sprintf("[优先级%d/%s] 第%d章埋设，第%d章回收：%s",
+					priority, status, embedChapter, resolveChapter, item))
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			s.logger.Warn("logic reviewer: foreshadowing rows error", zap.Error(err))
+		}
+		appendSection("伏笔计划", strings.Join(lines, "\n"), 2400)
+	}
+
+	if rows, err := s.db.Query(ctx,
+		`SELECT term, COALESCE(definition, ''), aliases, COALESCE(category, 'general')
+		 FROM glossary_terms WHERE project_id = $1 ORDER BY category, term LIMIT 80`,
+		projectID); err != nil {
+		s.logger.Warn("logic reviewer: failed to load glossary", zap.Error(err))
+	} else {
+		var lines []string
+		for rows.Next() {
+			var term, definition, category string
+			var aliases json.RawMessage
+			if rows.Scan(&term, &definition, rawJSONScanner{dst: &aliases}, &category) == nil {
+				lines = append(lines, fmt.Sprintf("%s/%s：%s；别名：%s", category, term, definition, jsonText(aliases)))
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			s.logger.Warn("logic reviewer: glossary rows error", zap.Error(err))
+		}
+		appendSection("术语表", strings.Join(lines, "\n"), 2200)
+	}
+
+	if strings.TrimSpace(sb.String()) == "" {
+		return "未能读取到结构化上下文，请仅根据章节正文检查逻辑连续性，并在问题中说明上下文缺失。"
+	}
+	return sb.String()
 }
 
 func (s *QualityService) reviewAsAntiAIExpert(ctx context.Context, content string) ([]models.QualityIssue, float64) {

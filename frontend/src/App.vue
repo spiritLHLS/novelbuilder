@@ -13,11 +13,11 @@
           </div>
         </div>
         <nav class="sidebar-nav">
-          <a class="nav-item" :class="{ active: route.path === '/projects' }"
+          <a v-if="showWritingNav" class="nav-item" :class="{ active: route.path === '/projects' }"
             @click.prevent="router.push('/projects')" href="#">
             <el-icon><Folder /></el-icon><span>{{ localeStore.t('projects') }}</span>
           </a>
-          <template v-if="currentProjectId">
+          <template v-if="showWritingNav && currentProjectId">
             <div class="nav-group-title">{{ localeStore.t('writingFlow') }}</div>
             <a v-for="item in workshopItems" :key="item.path" class="nav-item"
               :class="{ active: route.path === item.path }"
@@ -44,31 +44,45 @@
             <el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span>
           </a>
         </nav>
-        <div class="sidebar-footer">
-          <div class="user-info" v-if="auth.username">
-            <el-icon><UserFilled /></el-icon>
-            <span class="username">{{ auth.username }}</span>
-          </div>
-          <button class="theme-btn" @click="themeStore.toggleTheme()">
-            <span>{{ isDark ? '☀️' : '🌙' }}</span>
-            <span>{{ isDark ? localeStore.t('lightMode') : localeStore.t('darkMode') }}</span>
-          </button>
-          <button class="locale-btn" @click="localeStore.toggleLocale()">
-            <el-icon><Switch /></el-icon>
-            <span>{{ localeStore.t('languageToggle') }}</span>
-          </button>
-          <button class="guide-btn" @click="openGuide">
-            <el-icon><QuestionFilled /></el-icon>
-            <span>{{ localeStore.t('guide') }}</span>
-          </button>
-          <button class="logout-btn" @click="handleLogout">
-            <el-icon><SwitchButton /></el-icon>
-            <span>{{ localeStore.t('logout') }}</span>
-          </button>
-        </div>
       </aside>
       <main class="app-main">
-        <router-view />
+        <div class="app-topbar">
+          <div class="topbar-context">
+            <el-tag v-if="isAdminUser" size="small" effect="plain">{{ adminViewMode === 'admin' ? localeStore.t('adminView') : localeStore.t('writingView') }}</el-tag>
+          </div>
+          <div class="topbar-actions">
+            <el-segmented
+              v-if="isAdminUser"
+              v-model="adminViewMode"
+              :options="adminViewOptions"
+              class="view-switch"
+              @change="handleAdminViewChange"
+            />
+            <div class="user-info" v-if="auth.username">
+              <el-icon><UserFilled /></el-icon>
+              <span class="username">{{ auth.username }}</span>
+            </div>
+            <button class="topbar-btn" @click="themeStore.toggleTheme()">
+              <span>{{ isDark ? '☀️' : '🌙' }}</span>
+              <span>{{ isDark ? localeStore.t('lightMode') : localeStore.t('darkMode') }}</span>
+            </button>
+            <button class="topbar-btn" @click="localeStore.toggleLocale()">
+              <el-icon><Switch /></el-icon>
+              <span>{{ localeStore.t('languageToggle') }}</span>
+            </button>
+            <button class="topbar-btn" @click="openGuide">
+              <el-icon><QuestionFilled /></el-icon>
+              <span>{{ localeStore.t('guide') }}</span>
+            </button>
+            <button class="topbar-btn logout" @click="handleLogout">
+              <el-icon><SwitchButton /></el-icon>
+              <span>{{ localeStore.t('logout') }}</span>
+            </button>
+          </div>
+        </div>
+        <div class="app-view">
+          <router-view />
+        </div>
       </main>
       <DownloadWidget />
       <FirstRunGuide v-if="showGuideHost" v-model="guideVisible" />
@@ -96,24 +110,44 @@ const localeStore = useLocaleStore()
 const downloadStore = useDownloadStore()
 const auth = useAuthStore()
 const GUIDE_KEY = 'nb_first_run_guide_done'
+const ADMIN_VIEW_KEY = 'nb_admin_view_mode'
 const guideVisible = ref(false)
+type AdminViewMode = 'admin' | 'write'
+const storedAdminView = localStorage.getItem(ADMIN_VIEW_KEY)
+const adminViewMode = ref<AdminViewMode>(storedAdminView === 'write' ? 'write' : 'admin')
+const adminViewOptions = computed(() => [
+  { label: localeStore.t('admin'), value: 'admin' },
+  { label: localeStore.t('writing'), value: 'write' },
+])
 
 onMounted(() => {
   downloadStore.restoreAndPoll()
   if (auth.token && !localStorage.getItem(GUIDE_KEY)) {
     guideVisible.value = true
   }
+  syncAdminRouteForView()
 })
 
 const isDark = computed(() => themeStore.theme === 'dark')
 const currentProjectId = computed(() => projectStore.currentProjectId)
 const isFullscreenRoute = computed(() => route.name === 'login' || route.name === 'setup')
 const showGuideHost = computed(() => Boolean(auth.token) && !isFullscreenRoute.value)
+const isAdminUser = computed(() => auth.role === 'admin')
+const showWritingNav = computed(() => auth.role !== 'admin' || adminViewMode.value === 'write')
+const showSystemNav = computed(() => auth.role === 'admin' ? adminViewMode.value === 'admin' : true)
 
 watch(() => auth.token, (token) => {
   if (token && !localStorage.getItem(GUIDE_KEY)) {
     guideVisible.value = true
   }
+})
+
+watch(() => auth.role, () => {
+  syncAdminRouteForView()
+})
+
+watch(() => route.path, () => {
+  syncAdminRouteForView()
 })
 
 async function handleLogout() {
@@ -126,12 +160,37 @@ function openGuide() {
   guideVisible.value = true
 }
 
+function isSystemRoute(path: string) {
+  return path === '/tasks' || path.startsWith('/settings')
+}
+
+function handleAdminViewChange(value: string | number | boolean) {
+  adminViewMode.value = value === 'write' ? 'write' : 'admin'
+  localStorage.setItem(ADMIN_VIEW_KEY, adminViewMode.value)
+  syncAdminRouteForView(true)
+}
+
+function syncAdminRouteForView(force = false) {
+  if (!isAdminUser.value || isFullscreenRoute.value) return
+  if (adminViewMode.value === 'admin' && !isSystemRoute(route.path)) {
+    if (force || route.name !== 'user-management') {
+      router.replace('/settings/users')
+    }
+    return
+  }
+  if (adminViewMode.value === 'write' && isSystemRoute(route.path)) {
+    router.replace('/projects')
+  }
+}
+
 const workshopItems = computed(() => {
   const pid = currentProjectId.value
   return [
     { path: `/projects/${pid}/studio`, icon: 'Edit', label: localeStore.t('studio') },
+    { path: `/projects/${pid}/creative-brief`, icon: 'MagicStick', label: localeStore.t('creativeBrief') },
     { path: `/projects/${pid}/blueprint`, icon: 'Document', label: localeStore.t('blueprint') },
     { path: `/projects/${pid}/chapters`, icon: 'Notebook', label: localeStore.t('chapters') },
+    { path: `/projects/${pid}/import-chapters`, icon: 'Upload', label: localeStore.t('importChapters') },
     { path: `/projects/${pid}/workflow`, icon: 'SetUp', label: localeStore.t('workflow') },
     { path: `/projects/${pid}/tasks`, icon: 'Timer', label: localeStore.t('projectTasks') },
   ]
@@ -146,6 +205,11 @@ const pipelineItems = computed(() => {
     { path: `/projects/${pid}/world`, icon: 'Place', label: localeStore.t('world') },
     { path: `/projects/${pid}/characters`, icon: 'Avatar', label: localeStore.t('characters') },
     { path: `/projects/${pid}/outline`, icon: 'List', label: localeStore.t('outline') },
+    { path: `/projects/${pid}/foreshadowing`, icon: 'Bell', label: localeStore.t('foreshadowing') },
+    { path: `/projects/${pid}/subplots`, icon: 'Tickets', label: localeStore.t('subplots') },
+    { path: `/projects/${pid}/emotional-arcs`, icon: 'TrendCharts', label: localeStore.t('emotionalArcs') },
+    { path: `/projects/${pid}/character-matrix`, icon: 'Connection', label: localeStore.t('characterMatrix') },
+    { path: `/projects/${pid}/resources`, icon: 'Box', label: localeStore.t('resources') },
     { path: `/projects/${pid}/glossary`, icon: 'Collection', label: localeStore.t('glossary') },
   ]
 })
@@ -156,11 +220,16 @@ const toolItems = computed(() => {
     { path: `/projects/${pid}/quality`, icon: 'DataAnalysis', label: localeStore.t('quality') },
     { path: `/projects/${pid}/agent-review`, icon: 'ChatDotRound', label: localeStore.t('agentReview') },
     { path: `/projects/${pid}/analytics`, icon: 'TrendCharts', label: localeStore.t('analytics') },
+    { path: `/projects/${pid}/radar`, icon: 'Aim', label: localeStore.t('radar') },
+    { path: `/projects/${pid}/propagation`, icon: 'Refresh', label: localeStore.t('propagation') },
     { path: `/projects/${pid}/fanqie`, icon: 'Promotion', label: localeStore.t('fanqie') },
   ]
 })
 
 const systemItems = computed(() => {
+  if (!showSystemNav.value) {
+    return []
+  }
   if (auth.role !== 'admin') {
     return [
       { path: '/settings/prompt-presets', icon: 'DocumentCopy', label: localeStore.t('promptPresets') },
@@ -214,40 +283,54 @@ body {
 .nav-item:hover { background-color: var(--nb-bg-sidebar-hover); color: var(--nb-accent); }
 .nav-item.active { background-color: rgba(64,158,255,0.15); color: #409eff; font-weight: 500; }
 .nav-item .el-icon { font-size: 14px; flex-shrink: 0; }
-.sidebar-footer { border-top: 1px solid var(--nb-border-sidebar); padding: 10px; flex-shrink: 0; }
+.app-main {
+  flex: 1;
+  overflow-y: auto;
+  background-color: var(--nb-main-bg);
+  transition: background-color 0.2s;
+}
+.app-topbar {
+  min-height: 54px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--nb-border-sidebar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background-color: var(--nb-main-bg);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.topbar-context {
+  min-width: 0;
+}
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.view-switch {
+  flex-shrink: 0;
+}
 .user-info {
   display: flex; align-items: center; gap: 6px; padding: 5px 10px 8px;
-  font-size: 12px; color: var(--nb-text-sidebar); opacity: 0.8;
+  font-size: 12px; color: var(--nb-text-primary); opacity: 0.85;
   white-space: nowrap; overflow: hidden;
 }
 .user-info .username { overflow: hidden; text-overflow: ellipsis; }
-.theme-btn,
-.locale-btn {
-  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
+.topbar-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px;
   border: 1px solid var(--nb-border-sidebar); border-radius: 6px; background: transparent;
-  color: var(--nb-text-sidebar); font-size: 12px; cursor: pointer;
+  color: var(--nb-text-primary); font-size: 12px; cursor: pointer;
   transition: background-color 0.12s, color 0.12s;
-  margin-bottom: 6px;
 }
-.theme-btn:hover,
-.locale-btn:hover { background-color: var(--nb-bg-sidebar-hover); color: var(--nb-accent); }
-.guide-btn {
-  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
-  border: 1px solid transparent; border-radius: 6px; background: transparent;
-  color: var(--nb-text-sidebar); font-size: 12px; cursor: pointer;
-  transition: background-color 0.12s, color 0.12s;
-  margin-bottom: 6px;
-}
-.guide-btn:hover { background-color: var(--nb-bg-sidebar-hover); color: var(--nb-accent); }
-.logout-btn {
-  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px;
-  border: 1px solid transparent; border-radius: 6px; background: transparent;
-  color: var(--nb-text-sidebar); font-size: 12px; cursor: pointer;
-  transition: background-color 0.12s, color 0.12s;
-  opacity: 0.75;
-}
-.logout-btn:hover { background-color: rgba(245,108,108,0.12); color: #f56c6c; opacity: 1; }
-.app-main { flex: 1; overflow-y: auto; background-color: var(--nb-main-bg); padding: 24px; transition: background-color 0.2s; }
+.topbar-btn:hover { background-color: var(--nb-bg-sidebar-hover); color: var(--nb-accent); }
+.topbar-btn.logout { border-color: transparent; opacity: 0.78; }
+.topbar-btn.logout:hover { background-color: rgba(245,108,108,0.12); color: #f56c6c; opacity: 1; }
+.app-view { padding: 24px; }
 
 @media (max-width: 760px) {
   .app-sidebar {
@@ -263,29 +346,32 @@ body {
   .logo-text,
   .nav-group-title,
   .nav-item span,
-  .theme-btn span:last-child,
-  .locale-btn span,
-  .guide-btn span,
-  .logout-btn span,
   .user-info .username {
     display: none;
   }
 
-  .nav-item,
-  .theme-btn,
-  .locale-btn,
-  .guide-btn,
-  .logout-btn {
+  .nav-item {
     justify-content: center;
     padding: 9px 8px;
   }
 
-  .user-info {
-    justify-content: center;
-    padding: 6px 0 8px;
+  .app-topbar {
+    align-items: flex-start;
+    padding: 8px 10px;
+    flex-direction: column;
   }
 
-  .app-main {
+  .topbar-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .topbar-btn span:last-child {
+    display: none;
+  }
+
+  .app-view {
     padding: 16px;
   }
 }

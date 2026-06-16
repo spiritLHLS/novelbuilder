@@ -142,8 +142,11 @@ func (s *ExportService) ExportEPUB(ctx context.Context, projectID string) ([]byt
 		return nil, fmt.Errorf("project not found: %w", err)
 	}
 	epubLanguage := "zh"
-	if strings.HasPrefix(strings.ToLower(language), "en") {
+	normalizedLanguage := strings.ToLower(language)
+	if strings.HasPrefix(normalizedLanguage, "en") {
 		epubLanguage = "en"
+	} else if strings.HasPrefix(normalizedLanguage, "ja") {
+		epubLanguage = "ja"
 	}
 
 	chapters, err := s.loadApprovedChapters(ctx, projectID)

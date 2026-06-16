@@ -7,7 +7,7 @@ export interface Project {
   title: string
   genre: string
   description: string
-  language: 'zh-CN' | 'en-US'
+  language: 'zh-CN' | 'en-US' | 'ja-JP'
   target_words: number
   chapter_words: number
   style_description: string

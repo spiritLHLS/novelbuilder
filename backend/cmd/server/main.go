@@ -643,6 +643,7 @@ func main() {
 	}))
 
 	r.Use(middleware.RequestID())
+	r.Use(middleware.NormalizeAPIErrorResponses())
 	r.Use(middleware.Logger(logger))
 
 	r.GET("/api/setup/status", func(c *gin.Context) {

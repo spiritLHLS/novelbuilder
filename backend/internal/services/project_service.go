@@ -46,6 +46,19 @@ func normalizeCreationMode(mode string) string {
 	}
 }
 
+func normalizeProjectLanguage(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "en", "en-us", "en_us", "english":
+		return "en-US"
+	case "ja", "ja-jp", "ja_jp", "japanese", "日本語", "日语":
+		return "ja-JP"
+	case "zh", "zh-cn", "zh_cn", "chinese", "中文", "简体中文", "":
+		return "zh-CN"
+	default:
+		return "zh-CN"
+	}
+}
+
 func (s *ProjectService) Ping(ctx context.Context) error {
 	if s.orm != nil {
 		sqlDB, err := s.orm.DB()
@@ -111,6 +124,7 @@ func (s *ProjectService) ListForUser(ctx context.Context, userID string, include
 		); err != nil {
 			return nil, err
 		}
+		p.Language = normalizeProjectLanguage(p.Language)
 		projects = append(projects, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -140,6 +154,7 @@ func (s *ProjectService) CreateForOwner(ctx context.Context, req models.CreatePr
 	if req.Language == "" {
 		req.Language = "zh-CN"
 	}
+	req.Language = normalizeProjectLanguage(req.Language)
 	if req.ProjectType == "continuation" && req.ContinuationStartChapter <= 0 {
 		req.ContinuationStartChapter = 1
 	}
@@ -226,6 +241,7 @@ func (s *ProjectService) Get(ctx context.Context, id string) (*models.Project, e
 	if err != nil {
 		return nil, fmt.Errorf("get project: %w", err)
 	}
+	p.Language = normalizeProjectLanguage(p.Language)
 	return &p, nil
 }
 
@@ -249,6 +265,7 @@ func (s *ProjectService) Update(ctx context.Context, id string, req models.Creat
 	if req.Language == "" {
 		req.Language = "zh-CN"
 	}
+	req.Language = normalizeProjectLanguage(req.Language)
 	if req.CreationMode == "" {
 		req.CreationMode = existing.CreationMode
 	}
@@ -433,10 +450,7 @@ func projectSchemaToModel(row database.ProjectSchema) models.Project {
 	if startChapter <= 0 {
 		startChapter = 1
 	}
-	language := row.Language
-	if language == "" {
-		language = "zh-CN"
-	}
+	language := normalizeProjectLanguage(row.Language)
 	return models.Project{
 		ID:                       row.ID,
 		OwnerID:                  stringFromPtr(row.OwnerID),

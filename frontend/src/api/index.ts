@@ -196,6 +196,10 @@ export const chapterApi = {
     api.post(`/chapters/${id}/restore`, { snapshot_id: snapshotId }),
   generate: (projectId: string, data: any) =>
     api.post(`/projects/${projectId}/chapters/generate`, data),
+  previewPrompt: (projectId: string, data: any) =>
+    api.post(`/projects/${projectId}/chapters/prompt-preview`, data),
+  previewRegeneratePrompt: (_projectId: string, id: string, data?: any) =>
+    api.post(`/chapters/${id}/prompt-preview`, data),
   continueGenerate: (projectId: string) =>
     api.post(`/projects/${projectId}/chapters/continue`),
   submitReview: (_projectId: string, id: string) => api.post(`/chapters/${id}/submit-review`),

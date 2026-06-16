@@ -162,6 +162,8 @@ func writingLanguageInstruction(language string) string {
 	switch strings.ToLower(strings.TrimSpace(language)) {
 	case "en", "en-us", "en_us", "english":
 		return "All creative assets, outlines, character profiles, and final prose must be written in English. Keep names, idioms, punctuation, dialogue style, and cultural references internally consistent with English-language fiction. Do not mix Chinese prose unless the user explicitly asks for bilingual text."
+	case "ja", "ja-jp", "ja_jp", "japanese", "日本語", "日语":
+		return "すべての創作資料、プロット、キャラクター設定、最終本文は日本語で作成してください。人名、地名、専門用語、句読点、会話の口調、文化的参照は日本語小説として一貫させ、ユーザーが明示しない限り中国語や英語の叙述を混ぜないでください。"
 	default:
 		return "所有创作资产、大纲、角色档案与最终正文必须使用简体中文。人名、地名、术语、标点、对白口吻保持中文小说语境一致；除非用户明确要求双语文本，不要混入英文叙述。"
 	}

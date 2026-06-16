@@ -96,7 +96,26 @@
         </el-form-item>
       </el-form>
 
+      <el-collapse v-if="promptPreview" class="prompt-preview">
+        <el-collapse-item name="system">
+          <template #title>
+            <span>System Prompt</span>
+            <el-tag size="small" type="info" effect="plain" class="prompt-meta">
+              第 {{ promptPreview.chapter_num }} 章 · {{ promptPreview.words_min }}-{{ promptPreview.words_max }} 字
+            </el-tag>
+          </template>
+          <pre>{{ promptPreview.system_prompt }}</pre>
+        </el-collapse-item>
+        <el-collapse-item name="user" title="User Prompt">
+          <pre>{{ promptPreview.user_prompt }}</pre>
+        </el-collapse-item>
+        <el-collapse-item v-if="promptPreview.outline_events" name="outline" title="本章大纲事件">
+          <pre>{{ promptPreview.outline_events }}</pre>
+        </el-collapse-item>
+      </el-collapse>
+
       <template #footer>
+        <el-button @click="previewGeneratePrompt" :loading="previewing">预览 Prompt</el-button>
         <el-button @click="showGenerateDialog = false">取消</el-button>
         <el-button type="primary" @click="startGenerate" :loading="generating">开始生成</el-button>
       </template>
@@ -144,7 +163,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
-import { chapterApi, exportApi, exportExtApi, batchWriteApi, volumeApi, projectApi } from '@/api'
+import { chapterApi, exportApi, exportExtApi, batchWriteApi, volumeApi, projectApi, getApiErrorMessage } from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -158,6 +177,8 @@ const continuationStartChapter = ref(0)
 
 const showGenerateDialog = ref(false)
 const generating = ref(false)
+const previewing = ref(false)
+const promptPreview = ref<any | null>(null)
 const copyingChapterId = ref<string | null>(null)
 const regenerateTarget = ref<any | null>(null)
 
@@ -318,6 +339,7 @@ function showGenerate() {
   regenerateTarget.value = null
   genForm.value.chapter_num = nextWritableChapterNum.value
   genForm.value.context_hint = ''
+  promptPreview.value = null
   showGenerateDialog.value = true
 }
 
@@ -325,6 +347,7 @@ function regenerateChapter(ch: any) {
   regenerateTarget.value = ch
   genForm.value.chapter_num = ch.chapter_num
   genForm.value.context_hint = ''
+  promptPreview.value = null
   showGenerateDialog.value = true
 }
 
@@ -339,15 +362,34 @@ async function confirmAs正文(ch: any) {
   }
 }
 
+function buildGeneratePayload() {
+  return {
+    chapter_num: genForm.value.chapter_num,
+    chapter_words_min: genForm.value.chapter_words_min,
+    chapter_words_max: genForm.value.chapter_words_max,
+    context_hint: genForm.value.context_hint,
+  }
+}
+
+async function previewGeneratePrompt() {
+  previewing.value = true
+  try {
+    const payload = buildGeneratePayload()
+    const res = regenerateTarget.value?.id
+      ? await chapterApi.previewRegeneratePrompt(projectId, regenerateTarget.value.id, payload)
+      : await chapterApi.previewPrompt(projectId, payload)
+    promptPreview.value = res.data?.data ?? res.data
+  } catch (e: any) {
+    ElMessage.error(getApiErrorMessage(e, 'Prompt 预览失败'))
+  } finally {
+    previewing.value = false
+  }
+}
+
 async function startGenerate() {
   generating.value = true
   try {
-    const payload = {
-      chapter_num: genForm.value.chapter_num,
-      chapter_words_min: genForm.value.chapter_words_min,
-      chapter_words_max: genForm.value.chapter_words_max,
-      context_hint: genForm.value.context_hint,
-    }
+    const payload = buildGeneratePayload()
     if (regenerateTarget.value?.id) {
       await chapterApi.regenerate(projectId, regenerateTarget.value.id, payload)
     } else {
@@ -408,4 +450,24 @@ async function copyChapter(ch: any) {
 .chapters { max-width: 1200px; margin: 0 auto; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
 .page-header h1 { font-size: 24px; color: #e0e0e0; }
+.prompt-preview {
+  margin-top: 16px;
+  border-radius: 8px;
+}
+.prompt-meta {
+  margin-left: 12px;
+}
+.prompt-preview pre {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-primary);
+  line-height: 1.6;
+  font-size: 13px;
+}
 </style>

@@ -22,7 +22,7 @@
           </template>
           <div class="card-body">
             <el-tag :type="genreTagType(project.genre)" size="small">{{ project.genre }}</el-tag>
-            <el-tag size="small" style="margin-left: 6px">{{ project.language === 'en-US' ? 'English' : '中文' }}</el-tag>
+            <el-tag size="small" style="margin-left: 6px">{{ languageLabel(project.language) }}</el-tag>
             <el-tag size="small" type="info" style="margin-left: 6px">{{ creationModeLabel(project.creation_mode) }}</el-tag>
             <p class="target-words">目标字数: {{ formatNumber(project.target_words) }}</p>
             <p class="target-words">单章字数: {{ formatNumber(project.chapter_words || 3000) }}</p>
@@ -132,6 +132,7 @@ const autoGenerateBlueprint = ref(true)
 const languageOptions = [
   { label: '中文', value: 'zh-CN' },
   { label: 'English', value: 'en-US' },
+  { label: '日本語', value: 'ja-JP' },
 ]
 const creationModeOptions = [
   { label: '仅用 prompt 开书', value: 'prompt_only', help: '适合一句话创意、核心卖点和读者体验驱动的项目。' },
@@ -165,7 +166,7 @@ const descriptionPlaceholder = computed(() => {
 const form = ref({
   title: '',
   genre: '玄幻',
-  language: 'zh-CN' as 'zh-CN' | 'en-US',
+  language: 'zh-CN' as 'zh-CN' | 'en-US' | 'ja-JP',
   creation_mode: 'prompt_only' as CreationMode,
   description: '',
   target_words: 500000,
@@ -273,6 +274,12 @@ function resetForm() {
 
 function creationModeLabel(mode: string) {
   return creationModeOptions.find((option) => option.value === mode)?.label || '仅用 prompt 开书'
+}
+
+function languageLabel(language: string) {
+  if (language === 'en-US') return 'English'
+  if (language === 'ja-JP') return '日本語'
+  return '中文'
 }
 
 function buildBlueprintIdea() {
